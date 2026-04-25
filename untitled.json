@@ -1,0 +1,65 @@
+{
+    "cell": "untitled",
+    "items": [
+        {
+            "type": "LabelSymbol",
+            "pos": [
+                140.0,
+                0.0
+            ],
+            "properties": {
+                "Text": "V1"
+            }
+        },
+        {
+            "type": "PinSymbol",
+            "pos": [
+                100.0,
+                -80.0
+            ],
+            "properties": {
+                "Name": "V1",
+                "Direction": "input"
+            }
+        },
+        {
+            "type": "Wire",
+            "points": [
+                [
+                    140.0,
+                    20.0
+                ],
+                [
+                    200.0,
+                    20.0
+                ]
+            ]
+        },
+        {
+            "type": "Wire",
+            "points": [
+                [
+                    100.0,
+                    20.0
+                ],
+                [
+                    140.0,
+                    20.0
+                ]
+            ]
+        },
+        {
+            "type": "Wire",
+            "points": [
+                [
+                    100.0,
+                    -80.0
+                ],
+                [
+                    100.0,
+                    20.0
+                ]
+            ]
+        }
+    ]
+}

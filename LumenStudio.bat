@@ -1,3 +1,4 @@
 @echo off
-start "" pythonw C:\EDA\lumen\main.py
-exit
+cd C:\EDA\lumen
+python main.py
+pause

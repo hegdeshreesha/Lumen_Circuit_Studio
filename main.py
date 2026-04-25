@@ -144,6 +144,10 @@ class LumenCIW(QMainWindow):
         if view == "schematic":
             theme_str = "dark" if self.is_dark_mode else "light"
             editor = SchematicEditor(cell_name=cell, theme=theme_str)
+            
+            # Connect Debug Signal
+            editor.view.debug_msg.connect(self.log_debug)
+            
             editor.show()
             self.editors.append(editor)
         else:
@@ -176,6 +180,11 @@ class LumenCIW(QMainWindow):
     def log_message(self, message):
         self.log_area.append(message)
         self.log_area.verticalScrollBar().setValue(self.log_area.verticalScrollBar().maximum())
+
+    def log_debug(self, message):
+        # Professional debug log style
+        timestamp = datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]
+        self.log_message(f"<span style='color: #888;'>[{timestamp}] DEBUG: {message}</span>")
 
     def execute_command(self):
         cmd = self.cmd_input.text()
