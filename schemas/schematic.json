@@ -1,0 +1,84 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Lumen Schematic Data",
+  "description": "Schema for schematic view data in Lumen Circuit Studio",
+  "type": "object",
+  "required": ["type"],
+  "properties": {
+    "type": {
+      "type": "string",
+      "const": "schematic"
+    },
+    "name": {
+      "type": "string",
+      "description": "Cell name (optional, derived from context if not provided)"
+    },
+    "library": {
+      "type": "string",
+      "description": "Library name (optional, derived from context if not provided)"
+    },
+    "wires": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["x1", "y1", "x2", "y2"],
+        "properties": {
+          "x1": {"type": "number"},
+          "y1": {"type": "number"},
+          "x2": {"type": "number"},
+          "y2": {"type": "number"},
+          "net": {
+            "type": "string",
+            "description": "Optional net name for this wire segment"
+          }
+        }
+      }
+    },
+    "instances": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "cell", "library", "x", "y"],
+        "properties": {
+          "name": {"type": "string"},
+          "cell": {"type": "string"},
+          "library": {"type": "string"},
+          "x": {"type": "number"},
+          "y": {"type": "number"},
+          "rotation": {"type": "number"},
+          "params": {
+            "type": "object",
+            "additionalProperties": {"type": "string"}
+          }
+        }
+      }
+    },
+    "labels": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["text", "x", "y"],
+        "properties": {
+          "text": {"type": "string"},
+          "x": {"type": "number"},
+          "y": {"type": "number"}
+        }
+      }
+    },
+    "pins": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string"},
+          "x": {"type": "number"},
+          "y": {"type": "number"},
+          "direction": {
+            "type": "string",
+            "enum": ["input", "output", "inout", "power", "ground"]
+          }
+        }
+      }
+    }
+  }
+}

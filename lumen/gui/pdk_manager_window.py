@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QAction, QColor, QBrush, QFont
 
-from lumen.core.pdk import PDKRegistry, PDKInfo, PDKDevice
+from lumen.core.pdk_unified import PDKRegistry, PDKInfo
 
 
 class PDKManagerWindow(QMainWindow):
@@ -214,11 +214,12 @@ class PDKManagerWindow(QMainWindow):
         devs = pdk.devices
         self.device_table.setRowCount(len(devs))
         for row, dev in enumerate(devs):
-            icon = self.CATEGORY_ICONS.get(dev.category, "◻")
+            category = dev.category.value if hasattr(dev.category, "value") else str(dev.category)
+            icon = self.CATEGORY_ICONS.get(category, "?")
             name_item = QTableWidgetItem(f"{icon} {dev.name}")
             name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
 
-            cat_item = QTableWidgetItem(dev.category)
+            cat_item = QTableWidgetItem(category)
             cat_item.setFlags(cat_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
 
             model_item = QTableWidgetItem(dev.model)
@@ -228,7 +229,12 @@ class PDKManagerWindow(QMainWindow):
             desc_item = QTableWidgetItem(dev.description)
             desc_item.setFlags(desc_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
 
-            params = ", ".join(f"{k}={v}" for k, v in dev.parameters.items())
+            if isinstance(dev.parameters, dict):
+                params = ", ".join(f"{k}={v}" for k, v in dev.parameters.items())
+            else:
+                params = ", ".join(
+                    f"{p.name}={p.default}" for p in dev.parameters if hasattr(p, "name")
+                )
             param_item = QTableWidgetItem(params)
             param_item.setFlags(param_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             param_item.setForeground(QBrush(QColor("#808080")))
@@ -243,24 +249,37 @@ class PDKManagerWindow(QMainWindow):
         layers = pdk.layers
         self.layer_table.setRowCount(len(layers))
         for row, lyr in enumerate(layers):
-            name_item = QTableWidgetItem(lyr.name)
+            if isinstance(lyr, dict):
+                layer_name = lyr.get("name", "")
+                gds_number = lyr.get("gds_number", lyr.get("gds", 0))
+                gds_datatype = lyr.get("gds_datatype", lyr.get("datatype", 0))
+                purpose = lyr.get("purpose", "")
+                color = lyr.get("color", "#808080")
+            else:
+                layer_name = lyr.name
+                gds_number = lyr.gds_number
+                gds_datatype = lyr.gds_datatype
+                purpose = lyr.purpose
+                color = lyr.color
+
+            name_item = QTableWidgetItem(layer_name)
             name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            name_item.setForeground(QBrush(QColor(lyr.color)))
+            name_item.setForeground(QBrush(QColor(color)))
             font = name_item.font()
             font.setBold(True)
             name_item.setFont(font)
 
-            gds_item = QTableWidgetItem(str(lyr.gds_number))
+            gds_item = QTableWidgetItem(str(gds_number))
             gds_item.setFlags(gds_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
 
-            dt_item = QTableWidgetItem(str(lyr.gds_datatype))
+            dt_item = QTableWidgetItem(str(gds_datatype))
             dt_item.setFlags(dt_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
 
-            purpose_item = QTableWidgetItem(lyr.purpose)
+            purpose_item = QTableWidgetItem(purpose)
             purpose_item.setFlags(purpose_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
 
-            color_item = QTableWidgetItem(f"████  {lyr.color}")
-            color_item.setForeground(QBrush(QColor(lyr.color)))
+            color_item = QTableWidgetItem(f"####  {color}")
+            color_item.setForeground(QBrush(QColor(color)))
             color_item.setFlags(color_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
 
             self.layer_table.setItem(row, 0, name_item)
@@ -273,22 +292,30 @@ class PDKManagerWindow(QMainWindow):
         corners = pdk.corners
         self.corner_table.setRowCount(len(corners))
         for row, corner in enumerate(corners):
-            name_item = QTableWidgetItem(corner["name"])
+            if isinstance(corner, dict):
+                cname = corner.get("name", "")
+                cdesc = corner.get("description", "")
+                ctemp = corner.get("temp", corner.get("temperature", 25))
+            else:
+                cname = corner.name
+                cdesc = corner.description
+                ctemp = corner.temperature
+
+            name_item = QTableWidgetItem(cname)
             name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             font = name_item.font()
             font.setBold(True)
             name_item.setFont(font)
 
-            desc_item = QTableWidgetItem(corner.get("description", ""))
+            desc_item = QTableWidgetItem(cdesc)
             desc_item.setFlags(desc_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
 
-            temp_item = QTableWidgetItem(f"{corner.get('temp', 25)}°C")
+            temp_item = QTableWidgetItem(f"{ctemp} C")
             temp_item.setFlags(temp_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
 
             self.corner_table.setItem(row, 0, name_item)
             self.corner_table.setItem(row, 1, desc_item)
             self.corner_table.setItem(row, 2, temp_item)
-
     def _on_activate(self):
         name = self.pdk_combo.currentData()
         if not name:

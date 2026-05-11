@@ -417,6 +417,8 @@ class PDKRegistry:
 def generate_symbol_data(device: PDKDevice, pdk_name: str = "") -> dict:
     """Generate a schematic symbol dict for a PDK device."""
     category = device.category
+    if hasattr(category, "value"):
+        category = category.value
     if category == "MOSFET":
         return _gen_mosfet_symbol(device, pdk_name)
     elif category == "Resistor":
@@ -434,7 +436,21 @@ def generate_symbol_data(device: PDKDevice, pdk_name: str = "") -> dict:
 
 
 def _base_symbol(device, pdk_name):
-    params = [{"name": k, "default": v} for k, v in device.parameters.items()]
+    # Support both legacy dict params and newer list[PDKParameter]-style params.
+    params = []
+    raw_params = getattr(device, "parameters", {})
+    if isinstance(raw_params, dict):
+        params = [{"name": k, "default": v} for k, v in raw_params.items()]
+    elif isinstance(raw_params, list):
+        for p in raw_params:
+            if isinstance(p, dict):
+                pname = p.get("name", "")
+                pdefault = p.get("default", "")
+            else:
+                pname = getattr(p, "name", "")
+                pdefault = getattr(p, "default", "")
+            if pname:
+                params.append({"name": pname, "default": pdefault})
     return {
         "type": "symbol",
         "name": device.name,
@@ -451,7 +467,9 @@ def _base_symbol(device, pdk_name):
 
 def _gen_mosfet_symbol(dev, pdk_name):
     s = _base_symbol(dev, pdk_name)
-    is_pmos = "pmos" in dev.symbol or "pfet" in dev.name.lower()
+    symbol_name = str(getattr(dev, "symbol", "")).lower()
+    dev_name = str(getattr(dev, "name", "")).lower()
+    is_pmos = ("pmos" in symbol_name) or ("pfet" in dev_name) or ("pmos" in dev_name)
     
     # Virtuoso MOSFET (4-Terminal)
     # Channel and gate
@@ -534,7 +552,9 @@ def _gen_diode_symbol(dev, pdk_name):
 
 def _gen_bjt_symbol(dev, pdk_name):
     s = _base_symbol(dev, pdk_name)
-    is_pnp = "pnp" in dev.symbol or "pnp" in dev.name.lower()
+    symbol_name = str(getattr(dev, "symbol", "")).lower()
+    dev_name = str(getattr(dev, "name", "")).lower()
+    is_pnp = ("pnp" in symbol_name) or ("pnp" in dev_name)
     # Virtuoso BJT
     s["shapes"] = [
         {"type": "line", "x1": -10, "y1": -15, "x2": -10, "y2": 15},  # base bar

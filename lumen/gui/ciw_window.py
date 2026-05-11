@@ -38,7 +38,7 @@ class CIWWindow(QMainWindow):
         self._pdk_manager = None
 
         # Initialize PDK registry
-        from lumen.core.pdk import PDKRegistry
+        from lumen.core.pdk_unified import PDKRegistry
         self.pdk_registry = PDKRegistry(workspace)
 
         # Build UI
@@ -205,11 +205,19 @@ class CIWWindow(QMainWindow):
                 win.activateWindow()
                 return
 
-        from lumen.gui.schematic_editor_window import SchematicEditorWindow
-        editor = SchematicEditorWindow(self.db, library, cell, view, ciw=self)
-        editor.show()
-        self._editor_windows.append(editor)
-        self.log(f"Opened editor: {library}/{cell}/{view}")
+        try:
+            from lumen.gui.schematic_editor_window import SchematicEditorWindow
+            editor = SchematicEditorWindow(self.db, library, cell, view, ciw=self)
+            editor.show()
+            self._editor_windows.append(editor)
+            self.log(f"Opened editor: {library}/{cell}/{view}")
+        except Exception as exc:
+            self.log(f"Failed to open editor {library}/{cell}/{view}: {exc}")
+            QMessageBox.critical(
+                self,
+                "Open Editor Failed",
+                f"Could not open {library}/{cell}/{view}.\n\n{exc}",
+            )
 
     # ── Command Handler ───────────────────────────────────────
 
@@ -316,11 +324,25 @@ class CIWWindow(QMainWindow):
 
     def open_ade(self, library: str, cell: str):
         """Open ADE window for a cell."""
-        from lumen.gui.ade_window import ADEWindow
-        ade = ADEWindow(self.db, library, cell, ciw=self)
-        ade.show()
-        self._ade_windows.append(ade)
-        self.log(f"Opened ADE: {library}/{cell}")
+        try:
+            from lumen.gui.ade_window import ADEWindow
+            ade = ADEWindow(
+                self.db,
+                library,
+                cell,
+                ciw=self,
+                pdk_registry=self.pdk_registry,
+            )
+            ade.show()
+            self._ade_windows.append(ade)
+            self.log(f"Opened ADE: {library}/{cell}")
+        except Exception as exc:
+            self.log(f"Failed to open ADE {library}/{cell}: {exc}")
+            QMessageBox.critical(
+                self,
+                "Open ADE Failed",
+                f"Could not open ADE for {library}/{cell}.\n\n{exc}",
+            )
 
     def _on_open_ade_prompt(self):
         from PyQt6.QtWidgets import QInputDialog

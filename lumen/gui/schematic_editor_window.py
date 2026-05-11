@@ -403,9 +403,17 @@ class SchematicEditorWindow(QMainWindow):
         if self.ciw:
             self.ciw.open_ade(self.library, self.cell)
         else:
-            from lumen.gui.ade_window import ADEWindow
-            ade = ADEWindow(self.db, self.library, self.cell)
-            ade.show()
-            if not hasattr(self, '_ade_windows'):
-                self._ade_windows = []
-            self._ade_windows.append(ade)
+            try:
+                from lumen.gui.ade_window import ADEWindow
+                ade = ADEWindow(self.db, self.library, self.cell)
+                ade.show()
+                if not hasattr(self, '_ade_windows'):
+                    self._ade_windows = []
+                self._ade_windows.append(ade)
+            except Exception as exc:
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.critical(
+                    self,
+                    "Open ADE Failed",
+                    f"Could not open ADE for {self.library}/{self.cell}.\n\n{exc}",
+                )

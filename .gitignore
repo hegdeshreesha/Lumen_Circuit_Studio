@@ -32,3 +32,6 @@ Thumbs.db
 *.log
 output/
 simulations/
+scratch/
+test_workspace/
+my_design/

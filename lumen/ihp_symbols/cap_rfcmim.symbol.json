@@ -1,0 +1,63 @@
+{
+  "type": "symbol",
+  "name": "cap_rfcmim",
+  "library": "ihp_primitives",
+  "prefix": "C",
+  "spice_model": "cap_rfcmim",
+  "pins": [
+    {
+      "name": "PLUS",
+      "x": 0,
+      "y": -30,
+      "direction": "inout"
+    },
+    {
+      "name": "MINUS",
+      "x": 0,
+      "y": 30,
+      "direction": "inout"
+    }
+  ],
+  "shapes": [
+    {
+      "type": "line",
+      "x1": -15,
+      "y1": -10,
+      "x2": 15,
+      "y2": -10
+    },
+    {
+      "type": "line",
+      "x1": -12,
+      "y1": 10,
+      "x2": 12,
+      "y2": 10
+    },
+    {
+      "type": "line",
+      "x1": 0,
+      "y1": -30,
+      "x2": 0,
+      "y2": -10
+    },
+    {
+      "type": "line",
+      "x1": 0,
+      "y1": 10,
+      "x2": 0,
+      "y2": 30
+    }
+  ],
+  "parameters": [
+    {
+      "name": "C",
+      "default": "1p",
+      "description": "Capacitance"
+    }
+  ],
+  "label": {
+    "text": "@name\\nC=@C",
+    "x": 20,
+    "y": 0
+  }
+}

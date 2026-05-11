@@ -394,7 +394,10 @@ class SchematicEditor(QWidget):
                     for dev in pdk.devices:
                         if dev.name == cell:
                             from lumen.core.pdk import generate_symbol_data
-                            return generate_symbol_data(dev, pdk_name)
+                            try:
+                                return generate_symbol_data(dev, pdk_name)
+                            except Exception:
+                                return None
             return None
         return self.db.load_view(library, cell, "symbol")
 
@@ -837,13 +840,19 @@ class SchematicEditor(QWidget):
                 if lib and cell:
                     sym_data = self.db.load_view(lib, cell, 'symbol')
             if sym_data:
+                # Set mode FIRST, before creating ghost
+                # (set_mode calls _cancel_current_action which would remove the ghost)
+                self._mode = 'place'
+                self.canvas.setDragMode(QGraphicsView.DragMode.NoDrag)
+                self.canvas.setCursor(Qt.CursorShape.CrossCursor)
+                self.mode_changed.emit('place')
+                
+                # Now create and add the ghost
                 self._placement_sym_data = sym_data
                 ghost = InstanceItem(sym_data, '?', 0, 0)
                 ghost.setOpacity(0.5)
                 self.scene.addItem(ghost)
                 self._placement_ghost = ghost
-                self.set_mode('place')
-                self.mode_changed.emit('place')
 
     def _handle_place_click(self, x: float, y: float):
         """Place the current component at clicked position."""
@@ -935,6 +944,7 @@ class InstanceBrowserDialog(QDialog):
         cell_panel.addWidget(QLabel("Cell:"))
         self.cell_list = QListWidget()
         self.cell_list.currentTextChanged.connect(self._on_cell_selected)
+        self.cell_list.itemDoubleClicked.connect(self._on_cell_double_clicked)
         cell_panel.addWidget(self.cell_list)
 
         # Info label
@@ -977,8 +987,9 @@ class InstanceBrowserDialog(QDialog):
                 pdk = pdk_registry.get_active_pdk()
                 if pdk:
                     for dev in pdk.devices:
+                        category = dev.category.value if hasattr(dev.category, "value") else str(dev.category)
                         self.cell_list.addItem(
-                            f"{dev.name}  ({dev.category})")
+                            f"{dev.name}  ({category})")
         else:
             for cell in self.db.get_cells(lib_name):
                 self.cell_list.addItem(cell)
@@ -999,17 +1010,32 @@ class InstanceBrowserDialog(QDialog):
                     for dev in pdk.devices:
                         if dev.name == dev_name:
                             self._pdk_device = dev
-                            params = ", ".join(f"{k}={v}" for k, v
-                                               in dev.parameters.items())
+                            if isinstance(dev.parameters, dict):
+                                params = ", ".join(f"{k}={v}" for k, v in dev.parameters.items())
+                            else:
+                                params = ", ".join(
+                                    f"{p.name}={p.default}" for p in dev.parameters if hasattr(p, "name")
+                                )
+                            pin_names = []
+                            for pin in dev.pins:
+                                if isinstance(pin, dict):
+                                    pin_names.append(str(pin.get("name", "")))
+                                else:
+                                    pin_names.append(str(getattr(pin, "name", pin)))
                             self.info_label.setText(
                                 f"{dev.description}\n"
                                 f"Model: {dev.model}\n"
-                                f"Pins: {', '.join(dev.pins)}\n"
+                                f"Pins: {', '.join([p for p in pin_names if p])}\n"
                                 f"Defaults: {params}")
                             break
         else:
             self.selected_cell = cell_text
             self.info_label.clear()
+
+    def _on_cell_double_clicked(self, item):
+        """Accept the dialog when a cell is double-clicked."""
+        if self.selected_library and self.selected_cell:
+            self.accept()
 
     def get_symbol_data(self) -> dict | None:
         """Get symbol data for the selected component.
@@ -1019,7 +1045,10 @@ class InstanceBrowserDialog(QDialog):
             pdk_registry = self._get_pdk_registry()
             pdk = pdk_registry.get_active_pdk() if pdk_registry else None
             pdk_name = pdk.name if pdk else "pdk"
-            return generate_symbol_data(self._pdk_device, pdk_name)
+            try:
+                return generate_symbol_data(self._pdk_device, pdk_name)
+            except Exception:
+                return None
         elif self.selected_library and self.selected_cell:
             return self.db.load_view(
                 self.selected_library, self.selected_cell, "symbol")

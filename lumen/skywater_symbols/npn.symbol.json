@@ -1,0 +1,97 @@
+{
+  "type": "symbol",
+  "name": "npn",
+  "library": "skywater_primitives",
+  "prefix": "Q",
+  "spice_model": "npn_05v5",
+  "pins": [
+    {
+      "name": "C",
+      "x": 0,
+      "y": -30,
+      "direction": "input"
+    },
+    {
+      "name": "B",
+      "x": -20,
+      "y": 0,
+      "direction": "input"
+    },
+    {
+      "name": "E",
+      "x": 0,
+      "y": 30,
+      "direction": "output"
+    }
+  ],
+  "shapes": [
+    {
+      "type": "line",
+      "x1": 0,
+      "y1": -20,
+      "x2": 0,
+      "y2": 20
+    },
+    {
+      "type": "line",
+      "x1": 0,
+      "y1": -30,
+      "x2": 0,
+      "y2": -20
+    },
+    {
+      "type": "line",
+      "x1": 0,
+      "y1": 20,
+      "x2": 0,
+      "y2": 30
+    },
+    {
+      "type": "line",
+      "x1": 0,
+      "y1": 0,
+      "x2": -20,
+      "y2": 0
+    },
+    {
+      "type": "polygon",
+      "points": [
+        [
+          0,
+          5
+        ],
+        [
+          -5,
+          10
+        ],
+        [
+          0,
+          15
+        ]
+      ]
+    },
+    {
+      "type": "circle",
+      "cx": 0,
+      "cy": 0,
+      "r": 20
+    }
+  ],
+  "parameters": [
+    {
+      "name": "mult",
+      "default": "1",
+      "description": "Multiplier"
+    },
+    {
+      "name": "area",
+      "default": "1",
+      "description": "Area multiplier"
+    }
+  ],
+  "label": {
+    "text": "@name",
+    "x": 5,
+    "y": -25
+  }
+}

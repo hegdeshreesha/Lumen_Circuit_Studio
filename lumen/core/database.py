@@ -185,6 +185,13 @@ class LibraryDatabase:
                     cells.append(child.name)
         return cells
 
+    def cell_exists(self, library: str, cell_name: str) -> bool:
+        """Return True if a cell directory exists in the given library."""
+        lib = self._libraries.get(library)
+        if not lib:
+            return False
+        return (Path(lib.path) / cell_name).is_dir()
+
     def create_cell(self, library: str, cell_name: str) -> Path:
         """Create a new cell directory inside a library."""
         lib = self._libraries.get(library)
@@ -225,6 +232,10 @@ class LibraryDatabase:
                 elif child.suffix == ".va":
                     views.append("veriloga")
         return views
+
+    def view_exists(self, library: str, cell: str, view: str) -> bool:
+        """Return True if a specific view exists for a cell."""
+        return self.get_view_path(library, cell, view).is_file() if self.get_view_path(library, cell, view) else False
 
     def save_view(self, library: str, cell: str, view: str, data: dict):
         """Save view data as JSON."""

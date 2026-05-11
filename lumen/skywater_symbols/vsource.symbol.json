@@ -1,0 +1,81 @@
+{
+  "type": "symbol",
+  "name": "vsource",
+  "library": "skywater_primitives",
+  "prefix": "V",
+  "spice_model": "V",
+  "pins": [
+    {
+      "name": "PLUS",
+      "x": 0,
+      "y": -30,
+      "direction": "inout"
+    },
+    {
+      "name": "MINUS",
+      "x": 0,
+      "y": 30,
+      "direction": "inout"
+    }
+  ],
+  "shapes": [
+    {
+      "type": "circle",
+      "cx": 0,
+      "cy": 0,
+      "r": 20
+    },
+    {
+      "type": "line",
+      "x1": -5,
+      "y1": 0,
+      "x2": 5,
+      "y2": 0
+    },
+    {
+      "type": "line",
+      "x1": 0,
+      "y1": -5,
+      "x2": 0,
+      "y2": 5
+    },
+    {
+      "type": "line",
+      "x1": -5,
+      "y1": 10,
+      "x2": 5,
+      "y2": 10
+    },
+    {
+      "type": "line",
+      "x1": 0,
+      "y1": -30,
+      "x2": 0,
+      "y2": -20
+    },
+    {
+      "type": "line",
+      "x1": 0,
+      "y1": 20,
+      "x2": 0,
+      "y2": 30
+    }
+  ],
+  "parameters": [
+    {
+      "name": "DC",
+      "default": "1.8",
+      "description": "DC voltage"
+    },
+    {
+      "name": "AC",
+      "default": "",
+      "description": "AC magnitude"
+    }
+  ],
+  "label": {
+    "text": "@name\\nDC=@DC",
+    "x": 25,
+    "y": 0
+  }
+}

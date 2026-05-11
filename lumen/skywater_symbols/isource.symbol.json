@@ -1,0 +1,79 @@
+{
+  "type": "symbol",
+  "name": "isource",
+  "library": "skywater_primitives",
+  "prefix": "I",
+  "spice_model": "I",
+  "pins": [
+    {
+      "name": "PLUS",
+      "x": 0,
+      "y": -30,
+      "direction": "inout"
+    },
+    {
+      "name": "MINUS",
+      "x": 0,
+      "y": 30,
+      "direction": "inout"
+    }
+  ],
+  "shapes": [
+    {
+      "type": "circle",
+      "cx": 0,
+      "cy": 0,
+      "r": 20
+    },
+    {
+      "type": "line",
+      "x1": 0,
+      "y1": -10,
+      "x2": 0,
+      "y2": 10
+    },
+    {
+      "type": "polygon",
+      "points": [
+        [
+          -5,
+          5
+        ],
+        [
+          0,
+          15
+        ],
+        [
+          5,
+          5
+        ]
+      ]
+    },
+    {
+      "type": "line",
+      "x1": 0,
+      "y1": -30,
+      "x2": 0,
+      "y2": -20
+    },
+    {
+      "type": "line",
+      "x1": 0,
+      "y1": 20,
+      "x2": 0,
+      "y2": 30
+    }
+  ],
+  "parameters": [
+    {
+      "name": "DC",
+      "default": "1m",
+      "description": "DC current"
+    }
+  ],
+  "label": {
+    "text": "@name\\nDC=@DC",
+    "x": 25,
+    "y": 0
+  }
+}

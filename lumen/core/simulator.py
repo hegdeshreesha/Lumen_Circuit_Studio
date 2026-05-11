@@ -9,6 +9,8 @@ import os
 import struct
 import threading
 import time
+import re
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -106,12 +108,32 @@ class SimulatorBridge:
         else:
             self.exe_path = self._find_exe()
 
-        self.work_dir = os.path.join(
-            os.path.expanduser("~"), "LumenWorkspace", ".sim")
-        os.makedirs(self.work_dir, exist_ok=True)
+        self.work_dir = self._select_work_dir()
         self._process: subprocess.Popen | None = None
         self._cancelled = False
         self._cache: dict[str, dict] = {}
+
+    def _select_work_dir(self) -> str:
+        """Pick a writable directory for simulator input and output files."""
+        candidates = [
+            os.environ.get("LUMEN_SIM_DIR", ""),
+            os.path.join(os.path.expanduser("~"), "LumenWorkspace", ".sim"),
+            r"C:\EDA\LumenCircuitStudio\scratch\sim",
+            os.path.join(tempfile.gettempdir(), "LumenCircuitStudio", "sim"),
+        ]
+        for path in candidates:
+            if not path:
+                continue
+            try:
+                os.makedirs(path, exist_ok=True)
+                probe = os.path.join(path, ".write_test")
+                with open(probe, "w", encoding="utf-8") as f:
+                    f.write("ok")
+                os.remove(probe)
+                return path
+            except OSError:
+                continue
+        return tempfile.gettempdir()
 
     def _find_exe(self) -> str:
         for path in self.info.get("candidates", []):
@@ -146,13 +168,27 @@ class SimulatorBridge:
         result = SimulationResult(simulator=self.simulator)
         start_time = time.time()
 
-        netlist_path = os.path.join(self.work_dir, f"{sim_name}.sp")
-        output_path = os.path.join(self.work_dir, f"{sim_name}.raw")
+        safe_sim_name = self._safe_sim_name(sim_name)
+        netlist_path = os.path.join(self.work_dir, f"{safe_sim_name}.sp")
+        output_path = os.path.join(self.work_dir, f"{safe_sim_name}.raw")
 
-        with open(netlist_path, "w") as f:
-            f.write(netlist)
+        sim_netlist, compatibility_notes = self._prepare_netlist_for_simulator(netlist)
+
         result.netlist_path = netlist_path
         result.output_path = output_path
+        result.log = f"Input deck: {netlist_path}\n"
+        for note in compatibility_notes:
+            result.log += f"{note}\n"
+
+        try:
+            with open(netlist_path, "w", encoding="utf-8", newline="\n") as f:
+                f.write(sim_netlist)
+        except OSError as exc:
+            result.errors.append(f"Could not write simulator input deck: {exc}")
+            result.elapsed_time = time.time() - start_time
+            if callback:
+                callback(result)
+            return result
 
         # Check cache
         cache_key = self._compute_cache_key(netlist_path, output_path)
@@ -168,6 +204,7 @@ class SimulatorBridge:
             timeout = get_simulator_timeout(self.simulator)
 
         cmd = self._build_command(netlist_path, output_path, threads)
+        result.log += f"Command: {' '.join(cmd)}\n"
         self._cancelled = False
 
         try:
@@ -177,7 +214,7 @@ class SimulatorBridge:
             )
             stdout, stderr = self._process.communicate(timeout=timeout)
             result.raw_output = stdout
-            result.log = stdout + stderr
+            result.log += stdout + stderr
             result.success = (self._process.returncode == 0 and not self._cancelled)
 
             if self._cancelled:
@@ -188,12 +225,17 @@ class SimulatorBridge:
                 if stderr:
                     result.errors.append(stderr.strip())
 
-            if result.success and os.path.isfile(output_path):
-                result.waveforms = self._parse_raw(output_path)
+            if result.success:
+                if self.simulator == "GSPICE":
+                    result.waveforms = self._parse_gspice_stdout(stdout)
+                elif os.path.isfile(output_path):
+                    result.waveforms = self._parse_raw(output_path)
                 self._cache[cache_key] = result.waveforms
 
         except FileNotFoundError:
             result.errors.append(f"{self.simulator} not found: {self.exe_path}")
+        except OSError as exc:
+            result.errors.append(f"Could not launch {self.simulator}: {exc}")
         except subprocess.TimeoutExpired:
             if self._process:
                 self._process.kill()
@@ -205,6 +247,112 @@ class SimulatorBridge:
         if callback:
             callback(result)
         return result
+
+    def _safe_sim_name(self, sim_name: str) -> str:
+        """Return a filesystem-safe simulation deck basename."""
+        name = re.sub(r"[^A-Za-z0-9_.-]+", "_", sim_name or "sim").strip("._")
+        return name or "sim"
+
+    def _prepare_netlist_for_simulator(self, netlist: str) -> tuple[str, list[str]]:
+        """Apply small compatibility rewrites before launching a simulator.
+
+        GSPICE currently parses primitive devices directly, but not full
+        Cadence/ngspice PDK wrapper syntax. Keep the ADE-visible netlist
+        standard, then write a GSPICE-friendly deck for execution.
+        """
+        if self.simulator != "GSPICE":
+            return netlist, []
+
+        lines: list[str] = []
+        stripped_model_directives = 0
+        stripped_saves = 0
+        converted_sources = 0
+        converted_pdk_mos = 0
+
+        for raw_line in netlist.splitlines():
+            stripped = raw_line.strip()
+            if not stripped or stripped.startswith(("*", "$")):
+                lines.append(raw_line)
+                continue
+
+            tokens = stripped.split()
+            head = tokens[0]
+            upper_head = head.upper()
+
+            if upper_head in (".LIB", ".INCLUDE", ".INC"):
+                stripped_model_directives += 1
+                lines.append(f"* GSPICE compatibility: skipped {stripped}")
+                continue
+
+            if upper_head == ".SAVE":
+                stripped_saves += 1
+                lines.append(f"* GSPICE compatibility: skipped {stripped}")
+                continue
+
+            if upper_head[0] == "X":
+                converted = self._convert_gspice_pdk_mos(tokens)
+                if converted:
+                    lines.append(converted)
+                    converted_pdk_mos += 1
+                else:
+                    lines.append(f"* GSPICE compatibility: unsupported subckt skipped: {stripped}")
+                continue
+
+            if upper_head[0] in ("V", "I") and len(tokens) >= 5 and tokens[3].upper() == "DC":
+                lines.append(" ".join(tokens[:3] + [tokens[4]] + tokens[5:]))
+                converted_sources += 1
+                continue
+
+            lines.append(raw_line)
+
+        notes = []
+        if stripped_model_directives or stripped_saves or converted_sources or converted_pdk_mos:
+            notes.append("[GSPICE compatibility] Rewrote standard SPICE deck for current GSPICE parser.")
+        if converted_pdk_mos:
+            notes.append(f"[GSPICE compatibility] Converted {converted_pdk_mos} PDK MOS subckt instance(s) to primitive M devices.")
+        if stripped_model_directives:
+            notes.append(f"[GSPICE compatibility] Skipped {stripped_model_directives} .LIB/.INCLUDE directive(s); current GSPICE does not parse model libraries yet.")
+        if stripped_saves:
+            notes.append(f"[GSPICE compatibility] Skipped {stripped_saves} .SAVE directive(s); current GSPICE reports all node values it solves.")
+        if converted_sources:
+            notes.append(f"[GSPICE compatibility] Converted {converted_sources} DC source line(s) to GSPICE's simple source syntax.")
+
+        return "\n".join(lines) + ("\n" if netlist.endswith("\n") else ""), notes
+
+    def _convert_gspice_pdk_mos(self, tokens: list[str]) -> str:
+        """Convert known PDK MOS subckt instances to GSPICE primitive MOS lines."""
+        if len(tokens) < 6:
+            return ""
+
+        model_name = tokens[5].lower()
+        if not any(marker in model_name for marker in ("nmos", "pmos", "nfet", "pfet")):
+            return ""
+
+        inst_name = tokens[0]
+        if inst_name.upper().startswith("X"):
+            suffix = inst_name[1:] or inst_name
+            inst_name = suffix if suffix.upper().startswith("M") else "M" + suffix
+
+        mos_type = "PMOS" if any(marker in model_name for marker in ("pmos", "pfet")) else "NMOS"
+        params = self._normalize_gspice_mos_params(tokens[6:])
+        return " ".join([inst_name, *tokens[1:5], mos_type, *params])
+
+    def _normalize_gspice_mos_params(self, params: list[str]) -> list[str]:
+        """Keep GSPICE-supported MOS params and normalize common PDK aliases."""
+        normalized: list[str] = []
+        aliases = {
+            "w": "W",
+            "l": "L",
+        }
+        for param in params:
+            if "=" not in param:
+                continue
+            key, value = param.split("=", 1)
+            mapped_key = aliases.get(key.strip().lower())
+            if not mapped_key:
+                continue
+            normalized.append(f"{mapped_key}={value.strip()}")
+        return normalized
 
     def simulate_with_retry(self, netlist: str, sim_name: str = "sim",
                             threads: int = 4, callback=None,
@@ -262,14 +410,41 @@ class SimulatorBridge:
 
     def _build_command(self, netlist_path, output_path, threads):
         if self.simulator == "GSPICE":
-            return [self.exe_path, netlist_path,
-                    "--threads", str(threads), "-o", output_path]
+            return [self.exe_path, netlist_path, "--threads", str(threads)]
         elif self.simulator == "Ngspice":
             return [self.exe_path, "-b", "-r", output_path, netlist_path]
         elif self.simulator == "Xyce":
             return [self.exe_path, netlist_path,
                     "-o", output_path]
         return [self.exe_path, netlist_path]
+
+    def _parse_gspice_stdout(self, output: str) -> dict:
+        """Parse GSPICE's stdout table output into simple waveform arrays."""
+        waveforms: dict[str, list[float]] = {}
+        for line in output.splitlines():
+            if "Node " in line and "=" in line:
+                for node, value in re.findall(r"Node\s+(\d+)=([-+0-9.eE]+)V", line):
+                    waveforms.setdefault(f"node{node}", []).append(float(value))
+                continue
+            if "|" not in line:
+                continue
+            left, right = line.split("|", 1)
+            try:
+                t = float(left.strip())
+            except ValueError:
+                continue
+            values = []
+            for token in right.split():
+                try:
+                    values.append(float(token))
+                except ValueError:
+                    pass
+            if not values:
+                continue
+            waveforms.setdefault("time", []).append(t)
+            for idx, value in enumerate(values):
+                waveforms.setdefault(f"node{idx}", []).append(value)
+        return waveforms
 
     def _parse_raw(self, filepath: str) -> dict:
         """Parse SPICE raw output file (ASCII or binary)."""

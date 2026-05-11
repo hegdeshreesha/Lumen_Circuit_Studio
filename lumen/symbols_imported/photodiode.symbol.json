@@ -1,0 +1,66 @@
+{
+  "type": "symbol",
+  "name": "photodiode",
+  "library": "imported",
+  "prefix": "X",
+  "spice_model": "photodiode",
+  "pins": [
+    {
+      "name": "PIN1",
+      "x": 16.25,
+      "y": 0.0,
+      "direction": "inout",
+      "net_name": null
+    },
+    {
+      "name": "PIN2",
+      "x": -13.75,
+      "y": 0.0,
+      "direction": "inout",
+      "net_name": null
+    }
+  ],
+  "shapes": [
+    {
+      "type": "line",
+      "x1": 0.0,
+      "y1": -30.0,
+      "x2": 0.0,
+      "y2": -5.0
+    },
+    {
+      "type": "line",
+      "x1": 0.0,
+      "y1": 5.0,
+      "x2": 0.0,
+      "y2": 30.0
+    },
+    {
+      "type": "line",
+      "x1": -10.0,
+      "y1": -5.0,
+      "x2": 10.0,
+      "y2": -5.0
+    },
+    {
+      "type": "rect",
+      "x": 5.0,
+      "y": -2.5,
+      "w": 22.5,
+      "h": 5.0
+    },
+    {
+      "type": "rect",
+      "x": -32.5,
+      "y": -2.5,
+      "w": 37.5,
+      "h": 5.0
+    }
+  ],
+  "label": {
+    "text": "@symname",
+    "x": 15.0,
+    "y": 5.0
+  },
+  "parameters": []
+}

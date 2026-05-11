@@ -1,0 +1,83 @@
+{
+  "type": "symbol",
+  "name": "diode",
+  "library": "skywater_primitives",
+  "prefix": "D",
+  "spice_model": "diode",
+  "pins": [
+    {
+      "name": "d1",
+      "x": 0,
+      "y": -30,
+      "direction": "inout"
+    },
+    {
+      "name": "d0",
+      "x": 0,
+      "y": 30,
+      "direction": "inout"
+    }
+  ],
+  "shapes": [
+    {
+      "type": "line",
+      "x1": 0,
+      "y1": -30,
+      "x2": 0,
+      "y2": -5
+    },
+    {
+      "type": "line",
+      "x1": 0,
+      "y1": 5,
+      "x2": 0,
+      "y2": 30
+    },
+    {
+      "type": "polygon",
+      "points": [
+        [
+          0,
+          -5
+        ],
+        [
+          10,
+          5
+        ],
+        [
+          -10,
+          5
+        ]
+      ]
+    },
+    {
+      "type": "line",
+      "x1": -10,
+      "y1": -5,
+      "x2": -10,
+      "y2": 5
+    }
+  ],
+  "parameters": [
+    {
+      "name": "model",
+      "default": "D",
+      "description": "Model name"
+    },
+    {
+      "name": "area",
+      "default": "1e12",
+      "description": "Area multiplier"
+    },
+    {
+      "name": "perim",
+      "default": "4e6",
+      "description": "Perimeter"
+    }
+  ],
+  "label": {
+    "text": "@name",
+    "x": 15,
+    "y": 0
+  }
+}

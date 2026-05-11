@@ -1,0 +1,145 @@
+{
+  "type": "symbol",
+  "name": "nmos",
+  "library": "gf180mcu_primitives",
+  "prefix": "M",
+  "spice_model": "n_18_3p3",
+  "pins": [
+    {
+      "name": "D",
+      "x": 20,
+      "y": -30,
+      "direction": "inout"
+    },
+    {
+      "name": "G",
+      "x": -20,
+      "y": 0,
+      "direction": "input"
+    },
+    {
+      "name": "S",
+      "x": 20,
+      "y": 30,
+      "direction": "inout"
+    },
+    {
+      "name": "B",
+      "x": 20,
+      "y": 0,
+      "direction": "inout"
+    }
+  ],
+  "shapes": [
+    {
+      "type": "line",
+      "x1": 7.5,
+      "y1": -22.5,
+      "x2": 7.5,
+      "y2": 22.5
+    },
+    {
+      "type": "line",
+      "x1": -20,
+      "y1": 0,
+      "x2": 2.5,
+      "y2": 0
+    },
+    {
+      "type": "line",
+      "x1": 20,
+      "y1": -30,
+      "x2": 20,
+      "y2": -17.5
+    },
+    {
+      "type": "line",
+      "x1": 20,
+      "y1": 17.5,
+      "x2": 20,
+      "y2": 30
+    },
+    {
+      "type": "line",
+      "x1": 2.5,
+      "y1": -15,
+      "x2": 2.5,
+      "y2": 15
+    },
+    {
+      "type": "line",
+      "x1": 7.5,
+      "y1": -17.5,
+      "x2": 20,
+      "y2": -17.5
+    },
+    {
+      "type": "line",
+      "x1": 7.5,
+      "y1": 17.5,
+      "x2": 15,
+      "y2": 17.5
+    },
+    {
+      "type": "polygon",
+      "points": [
+        [
+          15,
+          15
+        ],
+        [
+          20,
+          17.5
+        ],
+        [
+          15,
+          20
+        ]
+      ]
+    },
+    {
+      "type": "polygon",
+      "points": [
+        [
+          20,
+          -2.5
+        ],
+        [
+          15,
+          0
+        ],
+        [
+          20,
+          2.5
+        ]
+      ]
+    }
+  ],
+  "parameters": [
+    {
+      "name": "W",
+      "default": "1u",
+      "description": "Width"
+    },
+    {
+      "name": "L",
+      "default": "180n",
+      "description": "Length"
+    },
+    {
+      "name": "nf",
+      "default": "1",
+      "description": "Number of fingers"
+    },
+    {
+      "name": "m",
+      "default": "1",
+      "description": "Multiplier"
+    }
+  ],
+  "label": {
+    "text": "@name",
+    "x": 5,
+    "y": -30
+  }
+}

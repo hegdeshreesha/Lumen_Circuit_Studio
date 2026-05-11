@@ -1,0 +1,122 @@
+{
+  "type": "symbol",
+  "name": "rsil",
+  "library": "ihp_primitives",
+  "prefix": "R",
+  "spice_model": "rsil",
+  "pins": [
+    {
+      "name": "P",
+      "x": 0,
+      "y": -30,
+      "direction": "inout"
+    },
+    {
+      "name": "M",
+      "x": 0,
+      "y": 30,
+      "direction": "inout"
+    }
+  ],
+  "shapes": [
+    {
+      "type": "line",
+      "x1": 0,
+      "y1": -30,
+      "x2": 0,
+      "y2": -20
+    },
+    {
+      "type": "line",
+      "x1": 0,
+      "y1": -20,
+      "x2": -7.5,
+      "y2": -17.5
+    },
+    {
+      "type": "line",
+      "x1": -7.5,
+      "y1": -17.5,
+      "x2": 7.5,
+      "y2": -12.5
+    },
+    {
+      "type": "line",
+      "x1": 7.5,
+      "y1": -12.5,
+      "x2": -7.5,
+      "y2": -7.5
+    },
+    {
+      "type": "line",
+      "x1": -7.5,
+      "y1": -7.5,
+      "x2": 7.5,
+      "y2": -2.5
+    },
+    {
+      "type": "line",
+      "x1": 7.5,
+      "y1": -2.5,
+      "x2": -7.5,
+      "y2": 2.5
+    },
+    {
+      "type": "line",
+      "x1": -7.5,
+      "y1": 2.5,
+      "x2": 7.5,
+      "y2": 7.5
+    },
+    {
+      "type": "line",
+      "x1": 7.5,
+      "y1": 7.5,
+      "x2": -7.5,
+      "y2": 12.5
+    },
+    {
+      "type": "line",
+      "x1": -7.5,
+      "y1": 12.5,
+      "x2": 7.5,
+      "y2": 17.5
+    },
+    {
+      "type": "line",
+      "x1": 7.5,
+      "y1": 17.5,
+      "x2": 0,
+      "y2": 20
+    },
+    {
+      "type": "line",
+      "x1": 0,
+      "y1": 20,
+      "x2": 0,
+      "y2": 30
+    }
+  ],
+  "parameters": [
+    {
+      "name": "W",
+      "default": "1",
+      "description": "Width"
+    },
+    {
+      "name": "L",
+      "default": "1",
+      "description": "Length"
+    },
+    {
+      "name": "m",
+      "default": "1",
+      "description": "Multiplier"
+    }
+  ],
+  "label": {
+    "text": "@name",
+    "x": 15,
+    "y": 0
+  }
+}

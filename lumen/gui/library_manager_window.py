@@ -313,7 +313,8 @@ class LibraryManagerWindow(QMainWindow):
                     }
                     self.cell_table.setRowCount(len(pdk.devices))
                     for row, dev in enumerate(pdk.devices):
-                        icon = cats.get(dev.category, "\u25fb")
+                        category = dev.category.value if hasattr(dev.category, "value") else str(dev.category)
+                        icon = cats.get(category, "\u25fb")
                         item = QTableWidgetItem(f" {icon}  {dev.name}")
                         item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                         self.cell_table.setItem(row, 0, item)

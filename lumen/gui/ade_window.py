@@ -2,6 +2,9 @@
 Lumen Circuit Studio — ADE (Analog Design Environment) Window
 Maestro-style tabbed simulation environment supporting all GSPICE analyses.
 """
+import os
+import traceback
+
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
     QTableWidget, QTableWidgetItem, QHeaderView, QComboBox,
@@ -17,7 +20,7 @@ from PyQt6.QtGui import QAction, QFont, QColor
 from lumen.core.database import LibraryDatabase
 from lumen.core.netlist import NetlistGenerator, NetlistDirectives
 from lumen.core.simulator import SimulatorBridge, SIMULATOR_INFO, get_supported_analyses, get_simulator_label
-from lumen.core.pdk import PDKRegistry
+from lumen.core.pdk_unified import PDKRegistry
 
 
 # All GSPICE-supported analyses
@@ -225,9 +228,7 @@ class OutputsWidget(QWidget):
         self.table.verticalHeader().setVisible(False)
         layout.addWidget(self.table)
 
-        # Add some defaults
-        for sig, expr in [("vout", "V(out)"), ("vin", "V(in)"), ("idd", "I(V0)")]:
-            self._add_entry(sig, expr)
+        # Start empty. Outputs should come from real schematic nets/sources.
 
     def _on_quick_expr(self, text):
         if text and text != "--- Quick Expressions ---":
@@ -326,6 +327,9 @@ class ParametricSweepWidget(QWidget):
                 if var:
                     lines.append(f".STEP PARAM {var} {start} {stop} {step}")
         return lines
+
+
+class MeasurementSetupWidget(QWidget):
     """Measurement setup UI for .MEASURE statements."""
 
     MEAS_TYPES = [
@@ -431,11 +435,13 @@ class StimulusEditorWidget(QWidget):
         hdr.addWidget(add_btn)
         layout.addLayout(hdr)
 
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["Source Name", "Type", "Parameters"])
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["Source Name", "+ Node", "- Node", "Type", "Parameters"])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
         self.table.verticalHeader().setVisible(False)
         layout.addWidget(self.table)
 
@@ -443,44 +449,53 @@ class StimulusEditorWidget(QWidget):
         r = self.table.rowCount()
         self.table.insertRow(r)
         self.table.setItem(r, 0, QTableWidgetItem("V1"))
+        self.table.setItem(r, 1, QTableWidgetItem("net1"))
+        self.table.setItem(r, 2, QTableWidgetItem("0"))
 
         type_combo = QComboBox()
         type_combo.addItems(self.STIM_TYPES)
         type_combo.currentTextChanged.connect(lambda t, row=r: self._update_params(row, t))
-        self.table.setCellWidget(r, 1, type_combo)
+        self.table.setCellWidget(r, 3, type_combo)
 
-        self.table.setItem(r, 2, QTableWidgetItem("DC 1.8"))
+        self.table.setItem(r, 4, QTableWidgetItem("1.8"))
 
     def _update_params(self, row, stim_type):
         defaults = {
-            "DC": "DC 1.8",
+            "DC": "1.8",
             "PULSE": "PULSE(0 1.8 1n 1n 1n 5n 10n)",
             "SIN": "SIN(0.9 0.9 1G 1n 0)",
             "PWL": "PWL(0 0 1n 1.8 10n 1.8)",
             "SFFM": "SFFM(1.8 0.1 1G 5 1M)",
             "EXP": "EXP(0 1.8 1n 100n 5n 200n)",
         }
-        self.table.setItem(row, 2, QTableWidgetItem(defaults.get(stim_type, "")))
+        self.table.setItem(row, 4, QTableWidgetItem(defaults.get(stim_type, "")))
 
     def get_stimulus_lines(self) -> list[str]:
         lines = []
         for r in range(self.table.rowCount()):
             name_item = self.table.item(r, 0)
-            type_widget = self.table.cellWidget(r, 1)
-            param_item = self.table.item(r, 2)
+            plus_item = self.table.item(r, 1)
+            minus_item = self.table.item(r, 2)
+            type_widget = self.table.cellWidget(r, 3)
+            param_item = self.table.item(r, 4)
 
-            if not name_item or not type_widget or not param_item:
+            if not name_item or not plus_item or not minus_item or not type_widget or not param_item:
                 continue
 
             name = name_item.text().strip()
+            plus = plus_item.text().strip()
+            minus = minus_item.text().strip()
             stim_type = type_widget.currentText()
             params = param_item.text().strip()
 
-            if not name or not params:
+            if not name or not plus or not minus or not params:
                 continue
 
             lines.append(f"* Stimulus: {name}")
-            lines.append(f"{name} ... {stim_type} {params}")
+            if stim_type == "DC":
+                lines.append(f"{name} {plus} {minus} DC {params}")
+            else:
+                lines.append(f"{name} {plus} {minus} {params}")
         return lines
 
 
@@ -551,14 +566,15 @@ class ADEWindow(QMainWindow):
     """Maestro-style Analog Design Environment window."""
 
     def __init__(self, db: LibraryDatabase, library: str, cell: str,
-                 ciw=None, parent=None):
+                 ciw=None, pdk_registry=None, parent=None):
         super().__init__(parent)
         self.db = db
         self.library = library
         self.cell = cell
         self.ciw = ciw
         self._waveform_viewers = []
-        self._pdk_registry = PDKRegistry()
+        self._startup_warnings: list[str] = []
+        self._pdk_registry = pdk_registry or self._create_pdk_registry()
 
         self.setWindowTitle(f"Lumen ADE — {cell} [{library}]")
         self.setMinimumSize(950, 650)
@@ -570,6 +586,180 @@ class ADEWindow(QMainWindow):
         self._create_menus()
         self._create_toolbar()
         self._create_status_bar()
+        for warning in self._startup_warnings:
+            self._log(warning)
+
+    def _create_pdk_registry(self):
+        """Create a PDK registry scoped to the design workspace."""
+        workspace = str(getattr(self.db, "workspace", "")) or ""
+        try:
+            return PDKRegistry(workspace)
+        except Exception as exc:
+            self._startup_warnings.append(f"PDK registry unavailable: {exc}")
+            return None
+
+    def _infer_pdk_name(self) -> str:
+        """Infer the PDK from placed schematic instances or active registry state."""
+        if self._pdk_registry:
+            try:
+                data = self.db.load_view(self.library, self.cell, "schematic") or {}
+                for inst in data.get("instances", []):
+                    lib_name = inst.get("library", "")
+                    if lib_name.startswith("pdk:"):
+                        pdk_name = lib_name.split(":", 1)[1]
+                        if self._pdk_registry.get_pdk(pdk_name):
+                            return pdk_name
+            except Exception:
+                pass
+
+            try:
+                active_name = self._pdk_registry.get_active_name()
+                if active_name:
+                    return active_name
+            except Exception:
+                pass
+        return ""
+
+    def _selected_pdk_name(self) -> str:
+        """Return the ADE-selected PDK, falling back to schematic/active inference."""
+        pdk_name = self.pdk_combo.currentData() if hasattr(self, "pdk_combo") else ""
+        return pdk_name or self._infer_pdk_name()
+
+    def _used_pdk_devices(self, pdk_name: str) -> list:
+        """Return PDK devices used by this schematic."""
+        if not pdk_name or not self._pdk_registry:
+            return []
+        devices = []
+        try:
+            data = self.db.load_view(self.library, self.cell, "schematic") or {}
+            for inst in data.get("instances", []):
+                if inst.get("library") != f"pdk:{pdk_name}":
+                    continue
+                dev = self._pdk_registry.find_device(inst.get("cell", ""), pdk_name)
+                if dev and dev not in devices:
+                    devices.append(dev)
+        except Exception:
+            pass
+        return devices
+
+    def _configure_pdk_model_directives(self, directives: NetlistDirectives,
+                                        pdk_name: str, process: str = ""):
+        """Add Cadence/ADE-style model library selections to the netlist."""
+        if not pdk_name or not self._pdk_registry:
+            return
+        pdk = self._pdk_registry.get_pdk(pdk_name)
+        if not pdk:
+            return
+
+        model_files = list(getattr(pdk, "model_files", []) or [])
+        if not model_files:
+            return
+
+        used_devices = self._used_pdk_devices(pdk_name)
+        added = set()
+
+        def add_lib(path: str, section: str = ""):
+            key = ("lib", path, section)
+            if path and key not in added:
+                directives.libs.append({"path": path, "section": section})
+                added.add(key)
+
+        def add_include(path: str):
+            key = ("include", path, "")
+            if path and key not in added:
+                directives.includes.append({"path": path})
+                added.add(key)
+
+        if pdk_name == "ihp_sg13g2":
+            wanted = self._ihp_model_file_names(used_devices)
+            used_wrappers = set()
+            preferred = sorted(
+                model_files,
+                key=lambda mf: (
+                    0 if f"{os.sep}ngspice{os.sep}" in mf.path.lower() else 1,
+                    mf.path.lower(),
+                ),
+            )
+            for mf in preferred:
+                filename = os.path.basename(mf.path)
+                if filename in used_wrappers:
+                    continue
+                if filename not in wanted:
+                    continue
+                section = self._ihp_section_for_file(filename, process or "tt")
+                add_lib(mf.path, section)
+                used_wrappers.add(filename)
+            return
+
+        for mf in model_files:
+            suffix = os.path.splitext(mf.path)[1].lower()
+            if suffix == ".lib":
+                section = self._match_lib_section(getattr(mf, "corners", []), process)
+                if section:
+                    add_lib(mf.path, section)
+                else:
+                    add_include(mf.path)
+            elif suffix in (".scs", ".spice", ".sp", ".model"):
+                add_include(mf.path)
+
+    def _ihp_model_file_names(self, devices: list) -> set[str]:
+        """Choose IHP corner wrapper files needed by the placed devices."""
+        if not devices:
+            return {
+                "cornerMOSlv.lib", "cornerMOShv.lib", "cornerRES.lib",
+                "cornerCAP.lib", "cornerDIO.lib", "cornerHBT.lib",
+            }
+
+        wanted = set()
+        for dev in devices:
+            name = getattr(dev, "name", "").lower()
+            category = str(getattr(getattr(dev, "category", ""), "value", getattr(dev, "category", ""))).lower()
+            if name.startswith("sg13_lv_"):
+                wanted.add("cornerMOSlv.lib")
+            elif name.startswith("sg13_hv_"):
+                wanted.add("cornerMOShv.lib")
+            elif "res" in category or name.startswith(("r", "rsil", "rppd")):
+                wanted.add("cornerRES.lib")
+            elif "cap" in category or "cap" in name or name == "cmim":
+                wanted.add("cornerCAP.lib")
+            elif "diode" in category or "dio" in name:
+                wanted.add("cornerDIO.lib")
+            elif "bjt" in category or name.startswith(("npn", "pnp")):
+                wanted.add("cornerHBT.lib")
+        return wanted or {"cornerMOSlv.lib"}
+
+    def _ihp_section_for_file(self, filename: str, process: str) -> str:
+        """Map ADE corner names to IHP .LIB sections."""
+        proc = (process or "tt").lower()
+        if proc in ("typ", "typical"):
+            proc = "tt"
+
+        if filename in ("cornerMOSlv.lib", "cornerMOShv.lib"):
+            return f"mos_{proc if proc in ('tt', 'ss', 'ff', 'sf', 'fs') else 'tt'}"
+        if filename == "cornerDIO.lib":
+            return f"dio_{proc if proc in ('tt', 'ss', 'ff') else 'tt'}"
+        if filename == "cornerRES.lib":
+            return "res_typ" if proc in ("tt", "typ") else "res_bcs"
+        if filename == "cornerCAP.lib":
+            return "cap_typ" if proc in ("tt", "typ") else "cap_bcs"
+        if filename == "cornerHBT.lib":
+            return "hbt_typ" if proc in ("tt", "typ") else "hbt_bcs"
+        return proc
+
+    def _match_lib_section(self, sections: list[str], process: str) -> str:
+        """Find the closest .LIB section for a requested process corner."""
+        if not sections:
+            return ""
+        proc = (process or "").lower()
+        if not proc:
+            return sections[0]
+        for section in sections:
+            if section.lower() == proc:
+                return section
+        for section in sections:
+            if proc in section.lower():
+                return section
+        return sections[0]
 
     def _build_ui(self):
         splitter = QSplitter(Qt.Orientation.Vertical)
@@ -739,8 +929,17 @@ class ADEWindow(QMainWindow):
         hdr.addWidget(QLabel("PDK:"))
         self.pdk_combo = QComboBox()
         self.pdk_combo.addItem("None")
-        for pdk in self._pdk_registry.get_all_pdks():
-            self.pdk_combo.addItem(pdk.display_name, pdk.name)
+        if self._pdk_registry:
+            try:
+                for pdk in self._pdk_registry.get_all_pdks():
+                    self.pdk_combo.addItem(pdk.display_name, pdk.name)
+            except Exception as exc:
+                self._startup_warnings.append(f"Could not load PDK list: {exc}")
+        default_pdk = self._infer_pdk_name()
+        if default_pdk:
+            idx = self.pdk_combo.findData(default_pdk)
+            if idx >= 0:
+                self.pdk_combo.setCurrentIndex(idx)
         hdr.addWidget(self.pdk_combo)
 
         # Corner run mode
@@ -906,17 +1105,15 @@ class ADEWindow(QMainWindow):
     def _build_full_netlist(self) -> str:
         gen = NetlistGenerator(self.db)
 
-        # Configure PDK model includes
-        pdk_name = self.pdk_combo.currentData()
-        if pdk_name:
-            pdk = self._pdk_registry.get_pdk(pdk_name)
-            if pdk and pdk.installed:
-                model_path = os.path.join(pdk.install_path, "models")
-                if os.path.isdir(model_path):
-                    gen.set_pdk_model(model_path)
-
         # Configure directives from ADE
         directives = NetlistDirectives()
+        corner_data = self.get_corner_data()
+        process = corner_data[0]["process"] if corner_data else ""
+        self._configure_pdk_model_directives(
+            directives,
+            self._selected_pdk_name(),
+            process,
+        )
 
         # Design variables as .PARAM
         variables = self.var_widget.get_variables()
@@ -939,6 +1136,13 @@ class ADEWindow(QMainWindow):
         lines = base.rstrip().split("\n")
         while lines and (lines[-1].strip() == ".END" or lines[-1].strip() == ""):
             lines.pop()
+
+        # Stimulus definitions
+        stimulus_lines = self.stimulus_widget.get_stimulus_lines()
+        if stimulus_lines:
+            lines.append("")
+            lines.append("* Stimulus")
+            lines.extend(stimulus_lines)
 
         # Analyses
         for name, widget in self._analysis_tabs.items():
@@ -985,16 +1189,12 @@ class ADEWindow(QMainWindow):
         for corner in corners:
             gen = NetlistGenerator(self.db)
 
-            # Configure PDK model with corner
-            pdk_name = self.pdk_combo.currentData()
-            if pdk_name:
-                pdk = self._pdk_registry.get_pdk(pdk_name)
-                if pdk and pdk.installed:
-                    model_path = os.path.join(pdk.install_path, "models")
-                    if os.path.isdir(model_path):
-                        gen.set_pdk_model(model_path, corner["process"])
-
             directives = NetlistDirectives()
+            self._configure_pdk_model_directives(
+                directives,
+                self._selected_pdk_name(),
+                corner["process"],
+            )
             variables = self.var_widget.get_variables()
             if variables:
                 directives.params.update(variables)
@@ -1014,6 +1214,12 @@ class ADEWindow(QMainWindow):
             lines = base.rstrip().split("\n")
             while lines and (lines[-1].strip() == ".END" or lines[-1].strip() == ""):
                 lines.pop()
+
+            stimulus_lines = self.stimulus_widget.get_stimulus_lines()
+            if stimulus_lines:
+                lines.append("")
+                lines.append("* Stimulus")
+                lines.extend(stimulus_lines)
 
             for name, widget in self._analysis_tabs.items():
                 lines.append("")
@@ -1050,9 +1256,19 @@ class ADEWindow(QMainWindow):
     # ── Actions ───────────────────────────────────────────────
 
     def _on_view_netlist(self):
-        netlist = self._build_full_netlist()
-        self.log_view.setPlainText(netlist)
-        self._log("Netlist generated")
+        try:
+            netlist = self._build_full_netlist()
+            self.log_view.setPlainText(netlist)
+            self._log("Netlist generated")
+        except Exception as exc:
+            details = traceback.format_exc()
+            self.log_view.setPlainText(details)
+            self._log(f"Netlist generation failed: {exc}")
+            QMessageBox.critical(
+                self,
+                "Netlist Generation Failed",
+                f"Could not generate netlist for {self.library}/{self.cell}.\n\n{exc}",
+            )
 
     def _on_run(self):
         if not self._analysis_tabs:
@@ -1062,7 +1278,18 @@ class ADEWindow(QMainWindow):
         corner_mode = self.corner_mode_combo.currentText()
 
         if corner_mode == "Single":
-            netlist = self._build_full_netlist()
+            try:
+                netlist = self._build_full_netlist()
+            except Exception as exc:
+                details = traceback.format_exc()
+                self.log_view.setPlainText(details)
+                self._log(f"Netlist generation failed: {exc}")
+                QMessageBox.critical(
+                    self,
+                    "Netlist Generation Failed",
+                    f"Could not generate netlist for {self.library}/{self.cell}.\n\n{exc}",
+                )
+                return
             self.log_view.setPlainText(netlist)
             sim_label = get_simulator_label(self._current_simulator)
             self._log(f"Starting {sim_label} simulation...")
@@ -1079,7 +1306,18 @@ class ADEWindow(QMainWindow):
             self._handle_simulation_result(result, "Single")
 
         elif corner_mode in ("All Corners", "Selected"):
-            netlists = self._build_corner_netlists()
+            try:
+                netlists = self._build_corner_netlists()
+            except Exception as exc:
+                details = traceback.format_exc()
+                self.log_view.setPlainText(details)
+                self._log(f"Corner netlist generation failed: {exc}")
+                QMessageBox.critical(
+                    self,
+                    "Netlist Generation Failed",
+                    f"Could not generate corner netlists for {self.library}/{self.cell}.\n\n{exc}",
+                )
+                return
             sim_label = get_simulator_label(self._current_simulator)
             self._log(f"Starting {sim_label} multi-corner simulation ({len(netlists)} corners)...")
             self.statusBar().showMessage(f"Simulating {len(netlists)} corners...")
@@ -1127,6 +1365,8 @@ class ADEWindow(QMainWindow):
                 self.log_view.append(f"\n{result.log}")
         else:
             self._log(f"[{run_name}] Simulation FAILED")
+            if result.log:
+                self.log_view.append(f"\n{result.log}")
             for e in result.errors:
                 self._log(f"  {e}")
 

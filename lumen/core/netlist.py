@@ -10,7 +10,7 @@ Supports two connectivity models:
 """
 import os
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Any
 from lumen.core.database import LibraryDatabase
 from lumen.core.connectivity import ConnectivityEngine
 
@@ -44,6 +44,7 @@ class NetlistGenerator:
         self._pdk_corner: str = ""
         self._use_connectivity = use_connectivity
         self._connectivity: Optional[ConnectivityEngine] = None
+        self._pdk_registry: Any = None
 
     def set_pdk_model(self, model_path: str, corner: str = ""):
         """Set PDK model file path and optional corner for .lib inclusion."""
@@ -134,9 +135,29 @@ class NetlistGenerator:
         """Generate .include and .lib directives for PDK model files."""
         lines = []
         for inc in self._directives.includes:
-            lines.append(f".INCLUDE \"{inc}\"")
+            if isinstance(inc, dict):
+                path = inc.get("path", "")
+            else:
+                path = str(inc)
+            if path:
+                lines.append(f".INCLUDE \"{path}\"")
         for lib_entry in self._directives.libs:
-            lines.append(f".LIB \"{lib_entry}\"")
+            if isinstance(lib_entry, dict):
+                path = lib_entry.get("path", "")
+                section = lib_entry.get("section", "")
+                if path and section:
+                    lines.append(f".LIB \"{path}\" {section}")
+                elif path:
+                    lines.append(f".LIB \"{path}\"")
+            elif isinstance(lib_entry, (tuple, list)):
+                path = lib_entry[0] if len(lib_entry) > 0 else ""
+                section = lib_entry[1] if len(lib_entry) > 1 else ""
+                if path and section:
+                    lines.append(f".LIB \"{path}\" {section}")
+                elif path:
+                    lines.append(f".LIB \"{path}\"")
+            else:
+                lines.append(f".LIB \"{lib_entry}\"")
         if self._pdk_model_path:
             if self._pdk_corner:
                 lines.append(f".LIB \"{self._pdk_model_path}\" {self._pdk_corner}")
@@ -223,6 +244,183 @@ class NetlistGenerator:
         if self._connectivity:
             return self._connectivity.get_warnings()
         return list(self._warnings)
+
+    def _get_pdk_registry(self):
+        """Lazily create the unified PDK registry bound to this workspace."""
+        if self._pdk_registry is not None:
+            return self._pdk_registry
+        try:
+            from lumen.core.pdk_unified import PDKRegistry
+            workspace = str(getattr(self.db, "workspace", ""))
+            self._pdk_registry = PDKRegistry(workspace)
+        except Exception:
+            self._pdk_registry = False
+        return self._pdk_registry or None
+
+    def _pdk_name_from_library(self, library: str) -> str:
+        """Extract PDK name from a `pdk:<name>` virtual library string."""
+        if not library or not library.startswith("pdk:"):
+            return ""
+        return library.split(":", 1)[1].strip()
+
+    def _resolve_pdk_device(self, library: str, cell: str):
+        """Resolve a PDK device for a virtual `pdk:<name>` library cell."""
+        pdk_name = self._pdk_name_from_library(library)
+        if not pdk_name:
+            return None
+        registry = self._get_pdk_registry()
+        if not registry:
+            return None
+
+        device = registry.find_device(cell, pdk_name)
+        if device:
+            return device
+
+        cell_lc = cell.lower()
+        for dev in registry.get_devices(pdk_name):
+            if dev.name.lower() == cell_lc:
+                return dev
+            if getattr(dev, "model", "").lower() == cell_lc:
+                return dev
+            if getattr(dev, "component_name", "").lower() == cell_lc:
+                return dev
+        return None
+
+    def _get_symbol_or_generated(self, library: str, cell: str) -> Optional[dict]:
+        """Load DB symbol; if missing for PDK cells, generate from PDK metadata."""
+        sym = self.db.load_view(library, cell, "symbol")
+        if sym:
+            return sym
+
+        pdk_name = self._pdk_name_from_library(library)
+        if not pdk_name:
+            return None
+
+        device = self._resolve_pdk_device(library, cell)
+        if not device:
+            return None
+
+        # Prefer cached symbol payload embedded in the device.
+        sym_data = getattr(device, "symbol_data", None)
+        if isinstance(sym_data, dict):
+            return sym_data
+
+        try:
+            from lumen.core.pdk import generate_symbol_data
+            return generate_symbol_data(device, pdk_name)
+        except Exception as e:
+            self._warnings.append(
+                f"Failed to generate PDK symbol for {library}/{cell}: {e}"
+            )
+            return None
+
+    def _pins_for_instance(self, library: str, cell: str) -> list[dict]:
+        """Return symbol-style pin dictionaries for an instance."""
+        sym = self._get_symbol_or_generated(library, cell)
+        if sym and isinstance(sym.get("pins", []), list):
+            return sym.get("pins", [])
+
+        dev = self._resolve_pdk_device(library, cell)
+        if not dev:
+            return []
+
+        pins: list[dict] = []
+        for pin in getattr(dev, "pins", []):
+            if isinstance(pin, dict):
+                pins.append({
+                    "name": pin.get("name", ""),
+                    "x": pin.get("x", 0),
+                    "y": pin.get("y", 0),
+                    "net_name": pin.get("net_name"),
+                })
+            else:
+                pins.append({
+                    "name": getattr(pin, "name", ""),
+                    "x": getattr(pin, "x", 0),
+                    "y": getattr(pin, "y", 0),
+                    "net_name": getattr(pin, "net_name", None),
+                })
+        return pins
+
+    def _pdk_term_order(self, device: Any, fallback_pins: list[dict]) -> list[str]:
+        """Resolve terminal order for netlisting, CDF-style."""
+        order = list(getattr(device, "term_order", []) or [])
+        if order:
+            return order
+        if fallback_pins:
+            return [p.get("name", "") for p in fallback_pins if p.get("name", "")]
+        return [
+            getattr(p, "name", "")
+            for p in getattr(device, "pins", [])
+            if getattr(p, "name", "")
+        ]
+
+    def _pdk_param_string(self, device: Any, inst_params: dict) -> str:
+        """Format instance parameters using CDF-like ordered lists."""
+        if not isinstance(inst_params, dict):
+            inst_params = {}
+
+        defaults: dict[str, str] = {}
+        for p in getattr(device, "parameters", []) or []:
+            if isinstance(p, dict):
+                n = p.get("name")
+                if n:
+                    defaults[str(n)] = str(p.get("default", ""))
+            else:
+                n = getattr(p, "name", "")
+                if n:
+                    defaults[str(n)] = str(getattr(p, "default", ""))
+
+        ordered = list(getattr(device, "inst_parameters", []) or defaults.keys())
+        optional = list(getattr(device, "other_parameters", []) or [])
+
+        parts: list[str] = []
+        emitted: set[str] = set()
+
+        aliases = {
+            "w": ["W", "width"],
+            "l": ["L", "length"],
+            "ng": ["ng", "nf", "NF"],
+            "m": ["m", "mult", "MULT"],
+        }
+
+        def get_param_value(name: str):
+            for candidate in [name] + aliases.get(name, []):
+                if candidate in inst_params:
+                    return inst_params.get(candidate)
+                for key, val in inst_params.items():
+                    if key.lower() == candidate.lower():
+                        return val
+            if name in defaults:
+                return defaults[name]
+            for key, val in defaults.items():
+                if key.lower() == name.lower():
+                    return val
+            return ""
+
+        for name in ordered + optional:
+            if name in emitted:
+                continue
+            val = get_param_value(name)
+            if val not in ("", None):
+                parts.append(f"{name}={val}")
+                emitted.add(name)
+
+        for key, val in inst_params.items():
+            consumed = False
+            for emitted_name in emitted:
+                alias_names = [emitted_name] + aliases.get(emitted_name, [])
+                if any(key.lower() == alias.lower() for alias in alias_names):
+                    consumed = True
+                    break
+            if consumed or key in emitted:
+                continue
+            if val in ("", None):
+                continue
+            parts.append(f"{key}={val}")
+            emitted.add(key)
+
+        return " ".join(parts)
 
     # ── Net Map Construction ──────────────────────────────────
 
@@ -331,17 +529,17 @@ class NetlistGenerator:
         for inst in data.get("instances", []):
             iname = inst.get("name", "?")
             cell_name = inst.get("cell", "")
+            lib_name = inst.get("library", "")
             ix, iy = snap(inst.get("x", 0)), snap(inst.get("y", 0))
 
-            # Load symbol to get pin positions
-            sym = self.db.load_view(
-                inst.get("library", ""), cell_name, "symbol")
-            if not sym:
+            pins = self._pins_for_instance(lib_name, cell_name)
+            if not pins:
                 self._errors.append(
-                    f"Cannot find symbol for {iname} ({cell_name})")
+                    f"Cannot find symbol/pins for {iname} ({lib_name}/{cell_name})"
+                )
                 continue
 
-            for pin in sym.get("pins", []):
+            for pin in pins:
                 pin_name = pin["name"]
                 px = ix + snap(pin["x"])
                 py = iy + snap(pin["y"])
@@ -402,10 +600,8 @@ class NetlistGenerator:
             if cell_name in ("gnd", "vdd"):
                 continue
 
-            # Load symbol to get pin positions
-            sym = self.db.load_view(lib_name, cell_name, "symbol")
-            if sym:
-                pins = sym.get("pins", [])
+            pins = self._pins_for_instance(lib_name, cell_name)
+            if pins:
                 self._connectivity.add_instance_pins(iname, lib_name, cell_name, ix, iy, pins)
 
         # Get net mapping from connectivity engine
@@ -447,11 +643,11 @@ class NetlistGenerator:
             lib_name = inst.get("library", "")
             cell_name = inst.get("cell", "")
 
-            sym = self.db.load_view(lib_name, cell_name, "symbol")
-            if not sym:
+            pins = self._pins_for_instance(lib_name, cell_name)
+            if not pins:
                 continue
 
-            for pin in sym.get("pins", []):
+            for pin in pins:
                 key = f"{iname}.{pin['name']}"
                 if key not in pin_net_map:
                     # Assign auto-generated net name
@@ -499,9 +695,49 @@ class NetlistGenerator:
             lib_name = inst.get("library", "")
             params = inst.get("params", {})
 
+            sym = self._get_symbol_or_generated(lib_name, cell_name)
+            pdk_device = self._resolve_pdk_device(lib_name, cell_name)
+
+            # PDK/CDF-style path: netlist directly from unified device metadata.
+            if pdk_device:
+                pins = self._pins_for_instance(lib_name, cell_name)
+                pin_order = self._pdk_term_order(pdk_device, pins)
+                if not pin_order:
+                    self._warnings.append(
+                        f"Skipping {iname}: no terminal order for {lib_name}/{cell_name}"
+                    )
+                    continue
+
+                nets = []
+                for pname in pin_order:
+                    key = f"{iname}.{pname}"
+                    nets.append(net_map.get(key, "?"))
+
+                component_name = (
+                    getattr(pdk_device, "component_name", "")
+                    or getattr(pdk_device, "model", "")
+                    or cell_name
+                )
+                if component_name in ("gnd", "vdd", "0", "VDD"):
+                    continue
+
+                net_str = " ".join(nets)
+                param_str = self._pdk_param_string(pdk_device, params)
+                prefix = getattr(pdk_device, "prefix", "") or ""
+                full_name = iname
+                if prefix and not iname.upper().startswith(prefix.upper()):
+                    full_name = f"{prefix}{iname}"
+                line = f"{full_name} {net_str} {component_name}"
+                if param_str:
+                    line += f" {param_str}"
+                lines.append(line)
+                continue
+
             # Skip special instances (gnd, vdd)
-            sym = self.db.load_view(lib_name, cell_name, "symbol")
             if not sym:
+                self._warnings.append(
+                    f"Skipping {iname}: missing symbol {lib_name}/{cell_name}"
+                )
                 continue
             spice_model = sym.get("spice_model", "")
             if spice_model in ("gnd", "vdd"):

@@ -1,0 +1,156 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Lumen PDK Manifest",
+  "description": "Canonical PDK manifest for Lumen Circuit Studio",
+  "type": "object",
+  "required": ["name", "display_name", "foundry", "process", "node", "version", "schema_version"],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0",
+      "description": "PDK manifest schema version"
+    },
+    "name": {
+      "type": "string",
+      "description": "PDK internal name (e.g., 'sky130', 'ihp_sg13g2')"
+    },
+    "display_name": {
+      "type": "string",
+      "description": "Human-readable PDK name"
+    },
+    "foundry": {
+      "type": "string",
+      "description": "Foundry name"
+    },
+    "process": {
+      "type": "string",
+      "description": "Process name"
+    },
+    "node": {
+      "type": "string",
+      "description": "Technology node (e.g., '130nm', '180nm', '28nm')"
+    },
+    "version": {
+      "type": "string",
+      "description": "PDK version"
+    },
+    "description": {
+      "type": "string",
+      "description": "PDK description"
+    },
+    "license": {
+      "type": "string",
+      "description": "License identifier"
+    },
+    "url": {
+      "type": "string",
+      "description": "PDK repository or documentation URL"
+    },
+    "author": {
+      "type": "string",
+      "description": "PDK author/maintainer"
+    },
+    "tags": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Tags for categorization (e.g., 'cmos', 'bicmos', 'open-source')"
+    },
+    "paths": {
+      "type": "object",
+      "properties": {
+        "models": {"type": "string", "description": "Relative path to model files"},
+        "tech": {"type": "string", "description": "Relative path to tech files"},
+        "cells": {"type": "string", "description": "Relative path to parameterized cells"},
+        "symbols": {"type": "string", "description": "Relative path to existing symbols"}
+      }
+    },
+    "devices": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "category", "prefix", "model"],
+        "properties": {
+          "name": {"type": "string"},
+          "category": {
+            "type": "string",
+            "enum": ["MOSFET", "Resistor", "Capacitor", "Diode", "BJT", "Inductor", "Source", "Switch", "Other"]
+          },
+          "prefix": {"type": "string"},
+          "model": {"type": "string"},
+          "description": {"type": "string"},
+          "pins": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["name"],
+              "properties": {
+                "name": {"type": "string"},
+                "direction": {"type": "string"},
+                "x": {"type": "number"},
+                "y": {"type": "number"}
+              }
+            }
+          },
+          "parameters": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["name"],
+              "properties": {
+                "name": {"type": "string"},
+                "default": {"type": "string"},
+                "description": {"type": "string"},
+                "unit": {"type": "string"}
+              }
+            }
+          },
+          "constraints": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["param"],
+              "properties": {
+                "param": {"type": "string"},
+                "min_value": {"type": "number"},
+                "max_value": {"type": "number"},
+                "unit": {"type": "string"},
+                "description": {"type": "string"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "layers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "gds_number"],
+        "properties": {
+          "name": {"type": "string"},
+          "gds_number": {"type": "integer"},
+          "gds_datatype": {"type": "integer", "default": 0},
+          "purpose": {"type": "string", "default": "drawing"},
+          "color": {"type": "string"},
+          "description": {"type": "string"},
+          "min_width": {"type": "number"},
+          "min_spacing": {"type": "number"}
+        }
+      }
+    },
+    "corners": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": {"type": "string"},
+          "description": {"type": "string"},
+          "temperature": {"type": "number"},
+          "voltage": {"type": "number"},
+          "lib_section": {"type": "string"}
+        }
+      }
+    }
+  }
+}

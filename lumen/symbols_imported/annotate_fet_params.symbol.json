@@ -1,0 +1,30 @@
+{
+  "type": "symbol",
+  "name": "annotate_fet_params",
+  "library": "imported",
+  "prefix": "X",
+  "spice_model": "annotate_fet_params",
+  "pins": [],
+  "shapes": [
+    {
+      "type": "line",
+      "x1": 0.0,
+      "y1": -0.0,
+      "x2": 0.0,
+      "y2": 10.0
+    },
+    {
+      "type": "line",
+      "x1": -0.0,
+      "y1": -0.0,
+      "x2": 10.0,
+      "y2": -0.0
+    }
+  ],
+  "label": {
+    "text": "@ref",
+    "x": 0.0,
+    "y": 0.0
+  },
+  "parameters": []
+}

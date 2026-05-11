@@ -1,0 +1,101 @@
+{
+  "type": "symbol",
+  "name": "npn_05v5",
+  "library": "imported",
+  "prefix": "X",
+  "spice_model": "npn_05v5",
+  "pins": [
+    {
+      "name": "PIN1",
+      "x": -13.75,
+      "y": 20.0,
+      "direction": "inout",
+      "net_name": null
+    },
+    {
+      "name": "PIN2",
+      "x": 1.25,
+      "y": -20.0,
+      "direction": "in",
+      "net_name": null
+    },
+    {
+      "name": "PIN3",
+      "x": 16.25,
+      "y": 20.0,
+      "direction": "inout",
+      "net_name": null
+    },
+    {
+      "name": "PIN4",
+      "x": 1.25,
+      "y": 20.0,
+      "direction": "inout",
+      "net_name": null
+    }
+  ],
+  "shapes": [
+    {
+      "type": "line",
+      "x1": 0.0,
+      "y1": -30.0,
+      "x2": 0.0,
+      "y2": 30.0
+    },
+    {
+      "type": "line",
+      "x1": -20.0,
+      "y1": 0.0,
+      "x2": 0.0,
+      "y2": 0.0
+    },
+    {
+      "type": "line",
+      "x1": 0.0,
+      "y1": 10.0,
+      "x2": 20.0,
+      "y2": 30.0
+    },
+    {
+      "type": "line",
+      "x1": 0.0,
+      "y1": -10.0,
+      "x2": 20.0,
+      "y2": -30.0
+    },
+    {
+      "type": "rect",
+      "x": -32.5,
+      "y": 17.5,
+      "w": 37.5,
+      "h": 5.0
+    },
+    {
+      "type": "rect",
+      "x": -2.5,
+      "y": -22.5,
+      "w": 7.5,
+      "h": 5.0
+    },
+    {
+      "type": "rect",
+      "x": 5.0,
+      "y": 17.5,
+      "w": 22.5,
+      "h": 5.0
+    },
+    {
+      "type": "rect",
+      "x": -2.5,
+      "y": 17.5,
+      "w": 7.5,
+      "h": 5.0
+    }
+  ],
+  "label": {
+    "text": "@name",
+    "x": 22.5,
+    "y": -26.25
+  },
+  "parameters": []
+}
