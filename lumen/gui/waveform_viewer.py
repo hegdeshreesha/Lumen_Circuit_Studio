@@ -14,6 +14,7 @@ from PyQt6.QtGui import (
     QAction, QPainter, QPen, QBrush, QColor, QFont,
     QPainterPath, QWheelEvent
 )
+from lumen.gui.branding import apply_window_branding
 
 import math
 
@@ -300,6 +301,7 @@ class WaveformViewerWindow(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Lumen — Waveform Viewer")
+        apply_window_branding(self)
         self.setMinimumSize(800, 500)
         self.resize(1100, 650)
 

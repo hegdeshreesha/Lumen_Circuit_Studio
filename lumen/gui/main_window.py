@@ -16,12 +16,13 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QTextEdit
 )
 from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QAction, QKeySequence, QIcon
+from PyQt6.QtGui import QAction, QKeySequence
 
 from lumen.core.database import LibraryDatabase
 from lumen.gui.library_browser import LibraryBrowserWidget
 from lumen.gui.schematic_editor import SchematicEditor
 from lumen.gui.property_editor import PropertyEditorWidget
+from lumen.gui.branding import apply_window_branding, logo_label, logo_url
 
 import os
 
@@ -31,7 +32,8 @@ class LumenMainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Lumen Circuit Studio — v0.1.0")
+        self.setWindowTitle("Lumen Circuit Studio — v0.2.0")
+        apply_window_branding(self)
         self.setMinimumSize(1280, 800)
         self.resize(1600, 1000)
 
@@ -304,7 +306,7 @@ class LumenMainWindow(QMainWindow):
         sb.addPermanentWidget(self.mode_label)
         sb.addPermanentWidget(self.coord_label)
         sb.addPermanentWidget(self.grid_label)
-        sb.showMessage("Ready — Lumen Circuit Studio v0.1.0")
+        sb.showMessage("Ready — Lumen Circuit Studio v0.2.0")
 
     # ── Welcome Tab ───────────────────────────────────────────
 
@@ -314,15 +316,7 @@ class LumenMainWindow(QMainWindow):
         layout = QVBoxLayout(welcome)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        title = QLabel("✦ Lumen Circuit Studio")
-        title.setStyleSheet("""
-            font-size: 32px;
-            font-weight: bold;
-            color: #6b9ece;
-            background: transparent;
-            padding: 20px;
-        """)
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title = logo_label(420, self)
         layout.addWidget(title)
 
         subtitle = QLabel(
@@ -444,8 +438,8 @@ class LumenMainWindow(QMainWindow):
     def _on_about(self):
         QMessageBox.about(
             self, "About Lumen Circuit Studio",
-            "<h2>✦ Lumen Circuit Studio</h2>"
-            "<p>Version 0.1.0</p>"
+            f"<p align='center'><img src='{logo_url()}' width='300'></p>"
+            "<p>Version 0.2.0</p>"
             "<p>Next-Generation Open-Source Analog/Mixed-Signal EDA Suite</p>"
             "<p>Powered by GSPICE Simulator Engine</p>"
             "<hr>"

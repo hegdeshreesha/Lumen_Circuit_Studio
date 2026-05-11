@@ -9,6 +9,7 @@ from PyQt6.QtGui import QAction, QKeySequence
 
 from lumen.core.database import LibraryDatabase
 from lumen.gui.symbol_editor import SymbolEditor
+from lumen.gui.branding import apply_window_branding
 
 
 class SymbolEditorWindow(QMainWindow):
@@ -24,6 +25,7 @@ class SymbolEditorWindow(QMainWindow):
         self.ciw = ciw
 
         self.setWindowTitle(f"Lumen - {cell} ({view}) - [{library}]")
+        apply_window_branding(self)
         self.setMinimumSize(900, 650)
         self.resize(1100, 760)
 

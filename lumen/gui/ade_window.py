@@ -21,6 +21,7 @@ from lumen.core.database import LibraryDatabase
 from lumen.core.netlist import NetlistGenerator, NetlistDirectives
 from lumen.core.simulator import SimulatorBridge, SIMULATOR_INFO, get_supported_analyses, get_simulator_label
 from lumen.core.pdk_unified import PDKRegistry
+from lumen.gui.branding import apply_window_branding
 
 
 # All GSPICE-supported analyses
@@ -577,6 +578,7 @@ class ADEWindow(QMainWindow):
         self._pdk_registry = pdk_registry or self._create_pdk_registry()
 
         self.setWindowTitle(f"Lumen ADE — {cell} [{library}]")
+        apply_window_branding(self)
         self.setMinimumSize(950, 650)
         self.resize(1100, 750)
 

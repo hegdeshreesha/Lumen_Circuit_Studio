@@ -4,8 +4,9 @@ Lumen Circuit Studio — Application Bootstrap
 import sys
 import os
 from PyQt6.QtWidgets import QApplication
-from PyQt6.QtGui import QFont, QIcon
+from PyQt6.QtGui import QFont
 from PyQt6.QtCore import Qt
+from lumen.gui.branding import app_icon
 
 
 def main():
@@ -16,7 +17,8 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("Lumen Circuit Studio")
     app.setOrganizationName("LumenEDA")
-    app.setApplicationVersion("0.1.0")
+    app.setApplicationVersion("0.2.0")
+    app.setWindowIcon(app_icon())
 
     # Set default font
     font = QFont("Segoe UI", 9)

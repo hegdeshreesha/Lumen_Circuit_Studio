@@ -14,6 +14,7 @@ from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QAction, QKeySequence, QBrush, QColor, QFont
 
 from lumen.core.database import LibraryDatabase
+from lumen.gui.branding import apply_window_branding
 
 
 class LibraryManagerWindow(QMainWindow):
@@ -34,6 +35,7 @@ class LibraryManagerWindow(QMainWindow):
         self.db = db
         self.ciw = ciw  # Reference to CIW for opening editors
         self.setWindowTitle("Lumen — Library Manager")
+        apply_window_branding(self)
         self.setMinimumSize(900, 550)
         self.resize(1000, 600)
 

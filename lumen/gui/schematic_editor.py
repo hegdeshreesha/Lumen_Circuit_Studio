@@ -29,6 +29,7 @@ from lumen.core.commands import (
     CommandStack, AddItemCommand, DeleteItemsCommand, MoveItemsCommand,
     CompoundCommand, RotateCommand, MirrorCommand, LabelCommand
 )
+from lumen.gui.branding import apply_window_branding
 
 
 # ── Constants ─────────────────────────────────────────────────
@@ -915,6 +916,7 @@ class InstanceBrowserDialog(QDialog):
         self.selected_cell = ""
         self._pdk_device = None  # If a PDK device was selected
         self.setWindowTitle("Add Instance")
+        apply_window_branding(self)
         self.setMinimumSize(600, 420)
         self._setup_ui()
 

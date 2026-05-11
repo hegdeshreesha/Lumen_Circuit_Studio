@@ -14,6 +14,7 @@ from PyQt6.QtGui import QAction, QKeySequence
 from lumen.core.database import LibraryDatabase
 from lumen.gui.schematic_editor import SchematicEditor
 from lumen.gui.property_editor import PropertyEditorWidget
+from lumen.gui.branding import apply_window_branding
 
 
 class SchematicEditorWindow(QMainWindow):
@@ -29,6 +30,7 @@ class SchematicEditorWindow(QMainWindow):
         self.ciw = ciw
 
         self.setWindowTitle(f"Lumen — {cell} ({view}) — [{library}]")
+        apply_window_branding(self)
         self.setMinimumSize(1000, 700)
         self.resize(1300, 850)
 

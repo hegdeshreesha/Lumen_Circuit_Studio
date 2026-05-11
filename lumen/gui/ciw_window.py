@@ -16,6 +16,7 @@ from PyQt6.QtGui import QAction, QKeySequence, QFont, QTextCursor
 
 import os
 from lumen.core.database import LibraryDatabase
+from lumen.gui.branding import apply_window_branding, logo_label, logo_url
 
 
 class CIWWindow(QMainWindow):
@@ -24,6 +25,7 @@ class CIWWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Lumen Circuit Studio — CIW")
+        apply_window_branding(self)
         self.setMinimumSize(700, 400)
         self.resize(800, 450)
 
@@ -47,7 +49,7 @@ class CIWWindow(QMainWindow):
         self._create_menus()
         self._create_status_bar()
 
-        self.log("Lumen Circuit Studio v0.1.0")
+        self.log("Lumen Circuit Studio v0.2.0")
         self.log(f"Workspace: {workspace}")
         active_pdk = self.pdk_registry.get_active_pdk()
         if active_pdk:
@@ -66,14 +68,7 @@ class CIWWindow(QMainWindow):
         layout.setSpacing(4)
 
         # Banner
-        banner = QLabel("✦ Lumen Circuit Studio")
-        banner.setStyleSheet("""
-            font-size: 16px;
-            font-weight: bold;
-            color: #6b9ece;
-            background: transparent;
-            padding: 4px 0;
-        """)
+        banner = logo_label(260, self)
         layout.addWidget(banner)
 
         # Output log
@@ -282,8 +277,8 @@ class CIWWindow(QMainWindow):
     def _on_about(self):
         QMessageBox.about(
             self, "About Lumen Circuit Studio",
-            "<h2>✦ Lumen Circuit Studio</h2>"
-            "<p>Version 0.1.0</p>"
+            f"<p align='center'><img src='{logo_url()}' width='260'></p>"
+            "<p>Version 0.2.0</p>"
             "<p>Next-Generation Open-Source Analog/Mixed-Signal EDA Suite</p>"
             "<p>Powered by GSPICE Simulator Engine</p>"
             "<hr>"

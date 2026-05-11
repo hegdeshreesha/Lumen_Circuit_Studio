@@ -14,6 +14,7 @@ from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QAction, QColor, QBrush, QFont
 
 from lumen.core.pdk_unified import PDKRegistry, PDKInfo
+from lumen.gui.branding import apply_window_branding
 
 
 class PDKManagerWindow(QMainWindow):
@@ -29,6 +30,7 @@ class PDKManagerWindow(QMainWindow):
         self.registry = registry
         self.ciw = ciw
         self.setWindowTitle("Lumen — PDK Manager")
+        apply_window_branding(self)
         self.setMinimumSize(1000, 650)
         self.resize(1150, 720)
 
