@@ -32,7 +32,7 @@ class LumenMainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Lumen Circuit Studio — v0.2.0")
+        self.setWindowTitle("Lumen Circuit Studio — v0.3.0")
         apply_window_branding(self)
         self.setMinimumSize(1280, 800)
         self.resize(1600, 1000)
@@ -306,7 +306,7 @@ class LumenMainWindow(QMainWindow):
         sb.addPermanentWidget(self.mode_label)
         sb.addPermanentWidget(self.coord_label)
         sb.addPermanentWidget(self.grid_label)
-        sb.showMessage("Ready — Lumen Circuit Studio v0.2.0")
+        sb.showMessage("Ready — Lumen Circuit Studio v0.3.0")
 
     # ── Welcome Tab ───────────────────────────────────────────
 
@@ -439,7 +439,7 @@ class LumenMainWindow(QMainWindow):
         QMessageBox.about(
             self, "About Lumen Circuit Studio",
             f"<p align='center'><img src='{logo_url()}' width='300'></p>"
-            "<p>Version 0.2.0</p>"
+            "<p>Version 0.3.0</p>"
             "<p>Next-Generation Open-Source Analog/Mixed-Signal EDA Suite</p>"
             "<p>Powered by GSPICE Simulator Engine</p>"
             "<hr>"

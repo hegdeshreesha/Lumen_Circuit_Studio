@@ -17,7 +17,7 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("Lumen Circuit Studio")
     app.setOrganizationName("LumenEDA")
-    app.setApplicationVersion("0.2.0")
+    app.setApplicationVersion("0.3.0")
     app.setWindowIcon(app_icon())
 
     # Set default font

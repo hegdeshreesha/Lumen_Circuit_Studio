@@ -9,15 +9,16 @@ Interactive symbol editor with:
 - Grid snapping and cross-hair cursor
 """
 import math
+from typing import Optional
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGraphicsView, QGraphicsScene,
     QGraphicsLineItem, QGraphicsRectItem, QGraphicsTextItem,
     QGraphicsEllipseItem, QGraphicsPathItem, QGraphicsItemGroup,
     QInputDialog, QDialog, QDialogButtonBox, QListWidget,
     QListWidgetItem, QLabel, QPushButton, QFormLayout, QLineEdit,
-    QComboBox, QCheckBox, QMessageBox, QToolBar
+    QComboBox, QCheckBox, QMessageBox, QToolBar, QRubberBand
 )
-from PyQt6.QtCore import Qt, QPointF, QRectF, pyqtSignal, QLineF
+from PyQt6.QtCore import Qt, QPointF, QRect, QRectF, pyqtSignal, QLineF
 from PyQt6.QtGui import (
     QPen, QBrush, QColor, QPainter, QPainterPath, QFont,
     QTransform, QWheelEvent, QKeyEvent, QAction, QCursor
@@ -39,6 +40,7 @@ GRID_COLOR_MINOR = QColor(35, 35, 35)
 BG_COLOR = QColor("#0a0a0a")
 
 PIN_DIRECTIONS = ["input", "output", "inout", "power", "ground"]
+PIN_ORIENTATIONS = ["R0", "R90", "R180", "R270"]
 
 
 def snap(val: float) -> float:
@@ -51,60 +53,75 @@ class PinItem(QGraphicsItemGroup):
     """A symbol pin that can be moved/edited."""
 
     def __init__(self, name: str, x: float, y: float,
-                 direction: str = "inout", index: int = 0):
+                 direction: str = "inout", index: int = 0,
+                 orientation: str = "R0"):
         super().__init__()
         self.pin_name = name
         self.pin_direction = direction
         self.pin_index = index
-
-        # Pin dot
-        self._dot = QGraphicsEllipseItem(
-            -PIN_RADIUS, -PIN_RADIUS, PIN_RADIUS * 2, PIN_RADIUS * 2)
-        self._dot.setPen(QPen(PIN_COLOR, 1))
-        self._dot.setBrush(QBrush(PIN_COLOR))
-        self.addToGroup(self._dot)
-
-        # Pin name label
-        self._label = QGraphicsTextItem(name)
-        self._label.setDefaultTextColor(PIN_NAME_COLOR)
-        self._label.setFont(QFont("Consolas", 7, QFont.Weight.Bold))
-        self._label.setPos(6, -6)
-        self.addToGroup(self._label)
-
-        # Direction indicator (small arrow)
-        self._arrow = None
-        self._update_arrow()
+        self.pin_orientation = orientation if orientation in PIN_ORIENTATIONS else "R0"
+        self._label = None
+        self._build_graphics()
 
         self.setPos(x, y)
         self.setFlag(QGraphicsItemGroup.GraphicsItemFlag.ItemIsMovable)
         self.setFlag(QGraphicsItemGroup.GraphicsItemFlag.ItemIsSelectable)
         self.setAcceptHoverEvents(True)
 
-    def _update_arrow(self):
-        """Update the direction arrow based on direction."""
-        if self._arrow and self._arrow in self.childItems():
-            self.removeFromGroup(self._arrow)
+    def _orientation_vector(self) -> tuple[int, int]:
+        return {
+            "R0": (1, 0),
+            "R90": (0, -1),
+            "R180": (-1, 0),
+            "R270": (0, 1),
+        }.get(self.pin_orientation, (1, 0))
 
-        if self.pin_direction == "input":
-            # Arrow pointing into symbol
-            self._arrow = QGraphicsLineItem(-8, 0, -4, 0)
-        elif self.pin_direction == "output":
-            # Arrow pointing out of symbol
-            self._arrow = QGraphicsLineItem(4, 0, 8, 0)
-        elif self.pin_direction in ("power", "ground"):
-            # Power pin: small bar
-            self._arrow = QGraphicsLineItem(-3, -3, -3, 3)
-        else:
-            self._arrow = QGraphicsLineItem(0, 0, 0, 0)
+    def _build_graphics(self):
+        """Build a Virtuoso-like symbol terminal: square anchor, stub, name."""
+        for item in list(self.childItems()):
+            self.removeFromGroup(item)
+            if item.scene():
+                item.scene().removeItem(item)
 
-        if self._arrow:
-            self._arrow.setPen(QPen(PIN_COLOR.lighter(130), 1))
-            self._arrow.setOpacity(0.7)
-            self.addToGroup(self._arrow)
+        pen = QPen(PIN_COLOR, 1.4)
+        vx, vy = self._orientation_vector()
+
+        terminal = QGraphicsRectItem(-PIN_RADIUS, -PIN_RADIUS, PIN_RADIUS * 2, PIN_RADIUS * 2)
+        terminal.setPen(pen)
+        terminal.setBrush(QBrush(PIN_COLOR))
+        self.addToGroup(terminal)
+
+        stub = QGraphicsLineItem(0, 0, vx * 18, vy * 18)
+        stub.setPen(pen)
+        self.addToGroup(stub)
+
+        self._label = QGraphicsTextItem(self.pin_name)
+        self._label.setDefaultTextColor(PIN_NAME_COLOR)
+        self._label.setFont(QFont("Consolas", 7, QFont.Weight.Bold))
+        lx = vx * 22
+        ly = vy * 22 - 6
+        if self.pin_orientation == "R180":
+            lx -= max(28, len(self.pin_name) * 7)
+        self._label.setPos(lx, ly)
+        self.addToGroup(self._label)
+
+        dir_tag = QGraphicsTextItem(self.pin_direction[:1].upper())
+        dir_tag.setDefaultTextColor(QColor("#101010"))
+        dir_tag.setFont(QFont("Consolas", 5, QFont.Weight.Bold))
+        dir_tag.setPos(-2.5, -7)
+        self.addToGroup(dir_tag)
 
     def set_pin_name(self, name: str):
         self.pin_name = name
-        self._label.setPlainText(name)
+        self._build_graphics()
+
+    def set_direction(self, direction: str):
+        self.pin_direction = direction if direction in PIN_DIRECTIONS else self.pin_direction
+        self._build_graphics()
+
+    def set_orientation(self, orientation: str):
+        self.pin_orientation = orientation if orientation in PIN_ORIENTATIONS else self.pin_orientation
+        self._build_graphics()
 
     def get_data(self) -> dict:
         pos = self.pos()
@@ -113,6 +130,7 @@ class PinItem(QGraphicsItemGroup):
             "x": pos.x(),
             "y": pos.y(),
             "direction": self.pin_direction,
+            "orientation": self.pin_orientation,
         }
 
 
@@ -140,15 +158,45 @@ class SymbolCanvas(QGraphicsView):
         self._zoom = 1.0
         self._panning = False
         self._pan_start = QPointF()
+        self._zoom_band: QRubberBand | None = None
+        self._zoom_origin = QPointF()
+
+    def zoom_by(self, factor: float):
+        self._zoom *= factor
+        self._zoom = max(0.05, min(self._zoom, 100.0))
+        self.scale(factor, factor)
+
+    def zoom_in(self):
+        self.zoom_by(1.25)
+
+    def zoom_out(self):
+        self.zoom_by(0.8)
+
+    def fit_to_items(self):
+        rect = self.scene().itemsBoundingRect()
+        if rect.isNull() or rect.width() < 1 or rect.height() < 1:
+            rect = self.sceneRect()
+        margin = max(40.0, min(rect.width(), rect.height()) * 0.2)
+        rect = rect.adjusted(-margin, -margin, margin, margin)
+        self.resetTransform()
+        self.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)
+        self._zoom = self.transform().m11()
+
+    def zoom_to_view_rect(self, view_rect: QRect):
+        if view_rect.width() < 8 or view_rect.height() < 8:
+            return
+        scene_rect = self.mapToScene(view_rect.normalized()).boundingRect()
+        if scene_rect.width() < 1 or scene_rect.height() < 1:
+            return
+        self.fitInView(scene_rect, Qt.AspectRatioMode.KeepAspectRatio)
+        self._zoom = self.transform().m11()
 
     def wheelEvent(self, event: QWheelEvent):
         factor = 1.15
         if event.angleDelta().y() > 0:
-            self._zoom *= factor
-            self.scale(factor, factor)
+            self.zoom_by(factor)
         else:
-            self._zoom /= factor
-            self.scale(1 / factor, 1 / factor)
+            self.zoom_by(1 / factor)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.MiddleButton:
@@ -156,12 +204,24 @@ class SymbolCanvas(QGraphicsView):
             self._pan_start = event.position()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
             event.accept()
+        elif event.button() == Qt.MouseButton.RightButton:
+            self._zoom_origin = event.position()
+            self._zoom_band = QRubberBand(QRubberBand.Shape.Rectangle, self.viewport())
+            origin = self._zoom_origin.toPoint()
+            self._zoom_band.setGeometry(QRect(origin, origin))
+            self._zoom_band.show()
+            event.accept()
         else:
             super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
         scene_pos = self.mapToScene(event.position().toPoint())
         self.coord_changed.emit(scene_pos.x(), scene_pos.y())
+        if self._zoom_band:
+            self._zoom_band.setGeometry(
+                QRect(self._zoom_origin.toPoint(), event.position().toPoint()).normalized())
+            event.accept()
+            return
         if self._panning:
             delta = event.position() - self._pan_start
             self._pan_start = event.position()
@@ -174,7 +234,14 @@ class SymbolCanvas(QGraphicsView):
             super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
-        if event.button() == Qt.MouseButton.MiddleButton:
+        if event.button() == Qt.MouseButton.RightButton and self._zoom_band:
+            band_rect = self._zoom_band.geometry()
+            self._zoom_band.hide()
+            self._zoom_band.deleteLater()
+            self._zoom_band = None
+            self.zoom_to_view_rect(band_rect)
+            event.accept()
+        elif event.button() == Qt.MouseButton.MiddleButton:
             self._panning = False
             self.setCursor(Qt.CursorShape.ArrowCursor)
             event.accept()
@@ -224,6 +291,10 @@ class SymbolEditor(QWidget):
         self._drawing = False
         self._draw_start = QPointF()
         self._preview_item = None
+        self._clipboard: list[dict] = []
+        self._metadata: dict = {}
+        self._undo_stack: list[dict] = []
+        self._redo_stack: list[dict] = []
 
         # Data
         self._shapes: list[QGraphicsItem] = []
@@ -288,6 +359,200 @@ class SymbolEditor(QWidget):
 
         layout.addWidget(self.canvas)
 
+    def zoom_in(self):
+        self.canvas.zoom_in()
+
+    def zoom_out(self):
+        self.canvas.zoom_out()
+
+    def zoom_fit(self):
+        self.canvas.fit_to_items()
+
+    def redraw(self):
+        self.scene.update()
+        self.canvas.viewport().update()
+
+    def _snapshot(self) -> dict:
+        shapes = []
+        for item in self._shapes:
+            shape = self._item_to_shape(item)
+            if shape:
+                shapes.append(shape)
+        data = dict(self._metadata)
+        data.update({
+            "type": "symbol",
+            "name": self.cell,
+            "library": self.library,
+            "pins": [pin.get_data() for pin in self._pins],
+            "shapes": shapes,
+        })
+        return data
+
+    def _push_undo(self):
+        self._undo_stack.append(self._snapshot())
+        if len(self._undo_stack) > 100:
+            self._undo_stack.pop(0)
+        self._redo_stack.clear()
+
+    def undo(self):
+        if not self._undo_stack:
+            return False
+        self._redo_stack.append(self._snapshot())
+        self._render_symbol(self._undo_stack.pop())
+        return True
+
+    def redo(self):
+        if not self._redo_stack:
+            return False
+        self._undo_stack.append(self._snapshot())
+        self._render_symbol(self._redo_stack.pop())
+        return True
+
+    def select_all(self):
+        for item in self._shapes + self._pins:
+            item.setSelected(True)
+
+    def delete_selected(self):
+        self._push_undo()
+        self._delete_selected()
+
+    def copy_selected(self):
+        self._clipboard.clear()
+        for item in self.scene.selectedItems():
+            if item in self._shapes:
+                shape = self._item_to_shape(item)
+                if shape:
+                    self._clipboard.append({"type": "shape", "data": shape})
+            elif item in self._pins:
+                self._clipboard.append({"type": "pin", "data": item.get_data()})
+
+    def paste_clipboard(self):
+        if not self._clipboard:
+            return
+        self._push_undo()
+        self.scene.clearSelection()
+        for entry in self._clipboard:
+            data = dict(entry["data"])
+            if entry["type"] == "pin":
+                name = data.get("name", "PIN")
+                self._add_pin(
+                    name,
+                    float(data.get("x", 0)) + 20,
+                    float(data.get("y", 0)) + 20,
+                    data.get("direction", "inout"),
+                )
+                self._pins[-1].setSelected(True)
+            elif entry["type"] == "shape":
+                item = self._shape_to_item(self._offset_shape(data, 20, 20))
+                if item:
+                    self.scene.addItem(item)
+                    self._shapes.append(item)
+                    item.setSelected(True)
+
+    def duplicate_selected(self):
+        self.copy_selected()
+        self.paste_clipboard()
+
+    def rotate_selected(self, angle: float = 90):
+        self._push_undo()
+        for item in self.scene.selectedItems():
+            if item in self._shapes or item in self._pins:
+                item.setRotation(item.rotation() + angle)
+
+    def mirror_selected(self):
+        self._push_undo()
+        for item in self.scene.selectedItems():
+            if item in self._shapes or item in self._pins:
+                item.setTransform(QTransform(-1, 0, 0, 1, 0, 0) * item.transform())
+
+    def selected_properties(self) -> dict:
+        selected = self.scene.selectedItems()
+        if not selected:
+            return {}
+        item = selected[0]
+        if item in self._pins:
+            return item.get_data()
+        if item in self._shapes:
+            return self._item_to_shape(item) or {"type": type(item).__name__}
+        return {"type": type(item).__name__}
+
+    def prompt_add_text(self, label: bool = False):
+        text, ok = QInputDialog.getText(
+            self,
+            "Instance Label" if label else "Text",
+            "Text:",
+            text="@name" if label else "",
+        )
+        if ok and text:
+            self._push_undo()
+            self._add_text(text, 0, 0, is_label=label)
+
+    def pin_names(self) -> list[str]:
+        return [pin.pin_name for pin in self._pins]
+
+    def set_pin_order(self, names: list[str]):
+        self._push_undo()
+        ordered = []
+        for name in names:
+            for pin in self._pins:
+                if pin.pin_name == name and pin not in ordered:
+                    ordered.append(pin)
+        ordered.extend([pin for pin in self._pins if pin not in ordered])
+        self._pins = ordered
+        for idx, pin in enumerate(self._pins):
+            pin.pin_index = idx
+
+    def update_selected_pin(self, name: str, direction: str, orientation: str = "R0"):
+        for item in self.scene.selectedItems():
+            if item in self._pins:
+                self._push_undo()
+                item.set_pin_name(name)
+                item.set_direction(direction)
+                item.set_orientation(orientation)
+                return True
+        return False
+
+    def symbol_properties(self) -> dict:
+        return {
+            "prefix": self._metadata.get("prefix", self.cell[:1].upper() if self.cell else "X"),
+            "spice_model": self._metadata.get("spice_model", self.cell),
+            "label": self._metadata.get("label", {}).get("text", "@name"),
+        }
+
+    def update_symbol_properties(self, prefix: str, spice_model: str, label: str):
+        self._push_undo()
+        self._metadata["prefix"] = prefix or "X"
+        self._metadata["spice_model"] = spice_model or self.cell
+        label_data = dict(self._metadata.get("label", {}))
+        label_data["text"] = label or "@name"
+        label_data.setdefault("x", 15)
+        label_data.setdefault("y", -25)
+        self._metadata["label"] = label_data
+
+    def cdf_lines(self) -> str:
+        params = self._metadata.get("parameters", [])
+        return "\n".join(
+            f"{p.get('name', '')}={p.get('default', '')}" for p in params
+        )
+
+    def update_cdf_lines(self, text: str):
+        self._push_undo()
+        params = []
+        for raw in text.splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                name, default = line.split("=", 1)
+            else:
+                name, default = line, ""
+            params.append({
+                "name": name.strip(),
+                "default": default.strip(),
+                "description": "",
+            })
+        self._metadata["parameters"] = params
+
     def _set_tool(self, tool: str):
         self._tool = tool
         self._drawing = False
@@ -316,51 +581,16 @@ class SymbolEditor(QWidget):
         """Render symbol data onto the canvas."""
         # Clear existing
         self._clear_canvas()
+        self._metadata = dict(data)
 
         pen = QPen(SYMBOL_COLOR, SYMBOL_WIDTH)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
 
         for shape in data.get("shapes", []):
             stype = shape.get("type", "")
-            item = None
-            if stype == "line":
-                item = QGraphicsLineItem(
-                    shape["x1"], shape["y1"], shape["x2"], shape["y2"])
-            elif stype == "rect":
-                item = QGraphicsRectItem(
-                    shape["x"], shape["y"], shape["w"], shape["h"])
-            elif stype == "circle":
-                r = shape["r"]
-                item = QGraphicsEllipseItem(
-                    shape["cx"] - r, shape["cy"] - r, r * 2, r * 2)
-                item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
-            elif stype == "polyline":
-                pts = shape["points"]
-                path = QPainterPath()
-                path.moveTo(pts[0][0], pts[0][1])
-                for p in pts[1:]:
-                    path.lineTo(p[0], p[1])
-                item = QGraphicsPathItem(path)
-            elif stype == "polygon":
-                pts = shape["points"]
-                path = QPainterPath()
-                path.moveTo(pts[0][0], pts[0][1])
-                for p in pts[1:]:
-                    path.lineTo(p[0], p[1])
-                path.closeSubpath()
-                item = QGraphicsPathItem(path)
-                item.setBrush(QBrush(SYMBOL_COLOR.darker(200)))
-            elif stype == "arc":
-                rect = QRectF(
-                    shape["cx"] - shape["rx"], shape["cy"] - shape["ry"],
-                    shape["rx"] * 2, shape["ry"] * 2)
-                path = QPainterPath()
-                path.arcMoveTo(rect, shape.get("start", 0))
-                path.arcTo(rect, shape.get("start", 0), shape.get("span", 90))
-                item = QGraphicsPathItem(path)
+            item = self._shape_to_item(shape)
 
             if item:
-                item.setPen(pen)
                 item.setFlag(QGraphicsItemGroup.GraphicsItemFlag.ItemIsSelectable)
                 self.scene.addItem(item)
                 self._shapes.append(item)
@@ -372,6 +602,7 @@ class SymbolEditor(QWidget):
                 pin_data.get("x", 0),
                 pin_data.get("y", 0),
                 pin_data.get("direction", "inout"),
+                pin_data.get("orientation", "R0"),
             )
 
     def _clear_canvas(self):
@@ -393,27 +624,27 @@ class SymbolEditor(QWidget):
 
         pins = [pin.get_data() for pin in self._pins]
 
-        # Determine prefix from first character of cell name (heuristic)
-        prefix = self.cell[0].upper() if self.cell else "X"
+        # Determine prefix from metadata or first character of cell name (heuristic)
+        prefix = self._metadata.get("prefix") or (self.cell[0].upper() if self.cell else "X")
         if any(p.lower() in self.cell.lower() for p in ["nmos", "pmos"]):
-            prefix = "M"
+            prefix = self._metadata.get("prefix") or "M"
         elif any(p in self.cell.lower() for p in ["res", "r"]):
-            prefix = "R"
+            prefix = self._metadata.get("prefix") or "R"
         elif any(p in self.cell.lower() for p in ["cap", "c"]):
-            prefix = "C"
+            prefix = self._metadata.get("prefix") or "C"
         elif any(p in self.cell.lower() for p in ["ind", "l"]):
-            prefix = "L"
+            prefix = self._metadata.get("prefix") or "L"
 
         data = {
             "type": "symbol",
             "name": self.cell,
             "library": self.library,
             "prefix": prefix,
-            "spice_model": self.cell,
+            "spice_model": self._metadata.get("spice_model", self.cell),
             "pins": pins,
             "shapes": shapes,
-            "parameters": [],
-            "label": {"text": "@name", "x": 15, "y": -25},
+            "parameters": self._metadata.get("parameters", []),
+            "label": self._metadata.get("label", {"text": "@name", "x": 15, "y": -25}),
         }
 
         self.db.save_view(self.library, self.cell, self.view, data)
@@ -438,14 +669,110 @@ class SymbolEditor(QWidget):
         elif isinstance(item, QGraphicsPathItem):
             # Cannot easily convert back to shape dict, skip
             return None
+        elif isinstance(item, QGraphicsTextItem):
+            pos = item.pos()
+            return {
+                "type": "text",
+                "text": item.toPlainText(),
+                "x": pos.x(),
+                "y": pos.y(),
+                "label": bool(getattr(item, "is_instance_label", False)),
+            }
         return None
+
+    def _shape_to_item(self, shape: dict):
+        """Create a graphics item from saved shape data."""
+        stype = shape.get("type", "")
+        item = None
+        if stype == "line":
+            item = QGraphicsLineItem(
+                shape["x1"], shape["y1"], shape["x2"], shape["y2"])
+        elif stype == "rect":
+            item = QGraphicsRectItem(
+                shape["x"], shape["y"], shape["w"], shape["h"])
+        elif stype == "circle":
+            r = shape["r"]
+            item = QGraphicsEllipseItem(
+                shape["cx"] - r, shape["cy"] - r, r * 2, r * 2)
+            item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+        elif stype in ("polyline", "polygon"):
+            pts = shape.get("points", [])
+            if not pts:
+                return None
+            path = QPainterPath()
+            path.moveTo(pts[0][0], pts[0][1])
+            for p in pts[1:]:
+                path.lineTo(p[0], p[1])
+            if stype == "polygon":
+                path.closeSubpath()
+            item = QGraphicsPathItem(path)
+            if stype == "polygon":
+                item.setBrush(QBrush(SYMBOL_COLOR.darker(200)))
+        elif stype == "arc":
+            rect = QRectF(
+                shape["cx"] - shape["rx"], shape["cy"] - shape["ry"],
+                shape["rx"] * 2, shape["ry"] * 2)
+            path = QPainterPath()
+            path.arcMoveTo(rect, shape.get("start", 0))
+            path.arcTo(rect, shape.get("start", 0), shape.get("span", 90))
+            item = QGraphicsPathItem(path)
+        elif stype == "text":
+            item = QGraphicsTextItem(shape.get("text", ""))
+            item.setPos(shape.get("x", 0), shape.get("y", 0))
+            item.setDefaultTextColor(PIN_NAME_COLOR)
+            item.setFont(QFont("Consolas", 8))
+            item.is_instance_label = bool(shape.get("label", False))
+
+        if item:
+            if hasattr(item, "setPen"):
+                pen = QPen(SYMBOL_COLOR, SYMBOL_WIDTH)
+                pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                item.setPen(pen)
+            item.setFlag(QGraphicsItemGroup.GraphicsItemFlag.ItemIsSelectable)
+            item.setFlag(QGraphicsItemGroup.GraphicsItemFlag.ItemIsMovable)
+        return item
+
+    def _offset_shape(self, shape: dict, dx: float, dy: float) -> dict:
+        """Offset shape geometry for paste/duplicate."""
+        stype = shape.get("type", "")
+        if stype == "line":
+            for key in ("x1", "x2"):
+                shape[key] += dx
+            for key in ("y1", "y2"):
+                shape[key] += dy
+        elif stype == "rect":
+            shape["x"] += dx
+            shape["y"] += dy
+        elif stype == "circle":
+            shape["cx"] += dx
+            shape["cy"] += dy
+        elif stype == "arc":
+            shape["cx"] += dx
+            shape["cy"] += dy
+        elif stype in ("polyline", "polygon"):
+            shape["points"] = [[x + dx, y + dy] for x, y in shape.get("points", [])]
+        elif stype == "text":
+            shape["x"] += dx
+            shape["y"] += dy
+        return shape
+
+    def _add_text(self, text: str, x: float, y: float, is_label: bool = False):
+        item = QGraphicsTextItem(text)
+        item.setDefaultTextColor(PIN_NAME_COLOR if is_label else SYMBOL_COLOR.lighter(130))
+        item.setFont(QFont("Consolas", 8, QFont.Weight.Bold if is_label else QFont.Weight.Normal))
+        item.setPos(x, y)
+        item.is_instance_label = is_label
+        item.setFlag(QGraphicsTextItem.GraphicsItemFlag.ItemIsSelectable)
+        item.setFlag(QGraphicsTextItem.GraphicsItemFlag.ItemIsMovable)
+        self.scene.addItem(item)
+        self._shapes.append(item)
 
     # ── Pin Operations ────────────────────────────────────────
 
     def _add_pin(self, name: str, x: float, y: float,
-                 direction: str = "inout"):
+                 direction: str = "inout", orientation: str = "R0"):
         """Add a pin to the symbol."""
-        pin = PinItem(name, x, y, direction, len(self._pins))
+        pin = PinItem(name, x, y, direction, len(self._pins), orientation)
         self.scene.addItem(pin)
         self._pins.append(pin)
 
@@ -460,7 +787,13 @@ class SymbolEditor(QWidget):
         if not ok:
             return
 
-        self._add_pin(name, snap(x), snap(y), direction)
+        orientation, ok = QInputDialog.getItem(
+            self, "Pin Orientation", "Orientation:", PIN_ORIENTATIONS, 0)
+        if not ok:
+            return
+
+        self._push_undo()
+        self._add_pin(name, snap(x), snap(y), direction, orientation)
 
     def _auto_generate(self):
         """Auto-generate symbol from schematic."""
@@ -490,7 +823,12 @@ class SymbolEditor(QWidget):
                     if pin_name not in pins:
                         pins.append(pin_name)
 
-        # Also check for port labels in the schematic
+        # Also check for explicit top-level pins and port labels in the schematic
+        for pin in sch_data.get("pins", []):
+            name = pin.get("name", "")
+            if name and name not in pins:
+                pins.append(name)
+
         for label in sch_data.get("labels", []):
             text = label.get("text", "")
             # Port labels often start with specific prefixes
@@ -528,7 +866,11 @@ class SymbolEditor(QWidget):
         label.setDefaultTextColor(QColor("#90e0ef"))
         label.setFont(QFont("Consolas", 8, QFont.Weight.Bold))
         label.setPos(5, -box_h//2 - 5)
+        label.is_instance_label = True
+        label.setFlag(QGraphicsTextItem.GraphicsItemFlag.ItemIsSelectable)
+        label.setFlag(QGraphicsTextItem.GraphicsItemFlag.ItemIsMovable)
         self.scene.addItem(label)
+        self._shapes.append(label)
 
     # ── Drawing Operations ────────────────────────────────────
 
@@ -539,6 +881,17 @@ class SymbolEditor(QWidget):
         if event.button() == Qt.MouseButton.LeftButton:
             if self._tool == "pin":
                 self._handle_pin_click(sx, sy)
+                return
+            elif self._tool in ("text", "label"):
+                text, ok = QInputDialog.getText(
+                    self,
+                    "Instance Label" if self._tool == "label" else "Text",
+                    "Text:",
+                    text="@name" if self._tool == "label" else "",
+                )
+                if ok and text:
+                    self._push_undo()
+                    self._add_text(text, sx, sy, is_label=self._tool == "label")
                 return
             elif self._tool in ("line", "rect", "circle", "polygon"):
                 self._drawing = True
@@ -595,6 +948,7 @@ class SymbolEditor(QWidget):
                     item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
 
             if item:
+                self._push_undo()
                 item.setPen(pen)
                 item.setFlag(QGraphicsItemGroup.GraphicsItemFlag.ItemIsSelectable)
                 self.scene.addItem(item)
@@ -624,6 +978,8 @@ class SymbolEditor(QWidget):
             self._set_tool("polygon")
         elif key == Qt.Key.Key_I:
             self._set_tool("pin")
+        elif key == Qt.Key.Key_T:
+            self._set_tool("text")
         elif key == Qt.Key.Key_S and event.modifiers() == Qt.KeyboardModifier.ControlModifier:
             self.save()
         else:

@@ -49,7 +49,7 @@ class CIWWindow(QMainWindow):
         self._create_menus()
         self._create_status_bar()
 
-        self.log("Lumen Circuit Studio v0.2.0")
+        self.log("Lumen Circuit Studio v0.3.0")
         self.log(f"Workspace: {workspace}")
         active_pdk = self.pdk_registry.get_active_pdk()
         if active_pdk:
@@ -214,6 +214,30 @@ class CIWWindow(QMainWindow):
                 f"Could not open {library}/{cell}/{view}.\n\n{exc}",
             )
 
+    def open_symbol_editor(self, library: str, cell: str, view: str = "symbol"):
+        """Open a symbol editor window for the given cell."""
+        for win in self._editor_windows:
+            if (win.isVisible() and getattr(win, "library", "") == library
+                    and getattr(win, "cell", "") == cell
+                    and getattr(win, "view", "") == view):
+                win.raise_()
+                win.activateWindow()
+                return
+
+        try:
+            from lumen.gui.symbol_editor_window import SymbolEditorWindow
+            editor = SymbolEditorWindow(self.db, library, cell, view, ciw=self)
+            editor.show()
+            self._editor_windows.append(editor)
+            self.log(f"Opened editor: {library}/{cell}/{view}")
+        except Exception as exc:
+            self.log(f"Failed to open editor {library}/{cell}/{view}: {exc}")
+            QMessageBox.critical(
+                self,
+                "Open Symbol Editor Failed",
+                f"Could not open {library}/{cell}/{view}.\n\n{exc}",
+            )
+
     # ── Command Handler ───────────────────────────────────────
 
     def _on_command(self):
@@ -252,7 +276,10 @@ class CIWWindow(QMainWindow):
         elif verb == "open" and len(parts) >= 3:
             lib, cell = parts[1], parts[2]
             view = parts[3] if len(parts) > 3 else "schematic"
-            self.open_schematic_editor(lib, cell, view)
+            if view == "symbol":
+                self.open_symbol_editor(lib, cell, view)
+            else:
+                self.open_schematic_editor(lib, cell, view)
         elif verb == 'exit':
             self.close()
         elif verb == 'ade' and len(parts) >= 3:
@@ -278,7 +305,7 @@ class CIWWindow(QMainWindow):
         QMessageBox.about(
             self, "About Lumen Circuit Studio",
             f"<p align='center'><img src='{logo_url()}' width='260'></p>"
-            "<p>Version 0.2.0</p>"
+            "<p>Version 0.3.0</p>"
             "<p>Next-Generation Open-Source Analog/Mixed-Signal EDA Suite</p>"
             "<p>Powered by GSPICE Simulator Engine</p>"
             "<hr>"

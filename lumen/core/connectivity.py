@@ -137,6 +137,14 @@ class ConnectivityEngine:
             jid = self._get_or_create_junction(x, y)
             self.junctions[jid].net_name = label_text
 
+        for pin in schematic_data.get("pins", []):
+            x, y = round(pin["x"]), round(pin["y"])
+            jid = self._get_or_create_junction(x, y)
+            self.junctions[jid].net_name = pin.get("name", "")
+            self.junctions[jid].is_pin = True
+            self.junctions[jid].pin_name = pin.get("name", "")
+            self.junctions[jid].pin_instance = "__top__"
+
         # Step 3: Process instance pins - connect to wires
         for inst in schematic_data.get("instances", []):
             inst_name = inst.get("name", "?")
@@ -170,7 +178,8 @@ class ConnectivityEngine:
 
     def add_instance_pins(self, instance_name: str, library_name: str,
                            cell_name: str, x: float, y: float,
-                           pin_data: list[dict]) -> None:
+                           pin_data: list[dict], rotation: float = 0,
+                           transform: Optional[dict] = None) -> None:
         """
         Add instance pins to the connectivity graph.
 
@@ -180,12 +189,11 @@ class ConnectivityEngine:
             cell_name: Cell name
             x, y: Instance position
             pin_data: List of pin dicts with 'name', 'x', 'y' (relative to instance)
+            rotation: Instance rotation in degrees
+            transform: Optional QTransform-style matrix dict for mirror/orient
         """
-        ix, iy = round(x), round(y)
-
         for pin in pin_data:
-            px = ix + round(pin.get("x", 0))
-            py = iy + round(pin.get("y", 0))
+            px, py = self._pin_scene_position(x, y, pin, rotation, transform)
 
             # Get or create junction at pin position
             jid = self._get_or_create_junction(px, py)
@@ -203,6 +211,31 @@ class ConnectivityEngine:
                 # Merge the two junctions - this happens when a pin
                 # is placed directly on a wire
                 self._merge_junctions(jid, existing_junction)
+
+    @staticmethod
+    def _pin_scene_position(x: float, y: float, pin: dict,
+                            rotation: float = 0,
+                            transform: Optional[dict] = None) -> tuple[int, int]:
+        """Resolve a symbol-local pin through instance mirror/rotation/translation."""
+        px = float(pin.get("x", 0))
+        py = float(pin.get("y", 0))
+
+        if transform:
+            m11 = float(transform.get("m11", 1))
+            m12 = float(transform.get("m12", 0))
+            m21 = float(transform.get("m21", 0))
+            m22 = float(transform.get("m22", 1))
+            dx = float(transform.get("dx", 0))
+            dy = float(transform.get("dy", 0))
+            px, py = (m11 * px) + (m21 * py) + dx, (m12 * px) + (m22 * py) + dy
+
+        if rotation:
+            theta = math.radians(float(rotation))
+            c = math.cos(theta)
+            s = math.sin(theta)
+            px, py = (c * px) - (s * py), (s * px) + (c * py)
+
+        return round(float(x) + px), round(float(y) + py)
 
     def _get_or_create_junction(self, x: float, y: float) -> str:
         """Get junction ID at position, creating if necessary."""

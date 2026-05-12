@@ -56,6 +56,37 @@ class ConnectivitySmokeTest(unittest.TestCase):
 
         self.assertEqual(engine.get_net_map(), {"VIN": ["R0.PLUS"]})
 
+    def test_top_level_pin_names_net(self):
+        engine = ConnectivityEngine()
+        engine.build_from_schematic({
+            "wires": [{"x1": 0, "y1": 0, "x2": 20, "y2": 0}],
+            "labels": [],
+            "pins": [{"name": "OUT", "x": 0, "y": 0, "direction": "output"}],
+            "instances": [],
+        })
+        engine.add_instance_pins(
+            "R0", "primitives", "res", 20, -35,
+            [{"name": "PLUS", "x": 0, "y": 35}],
+        )
+
+        self.assertEqual(engine.get_net_map(), {"OUT": ["__top__.OUT", "R0.PLUS"]})
+
+    def test_rotated_pin_coordinates_match_drawn_orientation(self):
+        engine = ConnectivityEngine()
+        engine.build_from_schematic({
+            "wires": [{"x1": 0, "y1": 10, "x2": 10, "y2": 10}],
+            "labels": [{"text": "VIN", "x": 0, "y": 10}],
+            "pins": [],
+            "instances": [],
+        })
+        engine.add_instance_pins(
+            "R0", "primitives", "res", 10, 0,
+            [{"name": "PLUS", "x": 10, "y": 0}],
+            rotation=90,
+        )
+
+        self.assertEqual(engine.get_net_map(), {"VIN": ["R0.PLUS"]})
+
 
 if __name__ == "__main__":
     unittest.main()

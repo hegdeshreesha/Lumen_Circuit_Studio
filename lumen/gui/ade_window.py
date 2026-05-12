@@ -1461,6 +1461,7 @@ class ADEWindow(QMainWindow):
             self.sim_combo.setCurrentIndex(idx)
 
         # Load variables
+        self.var_widget.table.setRowCount(0)
         for name, value in setup.get("variables", {}).items():
             self.var_widget._add_row()
             r = self.var_widget.table.rowCount() - 1
@@ -1478,5 +1479,42 @@ class ADEWindow(QMainWindow):
                         w.setChecked(bool(param_value))
                     elif isinstance(w, QLineEdit):
                         w.setText(str(param_value))
+
+        # Load outputs
+        self.outputs_widget.table.setRowCount(0)
+        for output in setup.get("outputs", []):
+            self.outputs_widget._add_entry(
+                output.get("signal", "sig"),
+                output.get("expression", "V(node)"),
+            )
+
+        # Load measurements
+        self.measurement_widget.table.setRowCount(0)
+        for meas in setup.get("measurements", []):
+            self.measurement_widget._add_row()
+            r = self.measurement_widget.table.rowCount() - 1
+            self.measurement_widget.table.setItem(
+                r, 0, QTableWidgetItem(meas.get("name", f"meas_{r}")))
+            type_widget = self.measurement_widget.table.cellWidget(r, 1)
+            if isinstance(type_widget, QComboBox):
+                idx = type_widget.findText(meas.get("type", "AVG"))
+                if idx >= 0:
+                    type_widget.setCurrentIndex(idx)
+            self.measurement_widget.table.setItem(
+                r, 2, QTableWidgetItem(meas.get("expression", "V(out)")))
+
+        # Load corners and run mode
+        self.corner_table.setRowCount(0)
+        for corner in setup.get("corners", []):
+            self._add_corner(
+                corner.get("name", "corner"),
+                str(corner.get("temp", "25")),
+                str(corner.get("vdd", "1.8")),
+                corner.get("process", "tt"),
+            )
+        mode = setup.get("corner_mode", "Single")
+        idx = self.corner_mode_combo.findText(mode)
+        if idx >= 0:
+            self.corner_mode_combo.setCurrentIndex(idx)
 
         self._log(f"Loaded ADE setup from {path}")

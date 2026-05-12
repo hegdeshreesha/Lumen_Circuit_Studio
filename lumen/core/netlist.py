@@ -9,6 +9,7 @@ Supports two connectivity models:
 - ConnectivityEngine (new, explicit junction/segment graph)
 """
 import os
+import math
 from dataclasses import dataclass, field
 from typing import Optional, Any
 from lumen.core.database import LibraryDatabase
@@ -510,6 +511,11 @@ class NetlistGenerator:
             root = find(pos)
             pos_to_net[root] = lbl["text"]
 
+        for pin in data.get("pins", []):
+            pos = (snap(pin["x"]), snap(pin["y"]))
+            root = find(pos)
+            pos_to_net[root] = pin.get("name", "")
+
         # Process ground instances — assign net "0"
         for inst in data.get("instances", []):
             if inst.get("cell") == "gnd":
@@ -531,6 +537,8 @@ class NetlistGenerator:
             cell_name = inst.get("cell", "")
             lib_name = inst.get("library", "")
             ix, iy = snap(inst.get("x", 0)), snap(inst.get("y", 0))
+            rotation = float(inst.get("rotation", inst.get("rot", 0)))
+            transform = inst.get("transform")
 
             pins = self._pins_for_instance(lib_name, cell_name)
             if not pins:
@@ -541,8 +549,7 @@ class NetlistGenerator:
 
             for pin in pins:
                 pin_name = pin["name"]
-                px = ix + snap(pin["x"])
-                py = iy + snap(pin["y"])
+                px, py = self._pin_scene_position(ix, iy, pin, rotation, transform)
                 pos = (px, py)
                 root = find(pos)
 
@@ -602,7 +609,16 @@ class NetlistGenerator:
 
             pins = self._pins_for_instance(lib_name, cell_name)
             if pins:
-                self._connectivity.add_instance_pins(iname, lib_name, cell_name, ix, iy, pins)
+                self._connectivity.add_instance_pins(
+                    iname,
+                    lib_name,
+                    cell_name,
+                    ix,
+                    iy,
+                    pins,
+                    float(inst.get("rotation", inst.get("rot", 0))),
+                    inst.get("transform"),
+                )
 
         # Get net mapping from connectivity engine
         net_connections = self._connectivity.get_net_map()
@@ -655,6 +671,31 @@ class NetlistGenerator:
                     self._net_counter += 1
 
         return pin_net_map
+
+    @staticmethod
+    def _pin_scene_position(x: float, y: float, pin: dict,
+                            rotation: float = 0,
+                            transform: dict | None = None) -> tuple[int, int]:
+        """Resolve a symbol-local pin through instance mirror/rotation/translation."""
+        px = float(pin.get("x", 0))
+        py = float(pin.get("y", 0))
+
+        if transform:
+            m11 = float(transform.get("m11", 1))
+            m12 = float(transform.get("m12", 0))
+            m21 = float(transform.get("m21", 0))
+            m22 = float(transform.get("m22", 1))
+            dx = float(transform.get("dx", 0))
+            dy = float(transform.get("dy", 0))
+            px, py = (m11 * px) + (m21 * py) + dx, (m12 * px) + (m22 * py) + dy
+
+        if rotation:
+            theta = math.radians(float(rotation))
+            c = math.cos(theta)
+            s = math.sin(theta)
+            px, py = (c * px) - (s * py), (s * px) + (c * py)
+
+        return round(float(x) + px), round(float(y) + py)
 
     def _find_crossings(self, seg1: tuple, seg2: tuple) -> list[tuple[float, float]]:
         """Find crossing points between two wire segments."""

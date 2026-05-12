@@ -16,9 +16,9 @@ from PyQt6.QtWidgets import (
     QGraphicsLineItem, QGraphicsRectItem, QGraphicsTextItem,
     QGraphicsEllipseItem, QGraphicsPathItem, QGraphicsItemGroup,
     QInputDialog, QDialog, QDialogButtonBox, QListWidget,
-    QListWidgetItem, QLabel, QHBoxLayout, QApplication
+    QListWidgetItem, QLabel, QHBoxLayout, QApplication, QRubberBand
 )
-from PyQt6.QtCore import Qt, QPointF, QRectF, pyqtSignal, QLineF
+from PyQt6.QtCore import Qt, QPointF, QRect, QRectF, pyqtSignal, QLineF
 from PyQt6.QtGui import (
     QPen, QBrush, QColor, QPainter, QPainterPath, QFont,
     QTransform, QWheelEvent, QKeyEvent
@@ -88,6 +88,118 @@ class NetLabelItem(QGraphicsTextItem):
         self.setFont(font)
         self.setFlag(QGraphicsTextItem.GraphicsItemFlag.ItemIsSelectable)
         self.setFlag(QGraphicsTextItem.GraphicsItemFlag.ItemIsMovable)
+
+
+class SchematicPinItem(QGraphicsItemGroup):
+    """Cadence-style schematic terminal with an anchor, direction, and label."""
+
+    DIRECTIONS = ["input", "output", "inout", "power", "ground"]
+    USAGES = ["signal", "power", "ground", "clock", "analog"]
+    ORIENTATIONS = ["R0", "R90", "R180", "R270"]
+
+    def __init__(self, name: str, x: float, y: float,
+                 direction: str = "input", usage: str = "signal",
+                 orientation: str = "R0"):
+        super().__init__()
+        self.pin_name = name
+        self.pin_direction = direction if direction in self.DIRECTIONS else "input"
+        self.pin_usage = usage if usage in self.USAGES else "signal"
+        self.pin_orientation = orientation if orientation in self.ORIENTATIONS else "R0"
+        self._items: list = []
+        self._build_graphics()
+        self.setPos(x, y)
+        self.setFlag(QGraphicsItemGroup.GraphicsItemFlag.ItemIsSelectable)
+        self.setFlag(QGraphicsItemGroup.GraphicsItemFlag.ItemIsMovable)
+
+    def _color(self) -> QColor:
+        if self.pin_usage == "power":
+            return QColor("#ffb703")
+        if self.pin_usage == "ground":
+            return QColor("#8ecae6")
+        if self.pin_usage == "clock":
+            return QColor("#c77dff")
+        return PIN_COLOR
+
+    def _orientation_vector(self) -> tuple[int, int]:
+        return {
+            "R0": (1, 0),
+            "R90": (0, -1),
+            "R180": (-1, 0),
+            "R270": (0, 1),
+        }.get(self.pin_orientation, (1, 0))
+
+    def _clear_group(self):
+        for item in list(self.childItems()):
+            self.removeFromGroup(item)
+            if item.scene():
+                item.scene().removeItem(item)
+
+    def _build_graphics(self):
+        self._clear_group()
+        color = self._color()
+        pen = QPen(color, 1.5)
+        brush = QBrush(color)
+        vx, vy = self._orientation_vector()
+
+        # Connection point is the group origin, matching Cadence terminal semantics.
+        marker = QGraphicsRectItem(-PIN_RADIUS, -PIN_RADIUS, PIN_RADIUS * 2, PIN_RADIUS * 2)
+        marker.setPen(pen)
+        marker.setBrush(brush)
+        self.addToGroup(marker)
+
+        stub = QGraphicsLineItem(0, 0, vx * 22, vy * 22)
+        stub.setPen(pen)
+        self.addToGroup(stub)
+
+        label = QGraphicsTextItem(self.pin_name)
+        label.setDefaultTextColor(color)
+        font = QFont("Consolas", 8, QFont.Weight.Bold)
+        label.setFont(font)
+        label_x = vx * 26
+        label_y = vy * 26 - 8
+        if self.pin_orientation == "R180":
+            label_x -= max(30, len(self.pin_name) * 7)
+        if self.pin_orientation == "R90":
+            label_x += 4
+            label_y -= 12
+        if self.pin_orientation == "R270":
+            label_x += 4
+            label_y += 4
+        label.setPos(label_x, label_y)
+        self.addToGroup(label)
+
+        dir_tag = QGraphicsTextItem(self.pin_direction[:1].upper())
+        dir_tag.setDefaultTextColor(QColor("#101010"))
+        dir_tag.setFont(QFont("Consolas", 6, QFont.Weight.Bold))
+        dir_tag.setPos(-3, -8)
+        self.addToGroup(dir_tag)
+
+    def set_pin_name(self, name: str):
+        self.pin_name = name
+        self._build_graphics()
+
+    def set_direction(self, direction: str):
+        self.pin_direction = direction if direction in self.DIRECTIONS else self.pin_direction
+        self._build_graphics()
+
+    def set_usage(self, usage: str):
+        self.pin_usage = usage if usage in self.USAGES else self.pin_usage
+        self._build_graphics()
+
+    def set_orientation(self, orientation: str):
+        self.pin_orientation = orientation if orientation in self.ORIENTATIONS else self.pin_orientation
+        self._build_graphics()
+
+    def get_data(self) -> dict:
+        pos = self.pos()
+        return {
+            "name": self.pin_name,
+            "x": pos.x(),
+            "y": pos.y(),
+            "direction": self.pin_direction,
+            "usage": self.pin_usage,
+            "orientation": self.pin_orientation,
+        }
 
 
 class InstanceItem(QGraphicsItemGroup):
@@ -248,16 +360,50 @@ class SchematicCanvas(QGraphicsView):
         self._zoom = 1.0
         self._panning = False
         self._pan_start = QPointF()
+        self._zoom_band: QRubberBand | None = None
+        self._zoom_origin = QPointF()
+        self.show_grid = True
+
+    def zoom_by(self, factor: float):
+        """Zoom around the current mouse/view anchor."""
+        self._zoom *= factor
+        self._zoom = max(0.05, min(self._zoom, 100.0))
+        self.scale(factor, factor)
+
+    def zoom_in(self):
+        self.zoom_by(1.25)
+
+    def zoom_out(self):
+        self.zoom_by(0.8)
+
+    def fit_to_items(self):
+        """Fit visible design objects, falling back to the scene."""
+        rect = self.scene().itemsBoundingRect()
+        if rect.isNull() or rect.width() < 1 or rect.height() < 1:
+            rect = self.sceneRect()
+        margin = max(40.0, min(rect.width(), rect.height()) * 0.15)
+        rect = rect.adjusted(-margin, -margin, margin, margin)
+        self.resetTransform()
+        self.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)
+        self._zoom = self.transform().m11()
+
+    def zoom_to_view_rect(self, view_rect: QRect):
+        """Zoom to a selected rectangle in viewport coordinates."""
+        if view_rect.width() < 8 or view_rect.height() < 8:
+            return
+        scene_rect = self.mapToScene(view_rect.normalized()).boundingRect()
+        if scene_rect.width() < 1 or scene_rect.height() < 1:
+            return
+        self.fitInView(scene_rect, Qt.AspectRatioMode.KeepAspectRatio)
+        self._zoom = self.transform().m11()
 
     def wheelEvent(self, event: QWheelEvent):
         """Zoom with mouse wheel."""
         factor = 1.15
         if event.angleDelta().y() > 0:
-            self._zoom *= factor
-            self.scale(factor, factor)
+            self.zoom_by(factor)
         else:
-            self._zoom /= factor
-            self.scale(1 / factor, 1 / factor)
+            self.zoom_by(1 / factor)
 
     def mousePressEvent(self, event):
         """Start panning with middle button."""
@@ -266,10 +412,24 @@ class SchematicCanvas(QGraphicsView):
             self._pan_start = event.position()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
             event.accept()
+        elif event.button() == Qt.MouseButton.RightButton:
+            self._zoom_origin = event.position()
+            self._zoom_band = QRubberBand(QRubberBand.Shape.Rectangle, self.viewport())
+            origin = self._zoom_origin.toPoint()
+            self._zoom_band.setGeometry(QRect(origin, origin))
+            self._zoom_band.show()
+            event.accept()
         else:
             super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        scene_pos = self.mapToScene(event.position().toPoint())
+        self.coord_changed.emit(scene_pos.x(), scene_pos.y())
+        if self._zoom_band:
+            self._zoom_band.setGeometry(
+                QRect(self._zoom_origin.toPoint(), event.position().toPoint()).normalized())
+            event.accept()
+            return
         if self._panning:
             delta = event.position() - self._pan_start
             self._pan_start = event.position()
@@ -279,13 +439,17 @@ class SchematicCanvas(QGraphicsView):
                 int(self.verticalScrollBar().value() - delta.y()))
             event.accept()
         else:
-            # Report coordinates
-            scene_pos = self.mapToScene(event.position().toPoint())
-            self.coord_changed.emit(scene_pos.x(), scene_pos.y())
             super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
-        if event.button() == Qt.MouseButton.MiddleButton:
+        if event.button() == Qt.MouseButton.RightButton and self._zoom_band:
+            band_rect = self._zoom_band.geometry()
+            self._zoom_band.hide()
+            self._zoom_band.deleteLater()
+            self._zoom_band = None
+            self.zoom_to_view_rect(band_rect)
+            event.accept()
+        elif event.button() == Qt.MouseButton.MiddleButton:
             self._panning = False
             self.setCursor(Qt.CursorShape.ArrowCursor)
             event.accept()
@@ -295,6 +459,8 @@ class SchematicCanvas(QGraphicsView):
     def drawBackground(self, painter: QPainter, rect: QRectF):
         """Draw the grid background."""
         super().drawBackground(painter, rect)
+        if not self.show_grid:
+            return
 
         left = int(rect.left()) - (int(rect.left()) % GRID_SIZE)
         top = int(rect.top()) - (int(rect.top()) % GRID_SIZE)
@@ -363,6 +529,7 @@ class SchematicEditor(QWidget):
         self.wires: list[WireItem] = []
         self.instances: list[InstanceItem] = []
         self.labels: list[NetLabelItem] = []
+        self.pins: list[SchematicPinItem] = []
 
         self._setup_ui()
         self._load_data()
@@ -382,6 +549,37 @@ class SchematicEditor(QWidget):
         self.scene.mouseReleaseEvent = self._scene_mouse_release
 
         layout.addWidget(self.canvas)
+
+    def zoom_in(self):
+        self.canvas.zoom_in()
+
+    def zoom_out(self):
+        self.canvas.zoom_out()
+
+    def zoom_fit(self):
+        self.canvas.fit_to_items()
+
+    def redraw(self):
+        self.scene.update()
+        self.canvas.viewport().update()
+
+    def set_grid_visible(self, visible: bool):
+        self.canvas.show_grid = visible
+        self.redraw()
+
+    def set_grid_size(self, value: int):
+        global GRID_SIZE
+        GRID_SIZE = max(1, int(value))
+        self.redraw()
+
+    def set_pan_mode(self):
+        self.set_mode("select")
+        self.canvas.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+        self.canvas.setCursor(Qt.CursorShape.OpenHandCursor)
+
+    def select_all(self):
+        for item in self.wires + self.instances + self.labels + self.pins:
+            item.setSelected(True)
 
     def _get_sym_data(self, library: str, cell: str) -> dict | None:
         """Resolve symbol data, supporting dynamic PDK symbols."""
@@ -424,6 +622,10 @@ class SchematicEditor(QWidget):
 
             for w in data.get("wires", []):
                 wire = WireItem(w["x1"], w["y1"], w["x2"], w["y2"])
+                wire.net_name = w.get("net", "")
+                wire.wire_kind = w.get("kind", "wire")
+                if wire.wire_kind == "bus":
+                    wire.setPen(QPen(QColor("#2dd4bf"), WIRE_WIDTH + 1))
                 self.scene.addItem(wire)
                 self.wires.append(wire)
             for inst in data.get("instances", []):
@@ -432,17 +634,52 @@ class SchematicEditor(QWidget):
                     item = InstanceItem(
                         sym_data, inst["name"],
                         inst["x"], inst["y"], inst.get("params", {}))
+                    item.setRotation(float(inst.get("rotation", inst.get("rot", 0))))
+                    transform = inst.get("transform")
+                    if transform:
+                        item.setTransform(QTransform(
+                            float(transform.get("m11", 1)),
+                            float(transform.get("m12", 0)),
+                            float(transform.get("m21", 0)),
+                            float(transform.get("m22", 1)),
+                            float(transform.get("dx", 0)),
+                            float(transform.get("dy", 0)),
+                        ))
                     self.scene.addItem(item)
                     self.instances.append(item)
             for lbl in data.get("labels", []):
                 item = NetLabelItem(lbl["text"], lbl["x"], lbl["y"])
                 self.scene.addItem(item)
                 self.labels.append(item)
+            for pin in data.get("pins", []):
+                item = SchematicPinItem(
+                    pin.get("name", ""),
+                    pin.get("x", 0),
+                    pin.get("y", 0),
+                    pin.get("direction", "input"),
+                    pin.get("usage", "signal"),
+                    pin.get("orientation", "R0"),
+                )
+                self.scene.addItem(item)
+                self.pins.append(item)
 
     def save(self):
         """Save the schematic to the database."""
         if not self.library:
             return
+        self.db.save_view(self.library, self.cell, self.view, self.to_data())
+
+    def save_as(self, library: str, cell: str, view: str = "schematic"):
+        """Save the current schematic data into another cellview."""
+        if not self.db.cell_exists(library, cell):
+            self.db.create_cell(library, cell)
+        data = self.to_data()
+        data["name"] = cell
+        data["library"] = library
+        self.db.save_view(library, cell, view, data)
+
+    def to_data(self) -> dict:
+        """Serialize the current schematic state without writing it."""
         wire_data = []
         for w in self.wires:
             line = w.line()
@@ -450,17 +687,28 @@ class SchematicEditor(QWidget):
             wire_data.append({
                 "x1": line.x1() + pos.x(), "y1": line.y1() + pos.y(),
                 "x2": line.x2() + pos.x(), "y2": line.y2() + pos.y(),
-                "net": w.net_name
+                "net": w.net_name,
+                "kind": getattr(w, "wire_kind", "wire"),
             })
         inst_data = []
         for inst in self.instances:
             pos = inst.pos()
+            transform = inst.transform()
             inst_data.append({
                 "name": inst.instance_name,
                 "cell": inst.cell_name,
                 "library": inst.library_name,
                 "x": pos.x(), "y": pos.y(),
-                "params": inst.parameters
+                "params": inst.parameters,
+                "rotation": inst.rotation(),
+                "transform": {
+                    "m11": transform.m11(),
+                    "m12": transform.m12(),
+                    "m21": transform.m21(),
+                    "m22": transform.m22(),
+                    "dx": transform.dx(),
+                    "dy": transform.dy(),
+                },
             })
         label_data = []
         for lbl in self.labels:
@@ -469,16 +717,18 @@ class SchematicEditor(QWidget):
                 "text": lbl.toPlainText(),
                 "x": pos.x(), "y": pos.y()
             })
-        data = {
+        pin_data = []
+        for pin in self.pins:
+            pin_data.append(pin.get_data())
+        return {
             "type": "schematic",
             "name": self.cell,
             "library": self.library,
             "wires": wire_data,
             "instances": inst_data,
             "labels": label_data,
-            "pins": []
+            "pins": pin_data
         }
-        self.db.save_view(self.library, self.cell, self.view, data)
 
     # ── Mode Management ───────────────────────────────────────
 
@@ -490,10 +740,10 @@ class SchematicEditor(QWidget):
         if mode == "select":
             self.canvas.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
             self.canvas.setCursor(Qt.CursorShape.ArrowCursor)
-        elif mode == "wire":
+        elif mode in ("wire", "bus"):
             self.canvas.setDragMode(QGraphicsView.DragMode.NoDrag)
             self.canvas.setCursor(Qt.CursorShape.CrossCursor)
-        elif mode == "place":
+        elif mode in ("place", "pin"):
             self.canvas.setDragMode(QGraphicsView.DragMode.NoDrag)
             self.canvas.setCursor(Qt.CursorShape.CrossCursor)
         else:
@@ -541,6 +791,8 @@ class SchematicEditor(QWidget):
                     lists_map[top] = self.wires
                 elif isinstance(top, InstanceItem):
                     lists_map[top] = self.instances
+                elif isinstance(top, SchematicPinItem):
+                    lists_map[top] = self.pins
                 elif isinstance(top, NetLabelItem):
                     lists_map[top] = self.labels
         if items_to_delete:
@@ -621,7 +873,7 @@ class SchematicEditor(QWidget):
     # ── Copy / Paste ──────────────────────────────────────────
 
     def copy_selected(self):
-        """Copy selected instances to clipboard."""
+        """Copy selected schematic objects to the internal clipboard."""
         self._clipboard.clear()
         for item in self.scene.selectedItems():
             top = item
@@ -632,7 +884,38 @@ class SchematicEditor(QWidget):
                 self._clipboard.append({
                     'type': 'instance', 'sym': top.symbol_data,
                     'name': top.instance_name, 'x': pos.x(), 'y': pos.y(),
-                    'params': dict(top.parameters), 'rot': top.rotation()
+                    'params': dict(top.parameters), 'rot': top.rotation(),
+                    'transform': {
+                        'm11': top.transform().m11(), 'm12': top.transform().m12(),
+                        'm21': top.transform().m21(), 'm22': top.transform().m22(),
+                        'dx': top.transform().dx(), 'dy': top.transform().dy(),
+                    },
+                    'library': top.library_name, 'cell': top.cell_name,
+                })
+            elif isinstance(top, WireItem):
+                line = top.line()
+                pos = top.pos()
+                self._clipboard.append({
+                    'type': 'wire',
+                    'x1': line.x1() + pos.x(), 'y1': line.y1() + pos.y(),
+                    'x2': line.x2() + pos.x(), 'y2': line.y2() + pos.y(),
+                    'net': top.net_name,
+                    'kind': getattr(top, "wire_kind", "wire"),
+                })
+            elif isinstance(top, SchematicPinItem):
+                data = top.get_data()
+                self._clipboard.append({
+                    'type': 'pin',
+                    'text': data['name'], 'x': data['x'], 'y': data['y'],
+                    'direction': data['direction'],
+                    'usage': data.get('usage', 'signal'),
+                    'orientation': data.get('orientation', 'R0'),
+                })
+            elif isinstance(top, NetLabelItem):
+                pos = top.pos()
+                self._clipboard.append({
+                    'type': 'label',
+                    'text': top.toPlainText(), 'x': pos.x(), 'y': pos.y(),
                 })
 
     def paste_clipboard(self):
@@ -651,10 +934,119 @@ class SchematicEditor(QWidget):
                                     entry['x'] + 20, entry['y'] + 20,
                                     dict(entry['params']))
                 inst.setRotation(entry['rot'])
+                transform = entry.get('transform')
+                if transform:
+                    inst.setTransform(QTransform(
+                        float(transform.get("m11", 1)),
+                        float(transform.get("m12", 0)),
+                        float(transform.get("m21", 0)),
+                        float(transform.get("m22", 1)),
+                        float(transform.get("dx", 0)),
+                        float(transform.get("dy", 0)),
+                    ))
                 inst.setSelected(True)
                 cmds.append(AddItemCommand(self.scene, inst, self.instances))
+            elif entry['type'] == 'wire':
+                wire = WireItem(
+                    entry['x1'] + 20, entry['y1'] + 20,
+                    entry['x2'] + 20, entry['y2'] + 20)
+                wire.net_name = entry.get('net', '')
+                wire.wire_kind = entry.get('kind', 'wire')
+                if wire.wire_kind == 'bus':
+                    wire.setPen(QPen(QColor("#2dd4bf"), WIRE_WIDTH + 1))
+                wire.setSelected(True)
+                cmds.append(AddItemCommand(self.scene, wire, self.wires))
+            elif entry['type'] in ('label', 'pin'):
+                if entry['type'] == 'pin':
+                    pin = SchematicPinItem(
+                        entry['text'], entry['x'] + 20, entry['y'] + 20,
+                        entry.get('direction', 'input'),
+                        entry.get('usage', 'signal'),
+                        entry.get('orientation', 'R0'),
+                    )
+                    cmds.append(AddItemCommand(self.scene, pin, self.pins))
+                else:
+                    label = NetLabelItem(entry['text'], entry['x'] + 20, entry['y'] + 20)
+                    cmds.append(LabelCommand(self.scene, label, self.labels, add=True))
         if cmds:
             self.cmd_stack.execute(CompoundCommand(cmds))
+
+    def duplicate_selected(self):
+        """Duplicate selected instances using the clipboard implementation."""
+        self.copy_selected()
+        self.paste_clipboard()
+
+    def stretch_selected(self, dx: float, dy: float):
+        """Stretch selected wires by moving their second endpoint; move other selected items."""
+        moved_items = []
+        for item in self.scene.selectedItems():
+            top = item
+            while top.parentItem():
+                top = top.parentItem()
+            if isinstance(top, WireItem):
+                line = top.line()
+                top.setLine(line.x1(), line.y1(), line.x2() + dx, line.y2() + dy)
+            elif top not in moved_items and isinstance(top, (InstanceItem, NetLabelItem, SchematicPinItem)):
+                moved_items.append(top)
+        if moved_items:
+            self.cmd_stack.execute(MoveItemsCommand(moved_items, dx, dy))
+
+    def name_selected_wires(self, net_name: str, as_bus: bool = False):
+        """Assign a net or bus name to selected wires."""
+        for item in self.scene.selectedItems():
+            if isinstance(item, WireItem):
+                item.net_name = net_name
+                item.wire_kind = "bus" if as_bus else "wire"
+                if as_bus:
+                    item.setPen(QPen(QColor("#2dd4bf"), WIRE_WIDTH + 1))
+
+    def add_bus_tap(self, name: str):
+        """Create a named tap label at the midpoint of the first selected wire."""
+        for item in self.scene.selectedItems():
+            if isinstance(item, WireItem):
+                line = item.line()
+                pos = item.pos()
+                x = pos.x() + (line.x1() + line.x2()) / 2
+                y = pos.y() + (line.y1() + line.y2()) / 2
+                label = NetLabelItem(name, x, y)
+                label.setDefaultTextColor(QColor("#2dd4bf"))
+                self.cmd_stack.execute(LabelCommand(self.scene, label, self.labels, add=True))
+                return True
+        return False
+
+    def add_note(self, text: str, x: float = 0, y: float = 0):
+        """Add a schematic annotation as a non-net label."""
+        note = NetLabelItem(text, x, y)
+        note.is_note = True
+        note.setDefaultTextColor(QColor("#d0d0d0"))
+        self.cmd_stack.execute(LabelCommand(self.scene, note, self.labels, add=True))
+
+    def selected_summary(self) -> str:
+        """Return a compact description of the current selection."""
+        rows = []
+        for item in self.scene.selectedItems():
+            top = item
+            while top.parentItem():
+                top = top.parentItem()
+            if isinstance(top, InstanceItem):
+                rows.append(f"{top.instance_name}: {top.library_name}/{top.cell_name}")
+            elif isinstance(top, WireItem):
+                rows.append(f"Wire: {top.net_name or '<unnamed>'}")
+            elif isinstance(top, SchematicPinItem):
+                rows.append(f"Pin: {top.pin_name} ({top.pin_direction}, {top.pin_orientation})")
+            elif isinstance(top, NetLabelItem):
+                rows.append(f"Label: {top.toPlainText()}")
+        return "\n".join(dict.fromkeys(rows))
+
+    def selected_instance(self) -> InstanceItem | None:
+        """Return the first selected top-level instance."""
+        for item in self.scene.selectedItems():
+            top = item
+            while top.parentItem():
+                top = top.parentItem()
+            if isinstance(top, InstanceItem):
+                return top
+        return None
 
     # ── Keyboard ──────────────────────────────────────────────
 
@@ -671,6 +1063,8 @@ class SchematicEditor(QWidget):
             self.start_instance_placement()
         elif key == Qt.Key.Key_L and mod == Qt.KeyboardModifier.NoModifier:
             self.set_mode('label')
+        elif key == Qt.Key.Key_P and mod == Qt.KeyboardModifier.NoModifier:
+            self.set_mode('pin')
         elif key == Qt.Key.Key_R and mod == Qt.KeyboardModifier.NoModifier:
             self.rotate_selected()
         elif key == Qt.Key.Key_X and mod == Qt.KeyboardModifier.NoModifier:
@@ -688,8 +1082,7 @@ class SchematicEditor(QWidget):
         elif key == Qt.Key.Key_V and mod == Qt.KeyboardModifier.ControlModifier:
             self.paste_clipboard()
         elif key == Qt.Key.Key_A and mod == Qt.KeyboardModifier.ControlModifier:
-            for item in self.scene.items():
-                item.setSelected(True)
+            self.select_all()
         else:
             super().keyPressEvent(event)
 
@@ -700,36 +1093,36 @@ class SchematicEditor(QWidget):
         pos = event.scenePos()
         sx, sy = snap(pos.x()), snap(pos.y())
 
-        if event.button() == Qt.MouseButton.RightButton:
-            # Right-click cancels current action
-            if self._mode != 'select':
-                self.set_mode('select')
-            return
-
         if event.button() != Qt.MouseButton.LeftButton:
             QGraphicsScene.mousePressEvent(self.scene, event)
             return
 
-        if self._mode == 'wire':
+        if self._mode in ('wire', 'bus'):
             self._handle_wire_click(sx, sy)
         elif self._mode == 'place':
             self._handle_place_click(sx, sy)
         elif self._mode == 'label':
             self._handle_label_click(sx, sy)
+        elif self._mode == 'pin':
+            self._handle_pin_click(sx, sy)
         elif self._mode == 'select':
             item = self.scene.itemAt(pos, QTransform())
             if item:
-                while item and not isinstance(item, InstanceItem):
-                    item = item.parentItem()
-                if isinstance(item, InstanceItem):
-                    self._show_instance_properties(item)
-                    # Record start positions for move tracking
-                    self._move_start_positions = {}
-                    for sel in self.scene.selectedItems():
-                        top = sel
-                        while top.parentItem():
-                            top = top.parentItem()
-                        self._move_start_positions[id(top)] = QPointF(top.pos())
+                top = item
+                while top.parentItem():
+                    top = top.parentItem()
+                if isinstance(top, InstanceItem):
+                    self._show_instance_properties(top)
+                elif isinstance(top, (SchematicPinItem, NetLabelItem, WireItem)):
+                    top.setSelected(True)
+                    self.show_selected_properties()
+                # Record start positions for move tracking.
+                self._move_start_positions = {}
+                for sel in self.scene.selectedItems():
+                    moving = sel
+                    while moving.parentItem():
+                        moving = moving.parentItem()
+                    self._move_start_positions[id(moving)] = QPointF(moving.pos())
             QGraphicsScene.mousePressEvent(self.scene, event)
 
     def _scene_mouse_move(self, event):
@@ -737,7 +1130,7 @@ class SchematicEditor(QWidget):
         pos = event.scenePos()
         sx, sy = snap(pos.x()), snap(pos.y())
 
-        if self._mode == 'wire' and self._wire_start:
+        if self._mode in ('wire', 'bus') and self._wire_start:
             x1, y1 = self._wire_start.x(), self._wire_start.y()
             # Show Manhattan preview: horizontal segment + vertical segment
             if self._wire_preview:
@@ -809,15 +1202,27 @@ class SchematicEditor(QWidget):
                 cmds = []
                 if abs(x2 - x1) >= abs(y2 - y1):
                     w1 = WireItem(x1, y1, x2, y1)
+                    if self._mode == 'bus':
+                        w1.wire_kind = 'bus'
+                        w1.setPen(QPen(QColor("#2dd4bf"), WIRE_WIDTH + 1))
                     cmds.append(AddItemCommand(self.scene, w1, self.wires))
                     if y1 != y2:
                         w2 = WireItem(x2, y1, x2, y2)
+                        if self._mode == 'bus':
+                            w2.wire_kind = 'bus'
+                            w2.setPen(QPen(QColor("#2dd4bf"), WIRE_WIDTH + 1))
                         cmds.append(AddItemCommand(self.scene, w2, self.wires))
                 else:
                     w1 = WireItem(x1, y1, x1, y2)
+                    if self._mode == 'bus':
+                        w1.wire_kind = 'bus'
+                        w1.setPen(QPen(QColor("#2dd4bf"), WIRE_WIDTH + 1))
                     cmds.append(AddItemCommand(self.scene, w1, self.wires))
                     if x1 != x2:
                         w2 = WireItem(x1, y2, x2, y2)
+                        if self._mode == 'bus':
+                            w2.wire_kind = 'bus'
+                            w2.setPen(QPen(QColor("#2dd4bf"), WIRE_WIDTH + 1))
                         cmds.append(AddItemCommand(self.scene, w2, self.wires))
                 self.cmd_stack.execute(CompoundCommand(cmds))
             self._wire_start = QPointF(x2, y2)
@@ -885,6 +1290,52 @@ class SchematicEditor(QWidget):
             cmd = LabelCommand(self.scene, label, self.labels, add=True)
             self.cmd_stack.execute(cmd)
 
+    def _handle_pin_click(self, x: float, y: float):
+        """Place Cadence-style top-level schematic pin(s) at the clicked position."""
+        names_text, ok = QInputDialog.getText(
+            self, "Create Pin", "Pin name(s), separated by spaces or commas:")
+        if not ok or not names_text:
+            return
+        direction, ok = QInputDialog.getItem(
+            self,
+            "Pin Direction",
+            "Direction:",
+            SchematicPinItem.DIRECTIONS,
+            0,
+            False,
+        )
+        if not ok:
+            return
+        usage_default = "power" if direction == "power" else "ground" if direction == "ground" else "signal"
+        usage, ok = QInputDialog.getItem(
+            self,
+            "Pin Usage",
+            "Usage:",
+            SchematicPinItem.USAGES,
+            SchematicPinItem.USAGES.index(usage_default),
+            False,
+        )
+        if not ok:
+            return
+        orientation, ok = QInputDialog.getItem(
+            self,
+            "Pin Orientation",
+            "Orientation:",
+            SchematicPinItem.ORIENTATIONS,
+            0,
+            False,
+        )
+        if not ok:
+            return
+        names = [n for n in names_text.replace(",", " ").split() if n]
+        cmds = []
+        for index, name in enumerate(names):
+            pin = SchematicPinItem(name, x, y + index * GRID_SIZE * 2,
+                                   direction, usage, orientation)
+            cmds.append(AddItemCommand(self.scene, pin, self.pins))
+        if cmds:
+            self.cmd_stack.execute(CompoundCommand(cmds))
+
     # ── Property Display ──────────────────────────────────────
 
     def _show_instance_properties(self, inst: InstanceItem):
@@ -901,6 +1352,93 @@ class SchematicEditor(QWidget):
                 f"{inst.instance_name} ({inst.cell_name})",
                 props, on_change
             )
+
+    def show_selected_properties(self) -> bool:
+        """Refresh the property editor for the current selection."""
+        selected = self.scene.selectedItems()
+        if not selected:
+            return False
+
+        for item in selected:
+            top = item
+            while top.parentItem():
+                top = top.parentItem()
+            if isinstance(top, InstanceItem):
+                self._show_instance_properties(top)
+                return True
+
+        main_win = self.window()
+        if not hasattr(main_win, "prop_editor"):
+            return False
+
+        item = selected[0]
+        while item.parentItem():
+            item = item.parentItem()
+        if isinstance(item, WireItem):
+            line = item.line()
+            main_win.prop_editor.show_properties(
+                "Wire",
+                {
+                    "Type": "Wire",
+                    "Net": item.net_name or "",
+                    "X1": f"{line.x1():.1f}",
+                    "Y1": f"{line.y1():.1f}",
+                    "X2": f"{line.x2():.1f}",
+                    "Y2": f"{line.y2():.1f}",
+                },
+            )
+            return True
+
+        if isinstance(item, SchematicPinItem):
+            data = item.get_data()
+
+            def on_change(key, value):
+                if key == "Name":
+                    item.set_pin_name(value)
+                elif key == "Direction":
+                    item.set_direction(value)
+                elif key == "Usage":
+                    item.set_usage(value)
+                elif key == "Orientation":
+                    item.set_orientation(value)
+                elif key == "X":
+                    item.setPos(float(value), item.pos().y())
+                elif key == "Y":
+                    item.setPos(item.pos().x(), float(value))
+
+            main_win.prop_editor.show_properties(
+                f"Pin {item.pin_name}",
+                {
+                    "Type": "Schematic Pin",
+                    "Name": data["name"],
+                    "Direction": data["direction"],
+                    "Usage": data["usage"],
+                    "Orientation": data["orientation"],
+                    "X": f"{data['x']:.1f}",
+                    "Y": f"{data['y']:.1f}",
+                },
+                on_change,
+            )
+            return True
+
+        if isinstance(item, NetLabelItem):
+            pos = item.pos()
+            is_pin = item in self.pins
+            props = {
+                "Type": "Schematic Pin" if is_pin else "Net Label",
+                "Name" if is_pin else "Text": item.toPlainText(),
+                "X": f"{pos.x():.1f}",
+                "Y": f"{pos.y():.1f}",
+            }
+            if is_pin:
+                props["Direction"] = getattr(item, "port_direction", "inout")
+            main_win.prop_editor.show_properties(
+                "Schematic Pin" if is_pin else "Net Label",
+                props,
+            )
+            return True
+
+        return False
 
 
 # ── Instance Browser Dialog ──────────────────────────────────
