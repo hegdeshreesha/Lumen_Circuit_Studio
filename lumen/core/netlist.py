@@ -781,7 +781,7 @@ class NetlistGenerator:
                 )
                 continue
             spice_model = sym.get("spice_model", "")
-            if spice_model in ("gnd", "vdd"):
+            if spice_model in ("gnd", "vdd", "vss", "port", "no_conn"):
                 continue
 
             prefix = sym.get("prefix", "X")
@@ -816,6 +816,43 @@ class NetlistGenerator:
             elif spice_model == "I":
                 dc = params.get("DC", "0")
                 lines.append(f"{iname} {net_str} DC {dc}")
+            elif spice_model in ("VDC", "IDC"):
+                dc = params.get("DC", "0")
+                lines.append(f"{iname} {net_str} DC {dc}")
+            elif spice_model in ("VAC", "IAC"):
+                dc = params.get("DC", "0")
+                ac = params.get("AC", "1")
+                phase = params.get("phase", "")
+                line = f"{iname} {net_str} DC {dc} AC {ac}"
+                if phase:
+                    line += f" {phase}"
+                lines.append(line)
+            elif spice_model in ("VPULSE", "IPULSE"):
+                args = [
+                    params.get("v1", "0"),
+                    params.get("v2", "1"),
+                    params.get("td", "0"),
+                    params.get("tr", "1n"),
+                    params.get("tf", "1n"),
+                    params.get("pw", "5n"),
+                    params.get("per", "10n"),
+                ]
+                lines.append(f"{iname} {net_str} PULSE({' '.join(args)})")
+            elif spice_model in ("VSIN", "ISIN"):
+                args = [
+                    params.get("vo", "0"),
+                    params.get("va", "1"),
+                    params.get("freq", "1k"),
+                    params.get("td", "0"),
+                    params.get("theta", "0"),
+                    params.get("phase", "0"),
+                ]
+                lines.append(f"{iname} {net_str} SIN({' '.join(args)})")
+            elif spice_model in ("VPWL", "IPWL"):
+                points = params.get("points", "0 0 1n 1")
+                lines.append(f"{iname} {net_str} PWL({points})")
+            elif spice_model == "IPROBE":
+                lines.append(f"{iname} {net_str} DC 0")
             elif spice_model == "D":
                 model = params.get("model", "D1N4148")
                 lines.append(f"{iname} {net_str} {model}")
@@ -838,22 +875,28 @@ class NetlistGenerator:
                 if ps:
                     line += f" PS={ps}"
                 lines.append(line)
+            elif spice_model in ("nmos3", "pmos3"):
+                model = params.get("model", "nch" if spice_model == "nmos3" else "pch")
+                w = params.get("W", "1u")
+                l = params.get("L", "100n")
+                nf = params.get("nf", "1")
+                if len(nets) >= 3:
+                    d, g, s = nets[:3]
+                    lines.append(f"{iname} {d} {g} {s} {s} {model} W={w} L={l} nf={nf}")
+                else:
+                    lines.append(f"{iname} {net_str} {model} W={w} L={l} nf={nf}")
             elif spice_model == "E":
                 # VCVS: Ename N+ N- NC+ NC- gain
                 gain = params.get("gain", "1")
-                ctrl_nets = nets[:2] if len(nets) >= 2 else nets
-                out_nets = nets[2:] if len(nets) >= 4 else nets
-                if len(out_nets) >= 2 and len(ctrl_nets) >= 2:
-                    lines.append(f"{iname} {out_nets[0]} {out_nets[1]} {ctrl_nets[0]} {ctrl_nets[1]} {gain}")
+                if len(nets) >= 4:
+                    lines.append(f"{iname} {nets[0]} {nets[1]} {nets[2]} {nets[3]} {gain}")
                 else:
                     lines.append(f"{iname} {net_str} {gain}")
             elif spice_model == "G":
                 # VCCS: Gname N+ N- NC+ NC- gm
                 gm = params.get("gm", "1")
-                ctrl_nets = nets[:2] if len(nets) >= 2 else nets
-                out_nets = nets[2:] if len(nets) >= 4 else nets
-                if len(out_nets) >= 2 and len(ctrl_nets) >= 2:
-                    lines.append(f"{iname} {out_nets[0]} {out_nets[1]} {ctrl_nets[0]} {ctrl_nets[1]} {gm}")
+                if len(nets) >= 4:
+                    lines.append(f"{iname} {nets[0]} {nets[1]} {nets[2]} {nets[3]} {gm}")
                 else:
                     lines.append(f"{iname} {net_str} {gm}")
             elif spice_model == "F":
@@ -865,13 +908,13 @@ class NetlistGenerator:
                 else:
                     lines.append(f"{iname} {net_str} {gain}")
             elif spice_model == "H":
-                # CCVS: Hname N+ N- Vsource gm
-                gm = params.get("gm", "1")
+                # CCVS: Hname N+ N- Vsource transresistance
+                rm = params.get("rm", params.get("gm", "1"))
                 vsrc = params.get("vsource", "")
                 if vsrc:
-                    lines.append(f"{iname} {net_str} {vsrc} {gm}")
+                    lines.append(f"{iname} {net_str} {vsrc} {rm}")
                 else:
-                    lines.append(f"{iname} {net_str} {gm}")
+                    lines.append(f"{iname} {net_str} {rm}")
             elif spice_model == "Q":
                 model = params.get("model", "NPN")
                 area = params.get("area", "")
@@ -879,6 +922,35 @@ class NetlistGenerator:
                     lines.append(f"{iname} {net_str} {model} {area}")
                 else:
                     lines.append(f"{iname} {net_str} {model}")
+            elif spice_model in ("J", "Z"):
+                model = params.get("model", "NJF")
+                area = params.get("area", "")
+                if area:
+                    lines.append(f"{iname} {net_str} {model} {area}")
+                else:
+                    lines.append(f"{iname} {net_str} {model}")
+            elif spice_model == "S":
+                model = params.get("model", "SW")
+                lines.append(f"{iname} {net_str} {model}")
+            elif spice_model == "W":
+                vsrc = params.get("vsource", "V0")
+                model = params.get("model", "CSW")
+                lines.append(f"{iname} {net_str} {vsrc} {model}")
+            elif spice_model == "T":
+                z0 = params.get("Z0", "50")
+                td = params.get("TD", "1n")
+                lines.append(f"{iname} {net_str} Z0={z0} TD={td}")
+            elif spice_model == "K":
+                l1 = params.get("L1", "L0")
+                l2 = params.get("L2", "L1")
+                k = params.get("K", "0.99")
+                lines.append(f"{iname} {l1} {l2} {k}")
+            elif spice_model == "BV":
+                expr = params.get("expr", "0")
+                lines.append(f"{iname} {net_str} V={expr}")
+            elif spice_model == "BI":
+                expr = params.get("expr", "0")
+                lines.append(f"{iname} {net_str} I={expr}")
             else:
                 # Generic subcircuit call with proper pin mapping
                 param_str = " ".join(f"{k}={v}" for k, v in params.items())

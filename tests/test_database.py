@@ -101,6 +101,44 @@ class TestLibraryDatabase(unittest.TestCase):
         self.assertTrue(self.db.cell_exists("primitives", "cap"))
         self.assertTrue(self.db.cell_exists("primitives", "nmos"))
         self.assertTrue(self.db.cell_exists("primitives", "pmos"))
+
+    def test_primitives_include_analoglib_style_catalog(self):
+        """Test that the built-in catalog exposes common analogLib-style cells."""
+        expected_cells = {
+            "res", "res_var", "cap", "cap_var", "ind", "mutual_ind",
+            "vsource", "isource", "vdc", "idc", "vac", "iac",
+            "vpulse", "ipulse", "vsin", "isin", "vpwl", "ipwl",
+            "gnd", "vdd", "vss", "port", "opin", "ipin", "iopin",
+            "no_conn", "iprobe", "nmos", "pmos", "nmos3", "pmos3",
+            "diode", "zener", "led", "npn", "pnp", "njfet", "pjfet",
+            "nmes", "pmes", "vcvs", "vccs", "cccs", "ccvs",
+            "bsource_v", "bsource_i", "sw_v", "sw_i", "tline",
+        }
+        cells = set(self.db.get_cells("primitives"))
+
+        self.assertTrue(expected_cells.issubset(cells))
+        for cell in expected_cells:
+            self.assertTrue(self.db.view_exists("primitives", cell, "symbol"))
+
+    def test_primitive_symbols_have_meaningful_markings(self):
+        """Visual primitive symbols should include readable markings."""
+        for cell in ("vdc", "vpulse", "vsin", "vcvs", "nmos", "npn", "port"):
+            symbol = self.db.load_view("primitives", cell, "symbol")
+            text_shapes = [
+                shape for shape in symbol.get("shapes", [])
+                if shape.get("type") == "text" and shape.get("text")
+            ]
+            self.assertTrue(text_shapes, f"{cell} should include text markings")
+
+    def test_existing_primitives_library_is_reconciled(self):
+        """Older workspaces should receive newly added primitive cells."""
+        self.db.delete_cell("primitives", "vpulse")
+        self.assertFalse(self.db.cell_exists("primitives", "vpulse"))
+
+        reopened = LibraryDatabase(self.test_dir)
+
+        self.assertTrue(reopened.cell_exists("primitives", "vpulse"))
+        self.assertTrue(reopened.view_exists("primitives", "vpulse", "symbol"))
     
     def test_view_path(self):
         """Test getting view file path."""

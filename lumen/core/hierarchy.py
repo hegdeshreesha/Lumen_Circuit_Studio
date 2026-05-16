@@ -108,6 +108,12 @@ class HierarchyEngine:
     PRIMITIVE_CELLS = {
         "res", "cap", "ind", "vsource", "isource", "gnd", "vdd",
         "nmos", "pmos", "diode", "npn", "pnp", "switch",
+        "res_var", "cap_var", "mutual_ind", "vdc", "idc", "vac", "iac",
+        "vpulse", "ipulse", "vsin", "isin", "vpwl", "ipwl", "vss",
+        "port", "opin", "ipin", "iopin", "no_conn", "iprobe",
+        "nmos3", "pmos3", "zener", "led", "njfet", "pjfet", "nmes", "pmes",
+        "vcvs", "vccs", "cccs", "ccvs", "bsource_v", "bsource_i",
+        "sw_v", "sw_i", "tline",
     }
 
     def __init__(self, db: LibraryDatabase):

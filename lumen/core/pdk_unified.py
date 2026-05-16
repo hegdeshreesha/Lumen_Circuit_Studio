@@ -706,6 +706,8 @@ class PDKRegistry:
                 ]
 
         self._attach_builtin_model_files(pdk)
+        if name == "ihp_sg13g2":
+            self._enrich_ihp_from_xschem(pdk)
         return pdk
 
     def _attach_builtin_model_files(self, pdk: PDKInfo) -> None:
@@ -747,6 +749,133 @@ class PDKRegistry:
                     pdk.model_files = model_files
                     pdk.installed = True
                     return
+
+    def _enrich_ihp_from_xschem(self, pdk: PDKInfo) -> None:
+        """Use IHP's shipped Xschem libraries as the visible device catalog."""
+        root = Path(pdk.root_path) if pdk.root_path else Path("C:/EDA/ihp_pdk/ihp-sg13g2")
+        xschem_root = root / "libs.tech" / "xschem"
+        if not xschem_root.exists():
+            return
+
+        symbol_dirs = [
+            xschem_root / "sg13g2_pr",
+            xschem_root / "sg13g2_stdcells",
+        ]
+
+        try:
+            from .xschem_symbol_import import XschemSymbolParser
+        except Exception:
+            return
+
+        parser = XschemSymbolParser()
+        merged = {device.name: device for device in pdk.devices}
+        imported_count = 0
+
+        for symbol_dir in symbol_dirs:
+            if not symbol_dir.exists():
+                continue
+            for sym_file in sorted(symbol_dir.glob("*.sym"), key=lambda p: p.name.lower()):
+                try:
+                    parsed = parser.parse_file(str(sym_file))
+                    symbol_data = parsed.to_lumen_json()
+                except Exception:
+                    continue
+
+                symbol_data["library"] = f"pdk:{pdk.name}"
+                category = self._ihp_category_from_symbol(sym_file.stem, symbol_data)
+                pins = [
+                    PDKPin(
+                        name=str(pin.get("name", "")),
+                        x=float(pin.get("x", 0.0) or 0.0),
+                        y=float(pin.get("y", 0.0) or 0.0),
+                        direction=str(pin.get("direction", "inout") or "inout"),
+                        net_name=pin.get("net_name"),
+                    )
+                    for pin in symbol_data.get("pins", [])
+                    if pin.get("name")
+                ]
+                parameters = [
+                    PDKParameter(
+                        name=str(param.get("name", "")),
+                        default=str(param.get("default", "")),
+                        description=str(param.get("description", "")),
+                    )
+                    for param in symbol_data.get("parameters", [])
+                    if param.get("name")
+                ]
+                term_order = [pin.name for pin in pins]
+                inst_parameters = [param.name for param in parameters]
+                prefix = str(symbol_data.get("prefix") or "X")
+                model = str(symbol_data.get("spice_model") or sym_file.stem)
+
+                merged[sym_file.stem] = PDKDevice(
+                    name=sym_file.stem,
+                    category=category,
+                    prefix=prefix,
+                    model=model,
+                    component_name=str(symbol_data.get("component_name") or model),
+                    term_order=term_order,
+                    inst_parameters=inst_parameters,
+                    other_parameters=[],
+                    netlist_kind="subckt" if prefix.upper() == "X" else "primitive",
+                    description=f"IHP SG13G2 {symbol_dir.name} Xschem symbol",
+                    pins=pins,
+                    parameters=parameters,
+                    symbol_style=category.name.lower(),
+                    symbol_data=symbol_data,
+                    is_primitive=prefix.upper() != "X",
+                    priority=100,
+                    provenance={
+                        "source": "ihp_xschem_symbol",
+                        "path": str(sym_file),
+                        "library_group": symbol_dir.name,
+                    },
+                )
+                imported_count += 1
+
+        if imported_count:
+            pdk.devices = sorted(
+                merged.values(),
+                key=lambda d: (self._ihp_category_sort_key(d.category), d.name.lower()),
+            )
+            pdk.symbols_path = str(xschem_root)
+            pdk.root_path = str(root)
+            if "xschem-symbols" not in pdk.tags:
+                pdk.tags.append("xschem-symbols")
+
+    def _ihp_category_from_symbol(self, name: str, symbol_data: Dict) -> DeviceCategory:
+        """Classify imported IHP symbols for the Library Manager tree."""
+        lower = name.lower()
+        xschem_type = str(symbol_data.get("xschem_metadata", {}).get("type", "")).lower()
+        text = f"{lower} {xschem_type}"
+
+        if lower.startswith("sg13g2_"):
+            return DeviceCategory.OTHER
+        if any(token in text for token in ["nmos", "pmos", "mos", "fet"]):
+            return DeviceCategory.MOSFET
+        if any(token in text for token in ["res", "rppd", "rsil", "rhigh"]):
+            return DeviceCategory.RESISTOR
+        if any(token in text for token in ["cap", "varicap"]):
+            return DeviceCategory.CAPACITOR
+        if "inductor" in text or lower.startswith("ind"):
+            return DeviceCategory.INDUCTOR
+        if any(token in text for token in ["diode", "antenna"]):
+            return DeviceCategory.DIODE
+        if any(token in text for token in ["npn", "pnp", "bjt", "hbt", "vertical_npn"]):
+            return DeviceCategory.BJT
+        return DeviceCategory.OTHER
+
+    def _ihp_category_sort_key(self, category: DeviceCategory) -> int:
+        order = {
+            DeviceCategory.MOSFET: 0,
+            DeviceCategory.BJT: 1,
+            DeviceCategory.RESISTOR: 2,
+            DeviceCategory.CAPACITOR: 3,
+            DeviceCategory.INDUCTOR: 4,
+            DeviceCategory.DIODE: 5,
+            DeviceCategory.OTHER: 6,
+        }
+        return order.get(category, 99)
 
     def _normalize_builtin_root(self, pdk_name: str, root: Path) -> Path:
         """Resolve common wrapper directories to the actual PDK root."""

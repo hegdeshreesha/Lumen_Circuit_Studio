@@ -68,7 +68,7 @@ Competitive target:
 
 ## ADE Gaps
 
-The ADE code is ambitious, but it is not yet Maestro-class in behavior.
+The ADE code is ambitious, but it is not yet production-grade in behavior.
 
 Missing or weak:
 
@@ -218,3 +218,4 @@ Competitive target:
 The product goal should not be "clone Virtuoso." The sharper goal is: make the
 custom IC loop more transparent, reproducible, scriptable, and debuggable than
 Virtuoso while keeping familiar library/cell/view workflows.
+

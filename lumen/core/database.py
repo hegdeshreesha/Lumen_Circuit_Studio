@@ -269,12 +269,15 @@ class LibraryDatabase:
     # ── Built-in Primitives ───────────────────────────────────
 
     def _ensure_primitives(self):
-        """Create the built-in primitives library if it doesn't exist."""
+        """Create/update the built-in primitives library.
+
+        Existing user workspaces may already contain an older primitives library,
+        so this method reconciles missing built-ins on every database startup
+        without overwriting edited symbols.
+        """
         prim_name = "primitives"
         prim_path = self.workspace / prim_name
         if prim_name not in self._libraries:
-            if not prim_path.exists():
-                self._create_primitive_symbols(prim_path)
             info = LibraryInfo(
                 name=prim_name,
                 path=str(prim_path),
@@ -283,38 +286,260 @@ class LibraryDatabase:
             )
             self._libraries[prim_name] = info
             self._save_registry()
+        self._create_primitive_symbols(prim_path, overwrite=False)
 
-    def _create_primitive_symbols(self, lib_path: Path):
+    def _create_primitive_symbols(self, lib_path: Path, overwrite: bool = False):
         """Create the standard primitive component symbols."""
         lib_path.mkdir(parents=True, exist_ok=True)
         # Write lib metadata
         meta = {"name": "primitives", "tech": "generic",
                 "description": "Built-in primitive components"}
-        with open(lib_path / self.LIB_META, "w") as f:
-            json.dump(meta, f, indent=2)
+        meta_path = lib_path / self.LIB_META
+        if overwrite or not meta_path.exists():
+            with open(meta_path, "w") as f:
+                json.dump(meta, f, indent=2)
 
-        primitives = {
+        for name, (sym_data, sch_data) in self._primitive_catalog().items():
+            self._write_primitive_symbol(lib_path, name, sym_data, sch_data, overwrite)
+
+    def _write_primitive_symbol(self, lib_path: Path, name: str, sym_data: dict,
+                                sch_data: Optional[dict] = None,
+                                overwrite: bool = False):
+        sym_data = dict(sym_data)
+        sym_data.setdefault("type", "symbol")
+        sym_data["name"] = name
+        sym_data["library"] = "primitives"
+        sym_data["builtin"] = True
+        sym_data["builtin_version"] = "0.3"
+
+        cell_dir = lib_path / name
+        cell_dir.mkdir(exist_ok=True)
+        views = ["symbol"]
+        if sch_data is not None:
+            views.append("schematic")
+
+        meta_path = cell_dir / self.CELL_META
+        symbol_path = cell_dir / "symbol.lumen.json"
+        schematic_path = cell_dir / "schematic.lumen.json"
+
+        if overwrite or not meta_path.exists():
+            with open(meta_path, "w") as f:
+                json.dump({"name": name, "views": views}, f, indent=2)
+        if overwrite or not symbol_path.exists() or self._should_refresh_primitive_symbol(symbol_path):
+            with open(symbol_path, "w") as f:
+                json.dump(sym_data, f, indent=2)
+        if sch_data is not None and (overwrite or not schematic_path.exists()):
+            with open(schematic_path, "w") as f:
+                json.dump(sch_data, f, indent=2)
+
+    def _should_refresh_primitive_symbol(self, symbol_path: Path) -> bool:
+        """Refresh generated built-ins while allowing explicit user protection."""
+        try:
+            with open(symbol_path, "r") as f:
+                data = json.load(f)
+        except Exception:
+            return True
+        if data.get("user_modified") or data.get("protect_from_builtin_refresh"):
+            return False
+        return data.get("library") == "primitives"
+
+    def _primitive_catalog(self):
+        """Return Lumen's analogLib-style built-in primitive catalog."""
+        return {
+            # Passive devices
             "res": self._primitive_resistor(),
+            "res_var": self._primitive_variable_resistor(),
             "cap": self._primitive_capacitor(),
+            "cap_var": self._primitive_variable_capacitor(),
             "ind": self._primitive_inductor(),
+            "mutual_ind": self._primitive_mutual_inductor(),
+
+            # Independent sources
             "vsource": self._primitive_vsource(),
             "isource": self._primitive_isource(),
+            "vdc": self._primitive_vdc(),
+            "idc": self._primitive_idc(),
+            "vac": self._primitive_vac(),
+            "iac": self._primitive_iac(),
+            "vpulse": self._primitive_vpulse(),
+            "ipulse": self._primitive_ipulse(),
+            "vsin": self._primitive_vsin(),
+            "isin": self._primitive_isin(),
+            "vpwl": self._primitive_vpwl(),
+            "ipwl": self._primitive_ipwl(),
+
+            # Supplies, ports, and probes
             "gnd": self._primitive_gnd(),
             "vdd": self._primitive_vdd(),
+            "vss": self._primitive_vss(),
+            "port": self._primitive_port(),
+            "opin": self._primitive_opin(),
+            "ipin": self._primitive_ipin(),
+            "iopin": self._primitive_iopin(),
+            "no_conn": self._primitive_no_conn(),
+            "iprobe": self._primitive_iprobe(),
+
+            # Semiconductor primitives
             "nmos": self._primitive_nmos(),
             "pmos": self._primitive_pmos(),
+            "nmos3": self._primitive_nmos3(),
+            "pmos3": self._primitive_pmos3(),
             "diode": self._primitive_diode(),
+            "zener": self._primitive_zener(),
+            "led": self._primitive_led(),
+            "npn": self._primitive_npn(),
+            "pnp": self._primitive_pnp(),
+            "njfet": self._primitive_njfet(),
+            "pjfet": self._primitive_pjfet(),
+            "nmes": self._primitive_nmes(),
+            "pmes": self._primitive_pmes(),
+
+            # Controlled sources and behavioral elements
+            "vcvs": self._primitive_vcvs(),
+            "vccs": self._primitive_vccs(),
+            "cccs": self._primitive_cccs(),
+            "ccvs": self._primitive_ccvs(),
+            "bsource_v": self._primitive_bsource_v(),
+            "bsource_i": self._primitive_bsource_i(),
+
+            # Switches and distributed elements
+            "sw_v": self._primitive_voltage_switch(),
+            "sw_i": self._primitive_current_switch(),
+            "tline": self._primitive_tline(),
         }
-        for name, (sym_data, sch_data) in primitives.items():
-            cell_dir = lib_path / name
-            cell_dir.mkdir(exist_ok=True)
-            with open(cell_dir / self.CELL_META, "w") as f:
-                json.dump({"name": name, "views": ["symbol"]}, f, indent=2)
-            with open(cell_dir / "symbol.lumen.json", "w") as f:
-                json.dump(sym_data, f, indent=2)
 
     # ── Primitive Symbol Definitions ──────────────────────────
     # Each returns (symbol_data, schematic_data) — schematic is None for primitives
+
+    def _primitive_symbol(self, name: str, prefix: str, spice_model: str,
+                          pins: list[dict], shapes: list[dict],
+                          parameters: list[dict], label: dict,
+                          description: str = ""):
+        sym = {
+            "type": "symbol",
+            "name": name,
+            "library": "primitives",
+            "builtin": True,
+            "builtin_version": "0.3",
+            "prefix": prefix,
+            "spice_model": spice_model,
+            "pins": pins,
+            "shapes": shapes,
+            "parameters": parameters,
+            "label": label,
+        }
+        if description:
+            sym["description"] = description
+        return sym, None
+
+    def _two_terminal_pins(self, top: str = "PLUS", bottom: str = "MINUS"):
+        return [
+            {"name": top, "x": 0, "y": -40, "direction": "inout"},
+            {"name": bottom, "x": 0, "y": 40, "direction": "inout"},
+        ]
+
+    def _two_terminal_source_shapes(self, current: bool = False):
+        shapes = [
+            {"type": "line", "x1": 0, "y1": -40, "x2": 0, "y2": -20},
+            {"type": "circle", "cx": 0, "cy": 0, "r": 20},
+            {"type": "line", "x1": 0, "y1": 20, "x2": 0, "y2": 40},
+        ]
+        if current:
+            shapes.extend([
+                {"type": "line", "x1": 0, "y1": -12, "x2": 0, "y2": 12},
+                {"type": "line", "x1": -4, "y1": -6, "x2": 0, "y2": -12},
+                {"type": "line", "x1": 4, "y1": -6, "x2": 0, "y2": -12},
+            ])
+        else:
+            shapes.extend([
+                {"type": "line", "x1": 0, "y1": -14, "x2": 0, "y2": -6},
+                {"type": "line", "x1": -4, "y1": -10, "x2": 4, "y2": -10},
+                {"type": "line", "x1": -4, "y1": 10, "x2": 4, "y2": 10},
+            ])
+        return shapes
+
+    def _text_shape(self, text: str, x: float, y: float,
+                    size: int = 8, bold: bool = True) -> dict:
+        return {
+            "type": "text",
+            "text": text,
+            "x": x,
+            "y": y,
+            "size": size,
+            "bold": bold,
+        }
+
+    def _source_parameters(self, mode: str):
+        if mode == "dc":
+            return [{"name": "DC", "default": "1.0", "description": "DC value"}]
+        if mode == "ac":
+            return [
+                {"name": "DC", "default": "0", "description": "DC value"},
+                {"name": "AC", "default": "1", "description": "AC magnitude"},
+                {"name": "phase", "default": "0", "description": "AC phase"},
+            ]
+        if mode == "pulse":
+            return [
+                {"name": "v1", "default": "0", "description": "Initial value"},
+                {"name": "v2", "default": "1.8", "description": "Pulsed value"},
+                {"name": "td", "default": "0", "description": "Delay"},
+                {"name": "tr", "default": "1n", "description": "Rise time"},
+                {"name": "tf", "default": "1n", "description": "Fall time"},
+                {"name": "pw", "default": "5n", "description": "Pulse width"},
+                {"name": "per", "default": "10n", "description": "Period"},
+            ]
+        if mode == "sin":
+            return [
+                {"name": "vo", "default": "0", "description": "Offset"},
+                {"name": "va", "default": "1", "description": "Amplitude"},
+                {"name": "freq", "default": "1k", "description": "Frequency"},
+                {"name": "td", "default": "0", "description": "Delay"},
+                {"name": "theta", "default": "0", "description": "Damping"},
+                {"name": "phase", "default": "0", "description": "Phase"},
+            ]
+        if mode == "pwl":
+            return [{"name": "points", "default": "0 0 1n 1", "description": "PWL time/value pairs"}]
+        return []
+
+    def _primitive_source_variant(self, name: str, prefix: str, spice_model: str,
+                                  mode: str, current: bool = False):
+        label_value = {
+            "dc": "DC=@DC",
+            "ac": "AC=@AC",
+            "pulse": "PULSE",
+            "sin": "SIN @freq",
+            "pwl": "PWL",
+        }.get(mode, "")
+        shapes = self._two_terminal_source_shapes(current=current)
+        if mode == "dc":
+            shapes.append(self._text_shape("DC", -9, -8, 8))
+        elif mode == "ac":
+            shapes.extend([
+                {"type": "polyline", "points": [[-12, 0], [-6, -7], [0, 0], [6, 7], [12, 0]]},
+                self._text_shape("AC", -9, 6, 7),
+            ])
+        elif mode == "pulse":
+            shapes.extend([
+                {"type": "polyline", "points": [[-13, 7], [-7, 7], [-7, -7], [7, -7], [7, 7], [13, 7]]},
+                self._text_shape("P", -4, -2, 7),
+            ])
+        elif mode == "sin":
+            shapes.extend([
+                {"type": "polyline", "points": [[-14, 0], [-7, -8], [0, 0], [7, 8], [14, 0]]},
+                self._text_shape("sin", -11, 6, 6),
+            ])
+        elif mode == "pwl":
+            shapes.extend([
+                {"type": "polyline", "points": [[-14, 8], [-6, 4], [0, -8], [8, -2], [14, -10]]},
+                self._text_shape("PWL", -12, 6, 6),
+            ])
+        return self._primitive_symbol(
+            name, prefix, spice_model,
+            self._two_terminal_pins(),
+            shapes,
+            self._source_parameters(mode),
+            {"text": f"@name\\n{label_value}", "x": 25, "y": 0},
+        )
 
     def _primitive_resistor(self):
         sym = {
@@ -403,6 +628,7 @@ class LibraryDatabase:
                 {"type": "line", "x1": -4, "y1": -10, "x2": 4, "y2": -10},
                 {"type": "line", "x1": -4, "y1": 10, "x2": 4, "y2": 10},
                 {"type": "line", "x1": 0, "y1": 20, "x2": 0, "y2": 40},
+                {"type": "text", "text": "V", "x": -5, "y": -5, "size": 8, "bold": True},
             ],
             "parameters": [
                 {"name": "DC", "default": "1.8", "description": "DC voltage"},
@@ -427,6 +653,7 @@ class LibraryDatabase:
                 {"type": "line", "x1": -4, "y1": -6, "x2": 0, "y2": -12},
                 {"type": "line", "x1": 4, "y1": -6, "x2": 0, "y2": -12},
                 {"type": "line", "x1": 0, "y1": 20, "x2": 0, "y2": 40},
+                {"type": "text", "text": "I", "x": -3, "y": -5, "size": 8, "bold": True},
             ],
             "parameters": [
                 {"name": "DC", "default": "1m", "description": "DC current"},
@@ -500,6 +727,10 @@ class LibraryDatabase:
                 # Arrow on source (N-type)
                 {"type": "line", "x1": 6, "y1": 12, "x2": 2, "y2": 9},
                 {"type": "line", "x1": 6, "y1": 12, "x2": 2, "y2": 15},
+                {"type": "text", "text": "D", "x": 24, "y": -42, "size": 6, "bold": True},
+                {"type": "text", "text": "G", "x": -34, "y": -9, "size": 6, "bold": True},
+                {"type": "text", "text": "S", "x": 24, "y": 26, "size": 6, "bold": True},
+                {"type": "text", "text": "B", "x": 43, "y": -9, "size": 6, "bold": True},
             ],
             "parameters": [
                 {"name": "W", "default": "1u", "description": "Width"},
@@ -533,6 +764,10 @@ class LibraryDatabase:
                 {"type": "line", "x1": 2, "y1": 12, "x2": 20, "y2": 12},
                 {"type": "line", "x1": 20, "y1": 12, "x2": 20, "y2": 30},
                 {"type": "line", "x1": 2, "y1": 0, "x2": 40, "y2": 0},
+                {"type": "text", "text": "S", "x": 24, "y": -42, "size": 6, "bold": True},
+                {"type": "text", "text": "G", "x": -34, "y": -9, "size": 6, "bold": True},
+                {"type": "text", "text": "D", "x": 24, "y": 26, "size": 6, "bold": True},
+                {"type": "text", "text": "B", "x": 43, "y": -9, "size": 6, "bold": True},
             ],
             "parameters": [
                 {"name": "W", "default": "2u", "description": "Width"},
@@ -557,6 +792,8 @@ class LibraryDatabase:
                 {"type": "polygon", "points": [[-10, -10], [10, -10], [0, 10]]},
                 {"type": "line", "x1": -10, "y1": 10, "x2": 10, "y2": 10},
                 {"type": "line", "x1": 0, "y1": 10, "x2": 0, "y2": 30},
+                {"type": "text", "text": "+", "x": 7, "y": -32, "size": 7, "bold": True},
+                {"type": "text", "text": "-", "x": 7, "y": 18, "size": 7, "bold": True},
             ],
             "parameters": [
                 {"name": "model", "default": "D1N4148", "description": "Model"},
@@ -564,3 +801,404 @@ class LibraryDatabase:
             "label": {"text": "@name", "x": 15, "y": 0}
         }
         return sym, None
+
+    def _primitive_variable_resistor(self):
+        sym, _ = self._primitive_resistor()
+        sym = dict(sym)
+        sym["name"] = "res_var"
+        sym["shapes"] = list(sym["shapes"]) + [
+            {"type": "line", "x1": -18, "y1": 18, "x2": 18, "y2": -18},
+            {"type": "line", "x1": 18, "y1": -18, "x2": 10, "y2": -17},
+            {"type": "line", "x1": 18, "y1": -18, "x2": 17, "y2": -10},
+        ]
+        return sym, None
+
+    def _primitive_variable_capacitor(self):
+        sym, _ = self._primitive_capacitor()
+        sym = dict(sym)
+        sym["name"] = "cap_var"
+        sym["shapes"] = list(sym["shapes"]) + [
+            {"type": "line", "x1": -18, "y1": 18, "x2": 18, "y2": -18},
+            {"type": "line", "x1": 18, "y1": -18, "x2": 10, "y2": -17},
+            {"type": "line", "x1": 18, "y1": -18, "x2": 17, "y2": -10},
+        ]
+        return sym, None
+
+    def _primitive_mutual_inductor(self):
+        return self._primitive_symbol(
+            "mutual_ind", "K", "K",
+            [],
+            [
+                {"type": "arc", "cx": -14, "cy": -12, "rx": 6, "ry": 6, "start": 90, "span": 180},
+                {"type": "arc", "cx": -14, "cy": 0, "rx": 6, "ry": 6, "start": 90, "span": 180},
+                {"type": "arc", "cx": -14, "cy": 12, "rx": 6, "ry": 6, "start": 90, "span": 180},
+                {"type": "arc", "cx": 14, "cy": -12, "rx": 6, "ry": 6, "start": 270, "span": 180},
+                {"type": "arc", "cx": 14, "cy": 0, "rx": 6, "ry": 6, "start": 270, "span": 180},
+                {"type": "arc", "cx": 14, "cy": 12, "rx": 6, "ry": 6, "start": 270, "span": 180},
+                {"type": "line", "x1": -2, "y1": -28, "x2": -2, "y2": 28},
+                {"type": "line", "x1": 2, "y1": -28, "x2": 2, "y2": 28},
+            ],
+            [
+                {"name": "L1", "default": "L0", "description": "First inductor instance"},
+                {"name": "L2", "default": "L1", "description": "Second inductor instance"},
+                {"name": "K", "default": "0.99", "description": "Coupling coefficient"},
+            ],
+            {"text": "@name\\nK=@K", "x": 24, "y": -5},
+        )
+
+    def _primitive_vdc(self):
+        return self._primitive_source_variant("vdc", "V", "VDC", "dc")
+
+    def _primitive_idc(self):
+        return self._primitive_source_variant("idc", "I", "IDC", "dc", current=True)
+
+    def _primitive_vac(self):
+        return self._primitive_source_variant("vac", "V", "VAC", "ac")
+
+    def _primitive_iac(self):
+        return self._primitive_source_variant("iac", "I", "IAC", "ac", current=True)
+
+    def _primitive_vpulse(self):
+        return self._primitive_source_variant("vpulse", "V", "VPULSE", "pulse")
+
+    def _primitive_ipulse(self):
+        return self._primitive_source_variant("ipulse", "I", "IPULSE", "pulse", current=True)
+
+    def _primitive_vsin(self):
+        return self._primitive_source_variant("vsin", "V", "VSIN", "sin")
+
+    def _primitive_isin(self):
+        return self._primitive_source_variant("isin", "I", "ISIN", "sin", current=True)
+
+    def _primitive_vpwl(self):
+        return self._primitive_source_variant("vpwl", "V", "VPWL", "pwl")
+
+    def _primitive_ipwl(self):
+        return self._primitive_source_variant("ipwl", "I", "IPWL", "pwl", current=True)
+
+    def _primitive_vss(self):
+        return self._primitive_symbol(
+            "vss", "", "vss",
+            [{"name": "VSS", "x": 0, "y": -10, "direction": "inout", "net_name": "VSS"}],
+            [
+                {"type": "line", "x1": 0, "y1": -10, "x2": 0, "y2": 0},
+                {"type": "line", "x1": -12, "y1": 0, "x2": 12, "y2": 0},
+                {"type": "line", "x1": -8, "y1": 5, "x2": 8, "y2": 5},
+            ],
+            [],
+            {"text": "VSS", "x": 10, "y": 0},
+        )
+
+    def _primitive_port(self):
+        return self._one_pin_symbol("port", "PORT", "PORT", "port")
+
+    def _primitive_opin(self):
+        return self._one_pin_symbol("opin", "OUT", "PORT", "port")
+
+    def _primitive_ipin(self):
+        return self._one_pin_symbol("ipin", "IN", "PORT", "port")
+
+    def _primitive_iopin(self):
+        return self._one_pin_symbol("iopin", "IO", "PORT", "port")
+
+    def _primitive_no_conn(self):
+        return self._primitive_symbol(
+            "no_conn", "", "no_conn",
+            [{"name": "NC", "x": 0, "y": 0, "direction": "inout"}],
+            [
+                {"type": "line", "x1": -8, "y1": -8, "x2": 8, "y2": 8},
+                {"type": "line", "x1": -8, "y1": 8, "x2": 8, "y2": -8},
+            ],
+            [],
+            {"text": "NC", "x": 10, "y": -10},
+        )
+
+    def _one_pin_symbol(self, name: str, pin_name: str, label: str, spice_model: str):
+        return self._primitive_symbol(
+            name, "", spice_model,
+            [{"name": pin_name, "x": 0, "y": 0, "direction": "inout"}],
+            [
+                {"type": "line", "x1": 0, "y1": 0, "x2": 22, "y2": 0},
+                {"type": "polygon", "points": [[22, -8], [42, 0], [22, 8]]},
+                {"type": "text", "text": pin_name, "x": 7, "y": -22, "size": 7, "bold": True},
+            ],
+            [{"name": "net", "default": "", "description": "Optional forced net name"}],
+            {"text": label, "x": 8, "y": -22},
+        )
+
+    def _primitive_iprobe(self):
+        return self._primitive_symbol(
+            "iprobe", "V", "IPROBE",
+            self._two_terminal_pins(),
+            [
+                {"type": "line", "x1": 0, "y1": -40, "x2": 0, "y2": -20},
+                {"type": "circle", "cx": 0, "cy": 0, "r": 20},
+                {"type": "line", "x1": -10, "y1": 0, "x2": 10, "y2": 0},
+                {"type": "line", "x1": 0, "y1": 20, "x2": 0, "y2": 40},
+                {"type": "text", "text": "I", "x": -3, "y": -16, "size": 8, "bold": True},
+                {"type": "text", "text": "0V", "x": -9, "y": 4, "size": 6, "bold": True},
+            ],
+            [],
+            {"text": "@name\\nI probe", "x": 25, "y": 0},
+        )
+
+    def _primitive_nmos3(self):
+        sym, _ = self._primitive_nmos()
+        sym = dict(sym)
+        sym["name"] = "nmos3"
+        sym["spice_model"] = "nmos3"
+        sym["pins"] = [p for p in sym["pins"] if p["name"] != "B"]
+        return sym, None
+
+    def _primitive_pmos3(self):
+        sym, _ = self._primitive_pmos()
+        sym = dict(sym)
+        sym["name"] = "pmos3"
+        sym["spice_model"] = "pmos3"
+        sym["pins"] = [p for p in sym["pins"] if p["name"] != "B"]
+        return sym, None
+
+    def _primitive_zener(self):
+        sym, _ = self._primitive_diode()
+        sym = dict(sym)
+        sym["name"] = "zener"
+        sym["parameters"] = [{"name": "model", "default": "DZ", "description": "Zener model"}]
+        sym["shapes"] = list(sym["shapes"]) + [
+            {"type": "line", "x1": -10, "y1": 10, "x2": -16, "y2": 4},
+            {"type": "line", "x1": 10, "y1": 10, "x2": 16, "y2": 16},
+        ]
+        return sym, None
+
+    def _primitive_led(self):
+        sym, _ = self._primitive_diode()
+        sym = dict(sym)
+        sym["name"] = "led"
+        sym["parameters"] = [{"name": "model", "default": "LED", "description": "LED model"}]
+        sym["shapes"] = list(sym["shapes"]) + [
+            {"type": "line", "x1": 16, "y1": -12, "x2": 28, "y2": -24},
+            {"type": "line", "x1": 28, "y1": -24, "x2": 22, "y2": -22},
+            {"type": "line", "x1": 28, "y1": -24, "x2": 26, "y2": -18},
+            {"type": "line", "x1": 18, "y1": 2, "x2": 30, "y2": -10},
+            {"type": "line", "x1": 30, "y1": -10, "x2": 24, "y2": -8},
+            {"type": "line", "x1": 30, "y1": -10, "x2": 28, "y2": -4},
+        ]
+        return sym, None
+
+    def _primitive_npn(self):
+        return self._bjt_symbol("npn", "NPN", outward=True)
+
+    def _primitive_pnp(self):
+        return self._bjt_symbol("pnp", "PNP", outward=False)
+
+    def _bjt_symbol(self, name: str, model: str, outward: bool):
+        arrow = [[8, 14, 18, 24], [18, 24, 10, 22], [18, 24, 16, 16]]
+        if not outward:
+            arrow = [[18, 24, 8, 14], [8, 14, 16, 16], [8, 14, 10, 22]]
+        shapes = [
+            {"type": "line", "x1": -30, "y1": 0, "x2": -4, "y2": 0},
+            {"type": "line", "x1": -4, "y1": -22, "x2": -4, "y2": 22},
+            {"type": "line", "x1": -4, "y1": -10, "x2": 24, "y2": -32},
+            {"type": "line", "x1": 24, "y1": -32, "x2": 24, "y2": -40},
+            {"type": "line", "x1": -4, "y1": 10, "x2": 24, "y2": 32},
+            {"type": "line", "x1": 24, "y1": 32, "x2": 24, "y2": 40},
+            {"type": "text", "text": "C", "x": 28, "y": -44, "size": 6, "bold": True},
+            {"type": "text", "text": "B", "x": -42, "y": -9, "size": 6, "bold": True},
+            {"type": "text", "text": "E", "x": 28, "y": 30, "size": 6, "bold": True},
+        ] + [{"type": "line", "x1": a, "y1": b, "x2": c, "y2": d} for a, b, c, d in arrow]
+        return self._primitive_symbol(
+            name, "Q", "Q",
+            [
+                {"name": "C", "x": 24, "y": -40, "direction": "inout"},
+                {"name": "B", "x": -30, "y": 0, "direction": "input"},
+                {"name": "E", "x": 24, "y": 40, "direction": "inout"},
+            ],
+            shapes,
+            [
+                {"name": "model", "default": model, "description": "BJT model"},
+                {"name": "area", "default": "", "description": "Area multiplier"},
+            ],
+            {"text": "@name\\n@model", "x": 32, "y": -8},
+        )
+
+    def _primitive_njfet(self):
+        return self._fet3_symbol("njfet", "J", "J", "NJF", gate_arrow_in=True)
+
+    def _primitive_pjfet(self):
+        return self._fet3_symbol("pjfet", "J", "J", "PJF", gate_arrow_in=False)
+
+    def _primitive_nmes(self):
+        return self._fet3_symbol("nmes", "Z", "Z", "NMF", gate_arrow_in=True)
+
+    def _primitive_pmes(self):
+        return self._fet3_symbol("pmes", "Z", "Z", "PMF", gate_arrow_in=False)
+
+    def _fet3_symbol(self, name: str, prefix: str, spice_model: str,
+                     model: str, gate_arrow_in: bool):
+        arrow = [[-18, 0, -6, 0], [-6, 0, -12, -4], [-6, 0, -12, 4]]
+        if not gate_arrow_in:
+            arrow = [[-6, 0, -18, 0], [-18, 0, -12, -4], [-18, 0, -12, 4]]
+        shapes = [
+            {"type": "line", "x1": -30, "y1": 0, "x2": -6, "y2": 0},
+            {"type": "line", "x1": 0, "y1": -28, "x2": 0, "y2": 28},
+            {"type": "line", "x1": 0, "y1": -20, "x2": 24, "y2": -20},
+            {"type": "line", "x1": 24, "y1": -20, "x2": 24, "y2": -40},
+            {"type": "line", "x1": 0, "y1": 20, "x2": 24, "y2": 20},
+            {"type": "line", "x1": 24, "y1": 20, "x2": 24, "y2": 40},
+            {"type": "text", "text": "D", "x": 28, "y": -44, "size": 6, "bold": True},
+            {"type": "text", "text": "G", "x": -42, "y": -9, "size": 6, "bold": True},
+            {"type": "text", "text": "S", "x": 28, "y": 30, "size": 6, "bold": True},
+        ] + [{"type": "line", "x1": a, "y1": b, "x2": c, "y2": d} for a, b, c, d in arrow]
+        return self._primitive_symbol(
+            name, prefix, spice_model,
+            [
+                {"name": "D", "x": 24, "y": -40, "direction": "inout"},
+                {"name": "G", "x": -30, "y": 0, "direction": "input"},
+                {"name": "S", "x": 24, "y": 40, "direction": "inout"},
+            ],
+            shapes,
+            [
+                {"name": "model", "default": model, "description": "Device model"},
+                {"name": "area", "default": "", "description": "Area multiplier"},
+            ],
+            {"text": "@name\\n@model", "x": 32, "y": -8},
+        )
+
+    def _controlled_source(self, name: str, prefix: str, spice_model: str, param_name: str):
+        return self._primitive_symbol(
+            name, prefix, spice_model,
+            [
+                {"name": "PLUS", "x": 0, "y": -40, "direction": "inout"},
+                {"name": "MINUS", "x": 0, "y": 40, "direction": "inout"},
+                {"name": "CPLUS", "x": -45, "y": -20, "direction": "input"},
+                {"name": "CMINUS", "x": -45, "y": 20, "direction": "input"},
+            ],
+            [
+                {"type": "line", "x1": 0, "y1": -40, "x2": 0, "y2": -24},
+                {"type": "polygon", "points": [[0, -24], [24, 0], [0, 24], [-24, 0]]},
+                {"type": "line", "x1": 0, "y1": 24, "x2": 0, "y2": 40},
+                {"type": "line", "x1": -45, "y1": -20, "x2": -24, "y2": -20},
+                {"type": "line", "x1": -45, "y1": 20, "x2": -24, "y2": 20},
+                {"type": "text", "text": prefix, "x": -5, "y": -8, "size": 8, "bold": True},
+                {"type": "text", "text": "+", "x": 5, "y": -21, "size": 7, "bold": True},
+                {"type": "text", "text": "-", "x": 7, "y": 7, "size": 7, "bold": True},
+                {"type": "text", "text": "+", "x": -40, "y": -34, "size": 7, "bold": True},
+                {"type": "text", "text": "-", "x": -38, "y": 18, "size": 7, "bold": True},
+            ],
+            [{"name": param_name, "default": "1", "description": "Gain/transconductance"}],
+            {"text": f"@name\\n@{param_name}", "x": 28, "y": -8},
+        )
+
+    def _primitive_vcvs(self):
+        return self._controlled_source("vcvs", "E", "E", "gain")
+
+    def _primitive_vccs(self):
+        return self._controlled_source("vccs", "G", "G", "gm")
+
+    def _primitive_cccs(self):
+        return self._primitive_symbol(
+            "cccs", "F", "F",
+            self._two_terminal_pins(),
+            self._two_terminal_source_shapes(current=True),
+            [
+                {"name": "vsource", "default": "V0", "description": "Controlling voltage source"},
+                {"name": "gain", "default": "1", "description": "Current gain"},
+            ],
+            {"text": "@name\\nF=@gain", "x": 25, "y": 0},
+        )
+
+    def _primitive_ccvs(self):
+        return self._primitive_symbol(
+            "ccvs", "H", "H",
+            self._two_terminal_pins(),
+            self._two_terminal_source_shapes(),
+            [
+                {"name": "vsource", "default": "V0", "description": "Controlling voltage source"},
+                {"name": "rm", "default": "1", "description": "Transresistance"},
+            ],
+            {"text": "@name\\nH=@rm", "x": 25, "y": 0},
+        )
+
+    def _primitive_bsource_v(self):
+        return self._primitive_symbol(
+            "bsource_v", "B", "BV",
+            self._two_terminal_pins(),
+            [{"type": "rect", "x": -18, "y": -24, "w": 36, "h": 48},
+             {"type": "line", "x1": 0, "y1": -40, "x2": 0, "y2": -24},
+             {"type": "line", "x1": 0, "y1": 24, "x2": 0, "y2": 40},
+             {"type": "text", "text": "Bv", "x": -9, "y": -8, "size": 8, "bold": True}],
+            [{"name": "expr", "default": "0", "description": "Voltage expression"}],
+            {"text": "@name\\nV=@expr", "x": 25, "y": 0},
+        )
+
+    def _primitive_bsource_i(self):
+        return self._primitive_symbol(
+            "bsource_i", "B", "BI",
+            self._two_terminal_pins(),
+            [{"type": "rect", "x": -18, "y": -24, "w": 36, "h": 48},
+             {"type": "line", "x1": 0, "y1": -40, "x2": 0, "y2": -24},
+             {"type": "line", "x1": 0, "y1": 24, "x2": 0, "y2": 40},
+             {"type": "text", "text": "Bi", "x": -9, "y": -8, "size": 8, "bold": True}],
+            [{"name": "expr", "default": "0", "description": "Current expression"}],
+            {"text": "@name\\nI=@expr", "x": 25, "y": 0},
+        )
+
+    def _primitive_voltage_switch(self):
+        return self._primitive_symbol(
+            "sw_v", "S", "S",
+            [
+                {"name": "PLUS", "x": 0, "y": -40, "direction": "inout"},
+                {"name": "MINUS", "x": 0, "y": 40, "direction": "inout"},
+                {"name": "CPLUS", "x": -40, "y": -15, "direction": "input"},
+                {"name": "CMINUS", "x": -40, "y": 15, "direction": "input"},
+            ],
+            [
+                {"type": "line", "x1": 0, "y1": -40, "x2": 0, "y2": -12},
+                {"type": "line", "x1": 0, "y1": 12, "x2": 0, "y2": 40},
+                {"type": "line", "x1": 0, "y1": -12, "x2": 16, "y2": 8},
+                {"type": "line", "x1": -40, "y1": -15, "x2": -16, "y2": -15},
+                {"type": "line", "x1": -40, "y1": 15, "x2": -16, "y2": 15},
+                {"type": "text", "text": "S", "x": 20, "y": -7, "size": 8, "bold": True},
+                {"type": "text", "text": "ctl", "x": -42, "y": -2, "size": 6, "bold": True},
+            ],
+            [{"name": "model", "default": "SW", "description": "Switch model"}],
+            {"text": "@name\\n@model", "x": 22, "y": 0},
+        )
+
+    def _primitive_current_switch(self):
+        return self._primitive_symbol(
+            "sw_i", "W", "W",
+            self._two_terminal_pins(),
+            [
+                {"type": "line", "x1": 0, "y1": -40, "x2": 0, "y2": -12},
+                {"type": "line", "x1": 0, "y1": 12, "x2": 0, "y2": 40},
+                {"type": "line", "x1": 0, "y1": -12, "x2": 16, "y2": 8},
+                {"type": "text", "text": "W", "x": 20, "y": -7, "size": 8, "bold": True},
+            ],
+            [
+                {"name": "vsource", "default": "V0", "description": "Controlling voltage source"},
+                {"name": "model", "default": "CSW", "description": "Switch model"},
+            ],
+            {"text": "@name\\n@model", "x": 22, "y": 0},
+        )
+
+    def _primitive_tline(self):
+        return self._primitive_symbol(
+            "tline", "T", "T",
+            [
+                {"name": "A", "x": -40, "y": -20, "direction": "inout"},
+                {"name": "B", "x": -40, "y": 20, "direction": "inout"},
+                {"name": "C", "x": 40, "y": -20, "direction": "inout"},
+                {"name": "D", "x": 40, "y": 20, "direction": "inout"},
+            ],
+            [
+                {"type": "line", "x1": -40, "y1": -20, "x2": 40, "y2": -20},
+                {"type": "line", "x1": -40, "y1": 20, "x2": 40, "y2": 20},
+                {"type": "rect", "x": -28, "y": -30, "w": 56, "h": 60},
+                {"type": "text", "text": "TLINE", "x": -19, "y": -8, "size": 7, "bold": True},
+            ],
+            [
+                {"name": "Z0", "default": "50", "description": "Characteristic impedance"},
+                {"name": "TD", "default": "1n", "description": "Delay"},
+            ],
+            {"text": "@name\\nZ0=@Z0", "x": 45, "y": -8},
+        )

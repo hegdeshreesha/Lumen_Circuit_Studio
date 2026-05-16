@@ -1,6 +1,6 @@
 """
-Lumen Circuit Studio — ADE (Analog Design Environment) Window
-Maestro-style tabbed simulation environment supporting all GSPICE analyses.
+Lumen Circuit Studio - SimENV Window
+Tabbed simulation environment supporting GSPICE analyses.
 """
 import os
 import traceback
@@ -564,7 +564,10 @@ class ConvergenceHelpersWidget(QWidget):
 
 
 class ADEWindow(QMainWindow):
-    """Maestro-style Analog Design Environment window."""
+    """SimENV: tabbed simulation environment window.
+
+    The class name remains unchanged so older callers keep working.
+    """
 
     def __init__(self, db: LibraryDatabase, library: str, cell: str,
                  ciw=None, pdk_registry=None, parent=None):
@@ -577,10 +580,10 @@ class ADEWindow(QMainWindow):
         self._startup_warnings: list[str] = []
         self._pdk_registry = pdk_registry or self._create_pdk_registry()
 
-        self.setWindowTitle(f"Lumen ADE — {cell} [{library}]")
+        self.setWindowTitle(f"Lumen SimENV - {cell} [{library}]")
         apply_window_branding(self)
-        self.setMinimumSize(950, 650)
-        self.resize(1100, 750)
+        self.setMinimumSize(1100, 720)
+        self.resize(1280, 820)
 
         self._analysis_tabs: dict[str, AnalysisSetupWidget] = {}
         self._current_simulator = "GSPICE"
@@ -623,7 +626,7 @@ class ADEWindow(QMainWindow):
         return ""
 
     def _selected_pdk_name(self) -> str:
-        """Return the ADE-selected PDK, falling back to schematic/active inference."""
+        """Return the SimENV-selected PDK, falling back to schematic/active inference."""
         pdk_name = self.pdk_combo.currentData() if hasattr(self, "pdk_combo") else ""
         return pdk_name or self._infer_pdk_name()
 
@@ -646,7 +649,7 @@ class ADEWindow(QMainWindow):
 
     def _configure_pdk_model_directives(self, directives: NetlistDirectives,
                                         pdk_name: str, process: str = ""):
-        """Add Cadence/ADE-style model library selections to the netlist."""
+        """Add Cadence-style model library selections to the netlist."""
         if not pdk_name or not self._pdk_registry:
             return
         pdk = self._pdk_registry.get_pdk(pdk_name)
@@ -731,7 +734,7 @@ class ADEWindow(QMainWindow):
         return wanted or {"cornerMOSlv.lib"}
 
     def _ihp_section_for_file(self, filename: str, process: str) -> str:
-        """Map ADE corner names to IHP .LIB sections."""
+        """Map SimENV corner names to IHP .LIB sections."""
         proc = (process or "tt").lower()
         if proc in ("typ", "typical"):
             proc = "tt"
@@ -767,33 +770,18 @@ class ADEWindow(QMainWindow):
         splitter = QSplitter(Qt.Orientation.Vertical)
         self.setCentralWidget(splitter)
 
-        # Top: main tabs
+        splitter.addWidget(self._build_session_header())
+
+        # Session tabs
         self.main_tabs = QTabWidget()
+        self.main_tabs.setTabPosition(QTabWidget.TabPosition.North)
+        self.main_tabs.currentChanged.connect(lambda _idx: self._refresh_run_plan())
         splitter.addWidget(self.main_tabs)
 
-        # Tab 1: Analyses
+        self._build_data_view_tab()
         self._build_analyses_tab()
-        # Tab 2: Design Variables
-        self.var_widget = DesignVariablesWidget()
-        self.main_tabs.addTab(self.var_widget, "Variables")
-        # Tab 3: Outputs
-        self.outputs_widget = OutputsWidget()
-        self.main_tabs.addTab(self.outputs_widget, "Outputs")
-        # Tab 4: Measurements
-        self.measurement_widget = MeasurementSetupWidget()
-        self.main_tabs.addTab(self.measurement_widget, "Measurements")
-        # Tab 5: Stimulus
-        self.stimulus_widget = StimulusEditorWidget()
-        self.main_tabs.addTab(self.stimulus_widget, "Stimulus")
-        # Tab 6: Convergence
-        self.convergence_widget = ConvergenceHelpersWidget()
-        self.main_tabs.addTab(self.convergence_widget, "Convergence")
-        # Tab 7: Corners
         self._build_corners_tab()
-        # Tab 8: Parametric Sweep
-        self.sweep_widget = ParametricSweepWidget()
-        self.main_tabs.addTab(self.sweep_widget, "Sweeps")
-        # Tab 9: Results
+        self._build_run_plan_tab()
         self._build_results_tab()
 
         # Bottom: log
@@ -803,7 +791,63 @@ class ADEWindow(QMainWindow):
         self.log_view.setMaximumHeight(180)
         self.log_view.setStyleSheet("QTextEdit{background:#1a1a1a;color:#b0b0b0;border:1px solid #3c3c3c;border-radius:4px;}")
         splitter.addWidget(self.log_view)
-        splitter.setSizes([550, 150])
+        splitter.setSizes([74, 560, 160])
+
+    def _build_session_header(self):
+        header = QFrame()
+        header.setObjectName("simenvHeader")
+        header.setMaximumHeight(74)
+        header.setStyleSheet("""
+            QFrame#simenvHeader {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #122232, stop:0.58 #1a2b2f, stop:1 #2d2414);
+                border: 1px solid #385060;
+                border-radius: 8px;
+            }
+        """)
+        layout = QHBoxLayout(header)
+        layout.setContentsMargins(14, 8, 14, 8)
+
+        title_box = QVBoxLayout()
+        title = QLabel("SimENV")
+        title.setStyleSheet("font-size:22px;font-weight:bold;color:#f2f7fb;background:transparent;")
+        subtitle = QLabel(f"Simulation cockpit - {self.library}/{self.cell}")
+        subtitle.setStyleSheet("color:#a9c7d8;background:transparent;")
+        title_box.addWidget(title)
+        title_box.addWidget(subtitle)
+        layout.addLayout(title_box, stretch=1)
+
+        self.session_badge = QLabel("Session: interactive")
+        self.session_badge.setStyleSheet(
+            "color:#ffd166;background:#26384a;border:1px solid #4b6a82;"
+            "border-radius:10px;padding:6px 12px;font-weight:bold;"
+        )
+        layout.addWidget(self.session_badge)
+        return header
+
+    def _build_data_view_tab(self):
+        data_tabs = QTabWidget()
+        data_tabs.setDocumentMode(True)
+
+        self.var_widget = DesignVariablesWidget()
+        data_tabs.addTab(self.var_widget, "Variables")
+
+        self.outputs_widget = OutputsWidget()
+        data_tabs.addTab(self.outputs_widget, "Outputs")
+
+        self.measurement_widget = MeasurementSetupWidget()
+        data_tabs.addTab(self.measurement_widget, "Measurements")
+
+        self.stimulus_widget = StimulusEditorWidget()
+        data_tabs.addTab(self.stimulus_widget, "Stimuli")
+
+        self.convergence_widget = ConvergenceHelpersWidget()
+        data_tabs.addTab(self.convergence_widget, "Convergence")
+
+        self.sweep_widget = ParametricSweepWidget()
+        data_tabs.addTab(self.sweep_widget, "Sweeps")
+
+        self.main_tabs.addTab(data_tabs, "Data View")
 
     def _build_analyses_tab(self):
         analyses_widget = QWidget()
@@ -851,7 +895,7 @@ class ADEWindow(QMainWindow):
         self.analysis_setup_tabs.tabCloseRequested.connect(self._on_close_analysis_tab)
         layout.addWidget(self.analysis_setup_tabs, stretch=1)
 
-        self.main_tabs.addTab(analyses_widget, "Analyses")
+        self.main_tabs.addTab(analyses_widget, "Tests")
 
         # Populate initial state
         self._refresh_analysis_tree()
@@ -887,6 +931,7 @@ class ADEWindow(QMainWindow):
         else:
             self.sim_status_label.setText(f"\u2717 Not found: {bridge.exe_path}")
             self.sim_status_label.setStyleSheet("color:#cc8888;background:transparent;padding:2px;")
+        self._refresh_run_plan()
 
     def _refresh_analysis_tree(self):
         """Rebuild the analysis tree showing only supported analyses."""
@@ -914,6 +959,7 @@ class ADEWindow(QMainWindow):
         name = self.analysis_setup_tabs.tabText(index)
         self.analysis_setup_tabs.removeTab(index)
         self._analysis_tabs.pop(name, None)
+        self._refresh_run_plan()
 
     def _build_corners_tab(self):
         widget = QWidget()
@@ -942,12 +988,14 @@ class ADEWindow(QMainWindow):
             idx = self.pdk_combo.findData(default_pdk)
             if idx >= 0:
                 self.pdk_combo.setCurrentIndex(idx)
+        self.pdk_combo.currentIndexChanged.connect(lambda _idx: self._refresh_run_plan())
         hdr.addWidget(self.pdk_combo)
 
         # Corner run mode
         hdr.addWidget(QLabel("Run Mode:"))
         self.corner_mode_combo = QComboBox()
         self.corner_mode_combo.addItems(["Single", "All Corners", "Selected"])
+        self.corner_mode_combo.currentIndexChanged.connect(lambda _idx: self._refresh_run_plan())
         hdr.addWidget(self.corner_mode_combo)
 
         layout.addLayout(hdr)
@@ -983,6 +1031,90 @@ class ADEWindow(QMainWindow):
         chk = QCheckBox()
         chk.setChecked(True)
         self.corner_table.setCellWidget(r, 4, chk)
+        self._refresh_run_plan()
+
+    def _build_run_plan_tab(self):
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(8, 8, 8, 8)
+
+        top = QHBoxLayout()
+        title = QLabel("Run Plan")
+        title.setStyleSheet("font-size:15px;font-weight:bold;color:#6b9ece;background:transparent;")
+        top.addWidget(title)
+        top.addStretch()
+        refresh_btn = QPushButton("Refresh Plan")
+        refresh_btn.clicked.connect(self._refresh_run_plan)
+        top.addWidget(refresh_btn)
+        layout.addLayout(top)
+
+        self.run_plan_tree = QTreeWidget()
+        self.run_plan_tree.setHeaderLabels(["Item", "Value"])
+        self.run_plan_tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.run_plan_tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(self.run_plan_tree)
+
+        hint = QLabel(
+            "This tab summarizes the SimENV session before execution: tests, "
+            "variables, corners, outputs, measurements, and simulator target."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color:#8c9aa8;background:transparent;padding:4px;")
+        layout.addWidget(hint)
+
+        self.main_tabs.addTab(widget, "Run Plan")
+        self._refresh_run_plan()
+
+    def _refresh_run_plan(self):
+        if not hasattr(self, "run_plan_tree"):
+            return
+
+        self.run_plan_tree.clear()
+
+        def add_parent(name: str, value: str = ""):
+            item = QTreeWidgetItem([name, value])
+            font = item.font(0)
+            font.setBold(True)
+            item.setFont(0, font)
+            item.setForeground(0, QColor("#6b9ece"))
+            self.run_plan_tree.addTopLevelItem(item)
+            item.setExpanded(True)
+            return item
+
+        session = add_parent("Session", f"{self.library}/{self.cell}")
+        session.addChild(QTreeWidgetItem(["Environment", "SimENV"]))
+        session.addChild(QTreeWidgetItem(["Simulator", get_simulator_label(self._current_simulator)]))
+        session.addChild(QTreeWidgetItem(["PDK", self._selected_pdk_name() or "None selected"]))
+
+        tests = add_parent("Tests", f"{len(self._analysis_tabs)} analysis setup(s)")
+        for name, widget in self._analysis_tabs.items():
+            tests.addChild(QTreeWidgetItem([name, widget.get_spice_line()]))
+
+        variables = self.var_widget.get_variables() if hasattr(self, "var_widget") else {}
+        var_parent = add_parent("Variables", f"{len(variables)} variable(s)")
+        for name, value in variables.items():
+            var_parent.addChild(QTreeWidgetItem([name, value]))
+
+        corners = self.get_corner_data() if hasattr(self, "corner_table") else []
+        corner_parent = add_parent("Corners", f"{len(corners)} enabled")
+        for corner in corners:
+            corner_parent.addChild(QTreeWidgetItem([
+                corner["name"],
+                f"{corner['process']}, {corner['temp']} C, VDD={corner['vdd']}",
+            ]))
+
+        outputs = self.outputs_widget.get_save_lines() if hasattr(self, "outputs_widget") else []
+        output_parent = add_parent("Outputs", f"{len(outputs)} saved expression(s)")
+        for line in outputs:
+            output_parent.addChild(QTreeWidgetItem(["Save", line.replace(".SAVE ", "")]))
+
+        measures = self.measurement_widget.get_measure_lines() if hasattr(self, "measurement_widget") else []
+        measure_parent = add_parent("Measurements", f"{len(measures)} measurement(s)")
+        for line in measures:
+            measure_parent.addChild(QTreeWidgetItem(["Measure", line]))
+
+        for i in range(self.run_plan_tree.topLevelItemCount()):
+            self.run_plan_tree.topLevelItem(i).setExpanded(True)
 
     def get_corner_data(self) -> list[dict]:
         """Get corner configuration data."""
@@ -1039,13 +1171,14 @@ class ADEWindow(QMainWindow):
         self._analysis_tabs[name] = widget
         self.analysis_setup_tabs.addTab(widget, name)
         self.analysis_setup_tabs.setCurrentWidget(widget)
-        self._log(f"Added analysis: {name}")
+        self._log(f"Added test: {name}")
+        self._refresh_run_plan()
 
     # ── Menus & Toolbar ───────────────────────────────────────
 
     def _create_menus(self):
         menubar = self.menuBar()
-        sim_menu = menubar.addMenu("&Simulation")
+        sim_menu = menubar.addMenu("&SimENV")
 
         act_run = QAction("Run All", self)
         act_run.setShortcut("F5")
@@ -1058,11 +1191,11 @@ class ADEWindow(QMainWindow):
 
         sim_menu.addSeparator()
 
-        act_save = QAction("Save Setup...", self)
+        act_save = QAction("Save SimENV Setup...", self)
         act_save.triggered.connect(self._on_save_setup)
         sim_menu.addAction(act_save)
 
-        act_load = QAction("Load Setup...", self)
+        act_load = QAction("Load SimENV Setup...", self)
         act_load.triggered.connect(self._on_load_setup)
         sim_menu.addAction(act_load)
 
@@ -1072,10 +1205,10 @@ class ADEWindow(QMainWindow):
         sim_menu.addAction(act_close)
 
     def _create_toolbar(self):
-        tb = QToolBar("ADE")
+        tb = QToolBar("SimENV")
         tb.setIconSize(QSize(18, 18))
 
-        act_run = QAction("\u25b6 Run", self)
+        act_run = QAction("\u25b6 Run Plan", self)
         act_run.triggered.connect(self._on_run)
         tb.addAction(act_run)
 
@@ -1107,7 +1240,7 @@ class ADEWindow(QMainWindow):
     def _build_full_netlist(self) -> str:
         gen = NetlistGenerator(self.db)
 
-        # Configure directives from ADE
+        # Configure directives from SimENV
         directives = NetlistDirectives()
         corner_data = self.get_corner_data()
         process = corner_data[0]["process"] if corner_data else ""
@@ -1258,6 +1391,7 @@ class ADEWindow(QMainWindow):
     # ── Actions ───────────────────────────────────────────────
 
     def _on_view_netlist(self):
+        self._refresh_run_plan()
         try:
             netlist = self._build_full_netlist()
             self.log_view.setPlainText(netlist)
@@ -1273,8 +1407,9 @@ class ADEWindow(QMainWindow):
             )
 
     def _on_run(self):
+        self._refresh_run_plan()
         if not self._analysis_tabs:
-            QMessageBox.warning(self, "No Analysis", "Add at least one analysis first.")
+            QMessageBox.warning(self, "No Test", "Add at least one SimENV test first.")
             return
 
         corner_mode = self.corner_mode_combo.currentText()
@@ -1304,7 +1439,7 @@ class ADEWindow(QMainWindow):
                 self.statusBar().showMessage(f"{self._current_simulator} not found")
                 return
 
-            result = bridge.simulate(netlist, sim_name=f"ade_{self.cell}")
+            result = bridge.simulate(netlist, sim_name=f"simenv_{self.cell}")
             self._handle_simulation_result(result, "Single")
 
         elif corner_mode in ("All Corners", "Selected"):
@@ -1336,7 +1471,7 @@ class ADEWindow(QMainWindow):
                 self._log(f"Running corner: {corner_name}")
                 result = bridge.simulate(
                     netlist,
-                    sim_name=f"ade_{self.cell}_{corner_name}"
+                    sim_name=f"simenv_{self.cell}_{corner_name}"
                 )
                 self._handle_simulation_result(result, corner_name)
                 if result.success and result.waveforms:
@@ -1390,18 +1525,29 @@ class ADEWindow(QMainWindow):
     def _log(self, msg):
         self.log_view.append(f"→ {msg}")
         if self.ciw:
-            self.ciw.log(f"[ADE] {msg}")
+            self.ciw.log(f"[SimENV] {msg}")
 
+    def closeEvent(self, event):
+        parent = self.parent()
+        if self.property("embeddedSimEnv") and hasattr(parent, "workspace_tabs"):
+            index = parent.workspace_tabs.indexOf(self)
+            if index >= 0:
+                parent.workspace_tabs.removeTab(index)
+            if getattr(parent, "_simenv_tab", None) is self:
+                parent._simenv_tab = None
+        event.accept()
     def _on_save_setup(self):
-        """Save ADE setup as JSON template."""
+        """Save SimENV Setup as JSON template."""
         import json
         from pathlib import Path
 
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save ADE Setup", "", "ADE Setup (*.ade.json)"
+            self, "Save SimENV Setup", "", "SimENV Setup (*.simenv.json);;Legacy Setup (*.ade.json)"
         )
         if not path:
             return
+        if not path.endswith((".simenv.json", ".ade.json")):
+            path += ".simenv.json"
 
         setup = {
             "version": "1.0",
@@ -1439,14 +1585,14 @@ class ADEWindow(QMainWindow):
 
         with open(path, "w") as f:
             json.dump(setup, f, indent=2)
-        self._log(f"Saved ADE setup to {path}")
+        self._log(f"Saved SimENV setup to {path}")
 
     def _on_load_setup(self):
-        """Load ADE setup from JSON template."""
+        """Load SimENV Setup from JSON template."""
         import json
 
         path, _ = QFileDialog.getOpenFileName(
-            self, "Load ADE Setup", "", "ADE Setup (*.ade.json)"
+            self, "Load SimENV Setup", "", "SimENV Setup (*.simenv.json);;Legacy Setup (*.ade.json)"
         )
         if not path:
             return
@@ -1517,4 +1663,10 @@ class ADEWindow(QMainWindow):
         if idx >= 0:
             self.corner_mode_combo.setCurrentIndex(idx)
 
-        self._log(f"Loaded ADE setup from {path}")
+        self._log(f"Loaded SimENV setup from {path}")
+        self._refresh_run_plan()
+
+
+
+
+

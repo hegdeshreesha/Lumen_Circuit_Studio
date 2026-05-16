@@ -143,7 +143,7 @@ class LumenMainWindow(QMainWindow):
         self.act_simulate = QAction("Run Simulation", self)
         self.act_simulate.setShortcut(QKeySequence("F5"))
 
-        self.act_ade = QAction("Open ADE...", self)
+        self.act_ade = QAction("Open SimENV...", self)
 
         # Hierarchy
         self.act_push_down = QAction("Push Down (E)", self)
@@ -444,7 +444,7 @@ class LumenMainWindow(QMainWindow):
             "<p>Powered by GSPICE Simulator Engine</p>"
             "<hr>"
             "<p>Features: Schematic Capture · Symbol Editor · "
-            "Library Manager · ADE · Waveform Viewer · PDK Manager</p>"
+            "Library Manager · SimENV · Waveform Viewer · PDK Manager</p>"
         )
 
     # ── Helpers ───────────────────────────────────────────────
@@ -461,3 +461,5 @@ class LumenMainWindow(QMainWindow):
     def log(self, msg: str):
         """Write a message to the output log."""
         self.output_log.append(f"→ {msg}")
+
+

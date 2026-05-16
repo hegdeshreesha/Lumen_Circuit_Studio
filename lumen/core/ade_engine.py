@@ -1,7 +1,7 @@
 """
 Lumen Circuit Studio — ADE Engine (Analog Design Environment Core)
 
-Maestro-class simulation management engine with:
+Advanced simulation management engine with:
 - Simulation state management (save/load .sim files)
 - Ocean-like Python scripting API
 - Multi-run history with hierarchical result storage

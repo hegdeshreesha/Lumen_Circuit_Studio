@@ -11,6 +11,8 @@ Interactive schematic editor with:
 """
 import math
 import copy
+import re
+from collections import defaultdict
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QGraphicsView, QGraphicsScene,
     QGraphicsLineItem, QGraphicsRectItem, QGraphicsTextItem,
@@ -46,6 +48,8 @@ SELECTION_COLOR = QColor("#533483")
 GRID_COLOR_MAJOR = QColor(35, 35, 35)
 GRID_COLOR_MINOR = QColor(25, 25, 25)
 BG_COLOR = QColor("#0a0a0a")
+PIN_GRAVITY_RADIUS = 6.0
+WIRE_ENDPOINT_GRAVITY_RADIUS = 3.5
 
 
 def snap(val: float) -> float:
@@ -137,42 +141,86 @@ class SchematicPinItem(QGraphicsItemGroup):
     def _build_graphics(self):
         self._clear_group()
         color = self._color()
-        pen = QPen(color, 1.5)
+        pen = QPen(color, 1.2)
         brush = QBrush(color)
-        vx, vy = self._orientation_vector()
 
-        # Connection point is the group origin, matching Cadence terminal semantics.
-        marker = QGraphicsRectItem(-PIN_RADIUS, -PIN_RADIUS, PIN_RADIUS * 2, PIN_RADIUS * 2)
+        # Reuse xschem pin geometry exactly (ipin/opin/iopin), then orient it.
+        def orient_point(x: float, y: float) -> tuple[float, float]:
+            if self.pin_orientation == "R90":
+                return (y, -x)
+            if self.pin_orientation == "R180":
+                return (-x, -y)
+            if self.pin_orientation == "R270":
+                return (-y, x)
+            return (x, y)
+
+        pin_kind = self.pin_direction
+        if pin_kind in ("power", "ground"):
+            pin_kind = "inout"
+
+        if pin_kind == "input":
+            line_start = (-5.0, 0.0)
+            line_end = (0.0, 0.0)
+            poly_pts = [
+                (-5.0, 0.0), (-8.75, -5.0), (-17.5, -5.0),
+                (-13.75, 0.0), (-17.5, 5.0), (-8.75, 5.0), (-5.0, 0.0),
+            ]
+            label_anchor = (-18.75, -8.75)
+        elif pin_kind == "output":
+            line_start = (0.0, 0.0)
+            line_end = (8.75, 0.0)
+            poly_pts = [
+                (17.5, 0.0), (13.75, -5.0), (5.0, -5.0),
+                (8.75, 0.0), (5.0, 5.0), (13.75, 5.0), (17.5, 0.0),
+            ]
+            label_anchor = (20.0, -8.75)
+        else:
+            line_start = (0.0, 0.0)
+            line_end = (3.125, 0.0)
+            poly_pts = [
+                (13.75, 5.0), (17.5, 0.0), (13.75, -5.0),
+                (6.875, -5.0), (3.125, 0.0), (6.875, 5.0), (13.75, 5.0),
+            ]
+            label_anchor = (19.8438, -9.375)
+
+        # Xschem pin box: B 5 -1.25 -1.25 1.25 1.25
+        marker_pts = [orient_point(-1.25, -1.25), orient_point(1.25, 1.25)]
+        marker_x = min(marker_pts[0][0], marker_pts[1][0])
+        marker_y = min(marker_pts[0][1], marker_pts[1][1])
+        marker_w = abs(marker_pts[1][0] - marker_pts[0][0])
+        marker_h = abs(marker_pts[1][1] - marker_pts[0][1])
+        marker = QGraphicsRectItem(marker_x, marker_y, marker_w, marker_h)
         marker.setPen(pen)
-        marker.setBrush(brush)
+        marker.setBrush(QBrush(Qt.BrushStyle.NoBrush))
         self.addToGroup(marker)
 
-        stub = QGraphicsLineItem(0, 0, vx * 22, vy * 22)
+        lsx, lsy = orient_point(*line_start)
+        lex, ley = orient_point(*line_end)
+        stub = QGraphicsLineItem(lsx, lsy, lex, ley)
         stub.setPen(pen)
         self.addToGroup(stub)
 
+        poly_path = QPainterPath()
+        first = orient_point(*poly_pts[0])
+        poly_path.moveTo(first[0], first[1])
+        for px, py in poly_pts[1:]:
+            ox, oy = orient_point(px, py)
+            poly_path.lineTo(ox, oy)
+        poly_path.closeSubpath()
+        poly_item = QGraphicsPathItem(poly_path)
+        poly_item.setPen(pen)
+        poly_item.setBrush(brush)
+        self.addToGroup(poly_item)
+
         label = QGraphicsTextItem(self.pin_name)
         label.setDefaultTextColor(color)
-        font = QFont("Consolas", 8, QFont.Weight.Bold)
-        label.setFont(font)
-        label_x = vx * 26
-        label_y = vy * 26 - 8
-        if self.pin_orientation == "R180":
-            label_x -= max(30, len(self.pin_name) * 7)
-        if self.pin_orientation == "R90":
-            label_x += 4
-            label_y -= 12
-        if self.pin_orientation == "R270":
-            label_x += 4
-            label_y += 4
-        label.setPos(label_x, label_y)
+        label.setFont(QFont("Consolas", 8, QFont.Weight.DemiBold))
+        lx, ly = orient_point(*label_anchor)
+        if self.pin_orientation in ("R90", "R270"):
+            lx += 4
+            ly -= 6
+        label.setPos(lx, ly)
         self.addToGroup(label)
-
-        dir_tag = QGraphicsTextItem(self.pin_direction[:1].upper())
-        dir_tag.setDefaultTextColor(QColor("#101010"))
-        dir_tag.setFont(QFont("Consolas", 6, QFont.Weight.Bold))
-        dir_tag.setPos(-3, -8)
-        self.addToGroup(dir_tag)
 
     def set_pin_name(self, name: str):
         self.pin_name = name
@@ -229,6 +277,8 @@ class InstanceItem(QGraphicsItemGroup):
         """Build the visual representation from symbol data."""
         pen = QPen(INSTANCE_COLOR, INSTANCE_WIDTH)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        render_options = self.symbol_data.get("render_options", {})
+        xschem_symbol = self.symbol_data.get("source_format") == "xschem"
 
         for shape in self.symbol_data.get("shapes", []):
             stype = shape.get("type", "")
@@ -260,7 +310,10 @@ class InstanceItem(QGraphicsItemGroup):
                 path.closeSubpath()
                 item = QGraphicsPathItem(path)
                 item.setPen(pen)
-                item.setBrush(QBrush(INSTANCE_COLOR.darker(200)))
+                if shape.get("fill"):
+                    item.setBrush(QBrush(INSTANCE_COLOR))
+                else:
+                    item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
                 self.addToGroup(item)
             elif stype == "rect":
                 item = QGraphicsRectItem(
@@ -277,20 +330,69 @@ class InstanceItem(QGraphicsItemGroup):
                 item = QGraphicsPathItem(path)
                 item.setPen(pen)
                 self.addToGroup(item)
+            elif stype == "text":
+                text = self._substitute_display_text(shape.get("text", ""))
+                if not text:
+                    continue
+                item = QGraphicsTextItem(text)
+                item.setPos(shape.get("x", 0), shape.get("y", 0))
+                default_color = "#8fd7e8" if xschem_symbol else "#90e0ef"
+                item.setDefaultTextColor(QColor(shape.get("color", default_color)))
+                size = int(shape.get("size", 8))
+                weight = QFont.Weight.Bold if shape.get("bold", True) else QFont.Weight.Normal
+                item.setFont(QFont("Consolas", size, weight))
+                if shape.get("rotation"):
+                    item.setRotation(float(shape.get("rotation", 0)))
+                self.addToGroup(item)
 
         # Draw pins
         pin_pen = QPen(PIN_COLOR, 1)
+        draw_pin_markers = bool(render_options.get("draw_pin_markers", True))
+        pin_marker_style = render_options.get("pin_marker_style", "dot")
+        marker_size = float(render_options.get("pin_marker_size", PIN_RADIUS * 2))
         for pin in self.symbol_data.get("pins", []):
             px, py = pin["x"], pin["y"]
-            dot = QGraphicsEllipseItem(
-                px - PIN_RADIUS, py - PIN_RADIUS,
-                PIN_RADIUS * 2, PIN_RADIUS * 2)
-            dot.setPen(pin_pen)
-            dot.setBrush(QBrush(PIN_COLOR))
-            self.addToGroup(dot)
+            if draw_pin_markers:
+                if pin_marker_style == "xschem_box":
+                    bbox = pin.get("bbox") or []
+                    if len(bbox) == 4:
+                        x1, y1, x2, y2 = [float(v) for v in bbox]
+                        x = min(x1, x2)
+                        y = min(y1, y2)
+                        w = max(abs(x2 - x1), marker_size)
+                        h = max(abs(y2 - y1), marker_size)
+                        if w == marker_size:
+                            x = px - marker_size / 2
+                        if h == marker_size:
+                            y = py - marker_size / 2
+                    else:
+                        x = px - marker_size / 2
+                        y = py - marker_size / 2
+                        w = marker_size
+                        h = marker_size
+                    marker = QGraphicsRectItem(x, y, w, h)
+                    marker.setPen(pin_pen)
+                    marker.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+                    self.addToGroup(marker)
+                elif pin_marker_style == "terminal_box":
+                    marker = QGraphicsRectItem(
+                        px - marker_size / 2, py - marker_size / 2,
+                        marker_size, marker_size)
+                    marker.setPen(pin_pen)
+                    marker.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+                    self.addToGroup(marker)
+                else:
+                    dot = QGraphicsEllipseItem(
+                        px - PIN_RADIUS, py - PIN_RADIUS,
+                        PIN_RADIUS * 2, PIN_RADIUS * 2)
+                    dot.setPen(pin_pen)
+                    dot.setBrush(QBrush(PIN_COLOR))
+                    self.addToGroup(dot)
             self.pin_positions[pin["name"]] = QPointF(px, py)
 
         # Instance label
+        if render_options.get("use_text_shapes_for_labels"):
+            return
         label_data = self.symbol_data.get("label", {})
         label_text = self.instance_name
         if label_data.get("text"):
@@ -306,6 +408,26 @@ class InstanceItem(QGraphicsItemGroup):
         text_item.setDefaultTextColor(QColor("#90e0ef"))
         text_item.setFont(QFont("Consolas", 7))
         self.addToGroup(text_item)
+
+    def _substitute_display_text(self, text: str) -> str:
+        """Evaluate Cadence-CDF-style display labels such as @name and w=@w."""
+        if not text:
+            return ""
+
+        values = {
+            "name": self.instance_name,
+            "inst": self.instance_name,
+            "model": self.symbol_data.get("spice_model", self.cell_name),
+            "symname": self.cell_name,
+            "cell": self.cell_name,
+        }
+        values.update({str(k): str(v) for k, v in self.parameters.items()})
+
+        def replace(match):
+            key = match.group(1)
+            return str(values.get(key, match.group(0)))
+
+        return re.sub(r"@([A-Za-z_][A-Za-z0-9_]*)", replace, text)
 
     def get_properties(self) -> dict:
         """Return a dict of all properties for the property editor."""
@@ -329,10 +451,13 @@ class JunctionDot(QGraphicsEllipseItem):
     """A small dot indicating a wire junction."""
 
     def __init__(self, x: float, y: float):
-        r = 3
+        r = 3.2
         super().__init__(x - r, y - r, r * 2, r * 2)
         self.setPen(QPen(WIRE_COLOR, 1))
         self.setBrush(QBrush(WIRE_COLOR))
+        self.setFlag(QGraphicsEllipseItem.GraphicsItemFlag.ItemIsSelectable, False)
+        self.setFlag(QGraphicsEllipseItem.GraphicsItemFlag.ItemIsMovable, False)
+        self.setZValue(8)
 
 
 # ── Schematic Canvas (QGraphicsView) ─────────────────────────
@@ -530,6 +655,7 @@ class SchematicEditor(QWidget):
         self.instances: list[InstanceItem] = []
         self.labels: list[NetLabelItem] = []
         self.pins: list[SchematicPinItem] = []
+        self.junction_dots: list[JunctionDot] = []
 
         self._setup_ui()
         self._load_data()
@@ -592,6 +718,8 @@ class SchematicEditor(QWidget):
                 if pdk:
                     for dev in pdk.devices:
                         if dev.name == cell:
+                            if isinstance(getattr(dev, "symbol_data", None), dict):
+                                return dev.symbol_data
                             from lumen.core.pdk import generate_symbol_data
                             try:
                                 return generate_symbol_data(dev, pdk_name)
@@ -662,6 +790,7 @@ class SchematicEditor(QWidget):
                 )
                 self.scene.addItem(item)
                 self.pins.append(item)
+            self._refresh_junction_dots()
 
     def save(self):
         """Save the schematic to the database."""
@@ -766,10 +895,170 @@ class SchematicEditor(QWidget):
     # ── Undo / Redo ───────────────────────────────────────────
 
     def undo(self):
-        self.cmd_stack.undo()
+        if self.cmd_stack.undo():
+            self._refresh_junction_dots()
 
     def redo(self):
-        self.cmd_stack.redo()
+        if self.cmd_stack.redo():
+            self._refresh_junction_dots()
+
+    def _execute_command(self, command):
+        """Execute a command and keep derived visuals like junctions in sync."""
+        self.cmd_stack.execute(command)
+        self._refresh_junction_dots()
+
+    def _clear_junction_dots(self):
+        for dot in self.junction_dots:
+            self.scene.removeItem(dot)
+        self.junction_dots.clear()
+
+    def _wire_segments(self) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+        segments: list[tuple[tuple[float, float], tuple[float, float]]] = []
+        for wire in self.wires:
+            line = wire.line()
+            pos = wire.pos()
+            a = (line.x1() + pos.x(), line.y1() + pos.y())
+            b = (line.x2() + pos.x(), line.y2() + pos.y())
+            if (abs(a[0] - b[0]) < 1e-9) and (abs(a[1] - b[1]) < 1e-9):
+                continue
+            segments.append((a, b))
+        return segments
+
+    def _pin_connection_candidates(self) -> list[tuple[float, float]]:
+        """Collect pin anchors used for light wire-gravity snapping."""
+        points: list[tuple[float, float]] = []
+
+        # Top-level schematic pins.
+        for pin in self.pins:
+            pos = pin.scenePos()
+            points.append((pos.x(), pos.y()))
+
+        # Instance pins (symbol pins transformed into scene coords).
+        for inst in self.instances:
+            for pin_name in inst.pin_positions.keys():
+                p = inst.get_pin_scene_pos(pin_name)
+                if p is not None:
+                    points.append((p.x(), p.y()))
+
+        return points
+
+    def _wire_endpoint_candidates(self) -> list[tuple[float, float]]:
+        """Collect existing wire endpoints for continuity snapping."""
+        points: list[tuple[float, float]] = []
+        for a, b in self._wire_segments():
+            points.append(a)
+            points.append(b)
+        return points
+
+    def _snap_to_connection(self, x: float, y: float) -> tuple[float, float]:
+        """Apply slight gravity while wiring: prefer pins, lightly snap wire ends."""
+        best = (x, y)
+        best_d2 = PIN_GRAVITY_RADIUS * PIN_GRAVITY_RADIUS
+        snapped = False
+
+        # Primary gravity: pins only (what users expect most while wiring).
+        for cx, cy in self._pin_connection_candidates():
+            dx = cx - x
+            dy = cy - y
+            d2 = (dx * dx) + (dy * dy)
+            if d2 <= best_d2:
+                best_d2 = d2
+                best = (cx, cy)
+                snapped = True
+
+        # Secondary gravity: existing wire endpoints, weaker radius.
+        if not snapped:
+            endpoint_d2 = WIRE_ENDPOINT_GRAVITY_RADIUS * WIRE_ENDPOINT_GRAVITY_RADIUS
+            for cx, cy in self._wire_endpoint_candidates():
+                dx = cx - x
+                dy = cy - y
+                d2 = (dx * dx) + (dy * dy)
+                if d2 <= endpoint_d2:
+                    endpoint_d2 = d2
+                    best = (cx, cy)
+        return best
+
+    def _norm_point(self, x: float, y: float) -> tuple[int, int]:
+        return (int(round(x)), int(round(y)))
+
+    def _point_on_segment(self, px: float, py: float, a: tuple[float, float], b: tuple[float, float]) -> bool:
+        ax, ay = a
+        bx, by = b
+        cross = (px - ax) * (by - ay) - (py - ay) * (bx - ax)
+        if abs(cross) > 1e-6:
+            return False
+        min_x, max_x = sorted((ax, bx))
+        min_y, max_y = sorted((ay, by))
+        return min_x - 1e-6 <= px <= max_x + 1e-6 and min_y - 1e-6 <= py <= max_y + 1e-6
+
+    def _is_endpoint(self, p: tuple[float, float], a: tuple[float, float], b: tuple[float, float]) -> bool:
+        return (
+            (abs(p[0] - a[0]) < 1e-6 and abs(p[1] - a[1]) < 1e-6) or
+            (abs(p[0] - b[0]) < 1e-6 and abs(p[1] - b[1]) < 1e-6)
+        )
+
+    def _segment_intersection(
+        self,
+        a1: tuple[float, float],
+        a2: tuple[float, float],
+        b1: tuple[float, float],
+        b2: tuple[float, float],
+    ) -> tuple[float, float] | None:
+        # We mostly draw Manhattan wires; this handles orthogonal and touching endpoints.
+        a_vertical = abs(a1[0] - a2[0]) < 1e-6
+        b_vertical = abs(b1[0] - b2[0]) < 1e-6
+
+        if a_vertical == b_vertical:
+            # Parallel segments: only shared endpoints matter for junction logic.
+            for p in (a1, a2):
+                if self._point_on_segment(p[0], p[1], b1, b2):
+                    return p
+            for p in (b1, b2):
+                if self._point_on_segment(p[0], p[1], a1, a2):
+                    return p
+            return None
+
+        v1, v2 = (a1, a2) if a_vertical else (b1, b2)
+        h1, h2 = (b1, b2) if a_vertical else (a1, a2)
+        x = v1[0]
+        y = h1[1]
+        if self._point_on_segment(x, y, v1, v2) and self._point_on_segment(x, y, h1, h2):
+            return (x, y)
+        return None
+
+    def _refresh_junction_dots(self):
+        """Show solder dots where three or more wire branches meet."""
+        self._clear_junction_dots()
+        segments = self._wire_segments()
+        if not segments:
+            return
+
+        candidates: set[tuple[int, int]] = set()
+        for a, b in segments:
+            candidates.add(self._norm_point(*a))
+            candidates.add(self._norm_point(*b))
+
+        for i, (a1, a2) in enumerate(segments):
+            for b1, b2 in segments[i + 1:]:
+                ip = self._segment_intersection(a1, a2, b1, b2)
+                if ip is not None:
+                    candidates.add(self._norm_point(*ip))
+
+        contributions: dict[tuple[int, int], int] = defaultdict(int)
+        for nx, ny in candidates:
+            px, py = float(nx), float(ny)
+            count = 0
+            for a, b in segments:
+                if not self._point_on_segment(px, py, a, b):
+                    continue
+                count += 1 if self._is_endpoint((px, py), a, b) else 2
+            if count >= 3:
+                contributions[(nx, ny)] = count
+
+        for (x, y) in contributions.keys():
+            dot = JunctionDot(float(x), float(y))
+            self.scene.addItem(dot)
+            self.junction_dots.append(dot)
 
     # ── Delete Selected ───────────────────────────────────────
 
@@ -797,7 +1086,7 @@ class SchematicEditor(QWidget):
                     lists_map[top] = self.labels
         if items_to_delete:
             cmd = DeleteItemsCommand(self.scene, items_to_delete, lists_map)
-            self.cmd_stack.execute(cmd)
+            self._execute_command(cmd)
 
     # ── Rotate / Mirror ───────────────────────────────────────
 
@@ -822,7 +1111,7 @@ class SchematicEditor(QWidget):
 
         # Execute rotate command (for undo/redo)
         cmd = RotateCommand(items_to_rotate, angle)
-        self.cmd_stack.execute(cmd)
+        self._execute_command(cmd)
 
     def mirror_selected_x(self):
         """Mirror selected instances horizontally (with undo)."""
@@ -845,7 +1134,7 @@ class SchematicEditor(QWidget):
 
         # Execute mirror command
         cmd = MirrorCommand(items_to_mirror, 'x')
-        self.cmd_stack.execute(cmd)
+        self._execute_command(cmd)
 
     def mirror_selected_y(self):
         """Mirror selected instances vertically (with undo)."""
@@ -868,7 +1157,7 @@ class SchematicEditor(QWidget):
 
         # Execute mirror command
         cmd = MirrorCommand(items_to_mirror, 'y')
-        self.cmd_stack.execute(cmd)
+        self._execute_command(cmd)
 
     # ── Copy / Paste ──────────────────────────────────────────
 
@@ -969,7 +1258,7 @@ class SchematicEditor(QWidget):
                     label = NetLabelItem(entry['text'], entry['x'] + 20, entry['y'] + 20)
                     cmds.append(LabelCommand(self.scene, label, self.labels, add=True))
         if cmds:
-            self.cmd_stack.execute(CompoundCommand(cmds))
+            self._execute_command(CompoundCommand(cmds))
 
     def duplicate_selected(self):
         """Duplicate selected instances using the clipboard implementation."""
@@ -979,6 +1268,7 @@ class SchematicEditor(QWidget):
     def stretch_selected(self, dx: float, dy: float):
         """Stretch selected wires by moving their second endpoint; move other selected items."""
         moved_items = []
+        wire_changed = False
         for item in self.scene.selectedItems():
             top = item
             while top.parentItem():
@@ -986,10 +1276,13 @@ class SchematicEditor(QWidget):
             if isinstance(top, WireItem):
                 line = top.line()
                 top.setLine(line.x1(), line.y1(), line.x2() + dx, line.y2() + dy)
+                wire_changed = True
             elif top not in moved_items and isinstance(top, (InstanceItem, NetLabelItem, SchematicPinItem)):
                 moved_items.append(top)
         if moved_items:
-            self.cmd_stack.execute(MoveItemsCommand(moved_items, dx, dy))
+            self._execute_command(MoveItemsCommand(moved_items, dx, dy))
+        elif wire_changed:
+            self._refresh_junction_dots()
 
     def name_selected_wires(self, net_name: str, as_bus: bool = False):
         """Assign a net or bus name to selected wires."""
@@ -1010,7 +1303,7 @@ class SchematicEditor(QWidget):
                 y = pos.y() + (line.y1() + line.y2()) / 2
                 label = NetLabelItem(name, x, y)
                 label.setDefaultTextColor(QColor("#2dd4bf"))
-                self.cmd_stack.execute(LabelCommand(self.scene, label, self.labels, add=True))
+                self._execute_command(LabelCommand(self.scene, label, self.labels, add=True))
                 return True
         return False
 
@@ -1019,7 +1312,7 @@ class SchematicEditor(QWidget):
         note = NetLabelItem(text, x, y)
         note.is_note = True
         note.setDefaultTextColor(QColor("#d0d0d0"))
-        self.cmd_stack.execute(LabelCommand(self.scene, note, self.labels, add=True))
+        self._execute_command(LabelCommand(self.scene, note, self.labels, add=True))
 
     def selected_summary(self) -> str:
         """Return a compact description of the current selection."""
@@ -1098,7 +1391,8 @@ class SchematicEditor(QWidget):
             return
 
         if self._mode in ('wire', 'bus'):
-            self._handle_wire_click(sx, sy)
+            wx, wy = self._snap_to_connection(sx, sy)
+            self._handle_wire_click(wx, wy)
         elif self._mode == 'place':
             self._handle_place_click(sx, sy)
         elif self._mode == 'label':
@@ -1131,6 +1425,7 @@ class SchematicEditor(QWidget):
         sx, sy = snap(pos.x()), snap(pos.y())
 
         if self._mode in ('wire', 'bus') and self._wire_start:
+            sx, sy = self._snap_to_connection(sx, sy)
             x1, y1 = self._wire_start.x(), self._wire_start.y()
             # Show Manhattan preview: horizontal segment + vertical segment
             if self._wire_preview:
@@ -1177,7 +1472,7 @@ class SchematicEditor(QWidget):
                     # A more sophisticated approach would track per-item
                     first_delta = move_deltas.get(id(moved_items[0]), (0, 0))
                     cmd = MoveItemsCommand(moved_items, first_delta[0], first_delta[1])
-                    self.cmd_stack.execute(cmd)
+                    self._execute_command(cmd)
 
             self._move_start_positions = None
         QGraphicsScene.mouseReleaseEvent(self.scene, event)
@@ -1224,7 +1519,7 @@ class SchematicEditor(QWidget):
                             w2.wire_kind = 'bus'
                             w2.setPen(QPen(QColor("#2dd4bf"), WIRE_WIDTH + 1))
                         cmds.append(AddItemCommand(self.scene, w2, self.wires))
-                self.cmd_stack.execute(CompoundCommand(cmds))
+                self._execute_command(CompoundCommand(cmds))
             self._wire_start = QPointF(x2, y2)
             if self._wire_preview:
                 self._wire_preview.setLine(x2, y2, x2, y2)
@@ -1275,7 +1570,7 @@ class SchematicEditor(QWidget):
             inst.setRotation(self._placement_ghost.rotation())
             inst.setTransform(self._placement_ghost.transform())
         cmd = AddItemCommand(self.scene, inst, self.instances)
-        self.cmd_stack.execute(cmd)
+        self._execute_command(cmd)
         # Keep placing more of the same component
         # (click again to place another, Escape to stop)
 
@@ -1288,7 +1583,7 @@ class SchematicEditor(QWidget):
             label = NetLabelItem(text, x, y)
             # Use command stack for undo/redo
             cmd = LabelCommand(self.scene, label, self.labels, add=True)
-            self.cmd_stack.execute(cmd)
+            self._execute_command(cmd)
 
     def _handle_pin_click(self, x: float, y: float):
         """Place Cadence-style top-level schematic pin(s) at the clicked position."""
@@ -1334,7 +1629,7 @@ class SchematicEditor(QWidget):
                                    direction, usage, orientation)
             cmds.append(AddItemCommand(self.scene, pin, self.pins))
         if cmds:
-            self.cmd_stack.execute(CompoundCommand(cmds))
+            self._execute_command(CompoundCommand(cmds))
 
     # ── Property Display ──────────────────────────────────────
 
@@ -1581,6 +1876,8 @@ class InstanceBrowserDialog(QDialog):
         """Get symbol data for the selected component.
         Returns generated symbol for PDK devices, or loads from DB."""
         if self._pdk_device:
+            if isinstance(getattr(self._pdk_device, "symbol_data", None), dict):
+                return self._pdk_device.symbol_data
             from lumen.core.pdk import generate_symbol_data
             pdk_registry = self._get_pdk_registry()
             pdk = pdk_registry.get_active_pdk() if pdk_registry else None

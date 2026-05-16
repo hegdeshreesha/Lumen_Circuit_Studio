@@ -9,14 +9,15 @@ The main hub window, analogous to Cadence Virtuoso's CIW.
 """
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QTextEdit, QLineEdit, QLabel, QStatusBar, QMessageBox
+    QTextEdit, QLineEdit, QLabel, QStatusBar, QMessageBox, QApplication
 )
 from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QAction, QKeySequence, QFont, QTextCursor
+from PyQt6.QtGui import QAction, QActionGroup, QKeySequence, QFont, QTextCursor
 
 import os
 from lumen.core.database import LibraryDatabase
 from lumen.gui.branding import apply_window_branding, logo_label, logo_url
+from lumen.gui.theme import THEME_DARK, THEME_LIGHT, apply_theme, current_theme
 
 
 class CIWWindow(QMainWindow):
@@ -36,7 +37,7 @@ class CIWWindow(QMainWindow):
         # Track child windows
         self._lib_manager = None
         self._editor_windows: list = []
-        self._ade_windows: list = []
+        self._simenv_windows: list = []
         self._pdk_manager = None
 
         # Initialize PDK registry
@@ -45,6 +46,7 @@ class CIWWindow(QMainWindow):
 
         # Build UI
         self._build_central_widget()
+        self._apply_local_theme_styles()
         self._create_actions()
         self._create_menus()
         self._create_status_bar()
@@ -118,6 +120,49 @@ class CIWWindow(QMainWindow):
         cmd_layout.addWidget(self.cmd_input)
         layout.addLayout(cmd_layout)
 
+    def _apply_local_theme_styles(self):
+        light = current_theme() == THEME_LIGHT
+        if light:
+            self.output_log.setStyleSheet("""
+                QTextEdit {
+                    background-color: #ffffff;
+                    color: #1f2937;
+                    border: 1px solid #d8dee9;
+                    border-radius: 4px;
+                    padding: 4px;
+                }
+            """)
+            self.cmd_input.setStyleSheet("""
+                QLineEdit {
+                    background-color: #ffffff;
+                    color: #1f2937;
+                    border: 1px solid #cfd6e4;
+                    border-radius: 4px;
+                    padding: 6px 8px;
+                }
+                QLineEdit:focus { border: 1px solid #2563eb; }
+            """)
+        else:
+            self.output_log.setStyleSheet("""
+                QTextEdit {
+                    background-color: #1a1a1a;
+                    color: #b0b0b0;
+                    border: 1px solid #3c3c3c;
+                    border-radius: 4px;
+                    padding: 4px;
+                }
+            """)
+            self.cmd_input.setStyleSheet("""
+                QLineEdit {
+                    background-color: #1a1a1a;
+                    color: #cccccc;
+                    border: 1px solid #3c3c3c;
+                    border-radius: 4px;
+                    padding: 6px 8px;
+                }
+                QLineEdit:focus { border: 1px solid #6b9ece; }
+            """)
+
     # ── Actions ───────────────────────────────────────────────
 
     def _create_actions(self):
@@ -137,6 +182,21 @@ class CIWWindow(QMainWindow):
         self.act_about = QAction("About Lumen Circuit Studio", self)
         self.act_about.triggered.connect(self._on_about)
 
+        self.theme_group = QActionGroup(self)
+        self.theme_group.setExclusive(True)
+
+        self.act_theme_dark = QAction("Dark Mode", self)
+        self.act_theme_dark.setCheckable(True)
+        self.act_theme_dark.triggered.connect(lambda: self._set_theme(THEME_DARK))
+        self.theme_group.addAction(self.act_theme_dark)
+
+        self.act_theme_light = QAction("Light Mode", self)
+        self.act_theme_light.setCheckable(True)
+        self.act_theme_light.triggered.connect(lambda: self._set_theme(THEME_LIGHT))
+        self.theme_group.addAction(self.act_theme_light)
+
+        self._sync_theme_actions()
+
     # ── Menus ─────────────────────────────────────────────────
 
     def _create_menus(self):
@@ -152,8 +212,8 @@ class CIWWindow(QMainWindow):
         tools_menu = menubar.addMenu("&Tools")
         tools_menu.addAction(self.act_lib_manager)
         tools_menu.addSeparator()
-        act_ade = QAction("ADE — Analog Design Environment", self)
-        act_ade.triggered.connect(self._on_open_ade_prompt)
+        act_ade = QAction("SimENV - Simulation Environment", self)
+        act_ade.triggered.connect(self._on_open_simenv_prompt)
         tools_menu.addAction(act_ade)
         tools_menu.addSeparator()
         tools_menu.addSeparator()
@@ -161,7 +221,11 @@ class CIWWindow(QMainWindow):
         act_pdk.setShortcut(QKeySequence("Ctrl+P"))
         act_pdk.triggered.connect(self.open_pdk_manager)
         tools_menu.addAction(act_pdk)
-        tools_menu.addAction(QAction("Options...", self))
+
+        view_menu = menubar.addMenu("&View")
+        theme_menu = view_menu.addMenu("Theme")
+        theme_menu.addAction(self.act_theme_dark)
+        theme_menu.addAction(self.act_theme_light)
 
         # Help
         help_menu = menubar.addMenu("&Help")
@@ -174,6 +238,18 @@ class CIWWindow(QMainWindow):
         sb = QStatusBar()
         self.setStatusBar(sb)
         sb.showMessage("Ready")
+
+    def _sync_theme_actions(self):
+        theme = current_theme()
+        self.act_theme_dark.setChecked(theme == THEME_DARK)
+        self.act_theme_light.setChecked(theme == THEME_LIGHT)
+
+    def _set_theme(self, theme: str):
+        selected = apply_theme(QApplication.instance(), theme)
+        self._apply_local_theme_styles()
+        self._sync_theme_actions()
+        self.log(f"Theme changed to {selected} mode")
+        self.statusBar().showMessage(f"Theme: {selected}", 3000)
 
     # ── Open Library Manager ──────────────────────────────────
 
@@ -257,8 +333,9 @@ class CIWWindow(QMainWindow):
             self.log("  lib_manager    — Open Library Manager")
             self.log("  new_lib <name> — Create a new library")
             self.log("  list_libs      — List all libraries")
-            self.log("  open <lib> <cell> [view] — Open an editor")
-            self.log("  help           — Show this help")
+            self.log("  open <lib> <cell> [view] - Open an editor")
+            self.log("  simenv <lib> <cell> - Open SimENV")
+            self.log("  help           - Show this help")
             self.log("  exit           — Exit application")
         elif verb == "lib_manager":
             self.open_library_manager()
@@ -282,7 +359,7 @@ class CIWWindow(QMainWindow):
                 self.open_schematic_editor(lib, cell, view)
         elif verb == 'exit':
             self.close()
-        elif verb == 'ade' and len(parts) >= 3:
+        elif verb in ('simenv', 'ade') and len(parts) >= 3:
             self.open_ade(parts[1], parts[2])
         else:
             self.log(f"Unknown command: {cmd}")
@@ -310,7 +387,7 @@ class CIWWindow(QMainWindow):
             "<p>Powered by GSPICE Simulator Engine</p>"
             "<hr>"
             "<p>Features: Schematic Capture · Symbol Editor · "
-            "Library Manager · ADE · Waveform Viewer · PDK Manager</p>"
+            "Library Manager · SimENV · Waveform Viewer · PDK Manager</p>"
         )
 
     def log(self, msg: str):
@@ -327,7 +404,7 @@ class CIWWindow(QMainWindow):
             self._lib_manager.close()
         for win in self._editor_windows:
             win.close()
-        for win in self._ade_windows:
+        for win in self._simenv_windows:
             win.close()
         if self._pdk_manager:
             self._pdk_manager.close()
@@ -345,7 +422,18 @@ class CIWWindow(QMainWindow):
         self.log("Opened PDK Manager")
 
     def open_ade(self, library: str, cell: str):
-        """Open ADE window for a cell."""
+        """Open SimENV window for a cell."""
+        for win in self._editor_windows:
+            if (win.isVisible()
+                    and getattr(win, "library", "") == library
+                    and getattr(win, "cell", "") == cell
+                    and hasattr(win, "open_simenv_tab")):
+                simenv = win.open_simenv_tab()
+                if simenv is not None:
+                    win.raise_()
+                    win.activateWindow()
+                    return
+
         try:
             from lumen.gui.ade_window import ADEWindow
             ade = ADEWindow(
@@ -356,29 +444,33 @@ class CIWWindow(QMainWindow):
                 pdk_registry=self.pdk_registry,
             )
             ade.show()
-            self._ade_windows.append(ade)
-            self.log(f"Opened ADE: {library}/{cell}")
+            self._simenv_windows.append(ade)
+            self.log(f"Opened SimENV: {library}/{cell}")
         except Exception as exc:
-            self.log(f"Failed to open ADE {library}/{cell}: {exc}")
+            self.log(f"Failed to open SimENV {library}/{cell}: {exc}")
             QMessageBox.critical(
                 self,
-                "Open ADE Failed",
-                f"Could not open ADE for {library}/{cell}.\n\n{exc}",
+                "Open SimENV Failed",
+                f"Could not open SimENV for {library}/{cell}.\n\n{exc}",
             )
 
-    def _on_open_ade_prompt(self):
+    def _on_open_simenv_prompt(self):
         from PyQt6.QtWidgets import QInputDialog
         libs = [l.name for l in self.db.get_libraries()]
         if not libs:
             QMessageBox.warning(self, "Error", "No libraries found.")
             return
-        lib, ok = QInputDialog.getItem(self, "ADE", "Library:", libs)
+        lib, ok = QInputDialog.getItem(self, "SimENV", "Library:", libs)
         if not ok:
             return
         cells = self.db.get_cells(lib)
         if not cells:
             QMessageBox.warning(self, "Error", f"No cells in {lib}.")
             return
-        cell, ok = QInputDialog.getItem(self, "ADE", "Cell:", cells)
+        cell, ok = QInputDialog.getItem(self, "SimENV", "Cell:", cells)
         if ok:
             self.open_ade(lib, cell)
+
+
+
+

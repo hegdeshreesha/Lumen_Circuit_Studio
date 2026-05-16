@@ -6,7 +6,8 @@ toolbars, property panel, and canvas. Opens one per design.
 """
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QDockWidget, QToolBar,
-    QStatusBar, QLabel, QMessageBox, QTextEdit, QInputDialog, QFileDialog
+    QStatusBar, QLabel, QMessageBox, QTextEdit, QInputDialog, QFileDialog,
+    QTabWidget
 )
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QAction, QKeySequence
@@ -40,7 +41,13 @@ class SchematicEditorWindow(QMainWindow):
         self.editor = SchematicEditor(db, library, cell, view, parent=self)
         self.editor.coord_changed.connect(self._update_coords)
         self.editor.mode_changed.connect(self._update_mode)
-        self.setCentralWidget(self.editor)
+        self.workspace_tabs = QTabWidget()
+        self.workspace_tabs.setDocumentMode(True)
+        self.workspace_tabs.setTabsClosable(True)
+        self.workspace_tabs.tabCloseRequested.connect(self._on_workspace_tab_close)
+        self.workspace_tabs.addTab(self.editor, f"{cell}/{view}")
+        self.setCentralWidget(self.workspace_tabs)
+        self._simenv_tab = None
 
         # Build UI
         self._create_actions()
@@ -331,7 +338,7 @@ class SchematicEditorWindow(QMainWindow):
         sim_menu.addAction(self.act_netlist)
         sim_menu.addAction(self.act_simulate)
         sim_menu.addSeparator()
-        act_ade = QAction("ADE — Analog Design Environment", self)
+        act_ade = QAction("SimENV - Simulation Environment", self)
         act_ade.triggered.connect(self._on_open_ade)
         sim_menu.addAction(act_ade)
         sim_menu.addSeparator()
@@ -842,21 +849,55 @@ class SchematicEditorWindow(QMainWindow):
         self._waveform_viewers.append(viewer)
 
     def _on_open_ade(self):
-        """Open ADE for this cell."""
-        if self.ciw:
-            self.ciw.open_ade(self.library, self.cell)
-        else:
-            try:
-                from lumen.gui.ade_window import ADEWindow
-                ade = ADEWindow(self.db, self.library, self.cell)
-                ade.show()
-                if not hasattr(self, '_ade_windows'):
-                    self._ade_windows = []
-                self._ade_windows.append(ade)
-            except Exception as exc:
-                from PyQt6.QtWidgets import QMessageBox
-                QMessageBox.critical(
-                    self,
-                    "Open ADE Failed",
-                    f"Could not open ADE for {self.library}/{self.cell}.\n\n{exc}",
-                )
+        """Open SimENV for this cell."""
+        self.open_simenv_tab()
+
+    def open_simenv_tab(self):
+        """Open or focus SimENV as an editor tab for this schematic."""
+        try:
+            if self._simenv_tab is not None:
+                index = self.workspace_tabs.indexOf(self._simenv_tab)
+                if index >= 0:
+                    self.workspace_tabs.setCurrentIndex(index)
+                    self.raise_()
+                    self.activateWindow()
+                    return self._simenv_tab
+
+            from lumen.gui.ade_window import ADEWindow
+            pdk_registry = getattr(self.ciw, "pdk_registry", None) if self.ciw else None
+            simenv = ADEWindow(
+                self.db,
+                self.library,
+                self.cell,
+                ciw=self.ciw,
+                pdk_registry=pdk_registry,
+                parent=self,
+            )
+            simenv.setWindowFlags(Qt.WindowType.Widget)
+            simenv.setProperty("embeddedSimEnv", True)
+            self._simenv_tab = simenv
+            index = self.workspace_tabs.addTab(simenv, f"SimENV: {self.cell}")
+            self.workspace_tabs.setCurrentIndex(index)
+            self.statusBar().showMessage("Opened SimENV tab", 3000)
+            if self.ciw:
+                self.ciw.log(f"Opened SimENV tab: {self.library}/{self.cell}")
+            return simenv
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Open SimENV Failed",
+                f"Could not open SimENV for {self.library}/{self.cell}.\n\n{exc}",
+            )
+            return None
+
+    def _on_workspace_tab_close(self, index: int):
+        widget = self.workspace_tabs.widget(index)
+        if widget is self.editor:
+            self.close()
+            return
+        if widget is self._simenv_tab:
+            self._simenv_tab = None
+        self.workspace_tabs.removeTab(index)
+        widget.deleteLater()
+
+
