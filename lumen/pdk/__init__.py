@@ -19,7 +19,6 @@ Usage:
     # Or just generate all symbols
     generate_all_symbols()
 """
-import os
 import json
 from pathlib import Path
 from typing import Dict, List, Optional, Any
@@ -27,6 +26,7 @@ from typing import Dict, List, Optional, Any
 from lumen.core import skywater_symbols, ihp_symbols, gf180mcu_symbols
 from lumen.core.pdk_library_manager import PDKLibraryManager, create_manager
 from lumen.core.pdk_unified import PDKRegistry
+from lumen.core.pdk_service import get_registry
 
 
 # ── Symbol Generation ───────────────────────────────────────────
@@ -109,9 +109,7 @@ def get_legacy_registry(workspace: str = "") -> PDKRegistry:
     Get the legacy PDK registry (maintains backward compatibility).
     Uses the existing pdk_unified.py PDKRegistry.
     """
-    if not workspace:
-        workspace = os.path.join(os.path.expanduser("~"), "LumenWorkspace")
-    return PDKRegistry(workspace)
+    return get_registry(workspace)
 
 
 def register_local_pdk(name: str, path: str, 

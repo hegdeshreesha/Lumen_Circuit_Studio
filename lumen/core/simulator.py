@@ -6,6 +6,7 @@ Each simulator has its own executable path, CLI arguments, and output parser.
 """
 import subprocess
 import os
+import shutil
 import struct
 import threading
 import time
@@ -25,9 +26,12 @@ class SimulationResult:
     log: str = ""
     raw_output: str = ""
     errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
     waveforms: dict = field(default_factory=dict)
     corner_name: str = ""
     elapsed_time: float = 0.0
+    return_code: int = 0
+    command: list[str] = field(default_factory=list)
 
 
 # ── Simulator Capabilities ────────────────────────────────────
@@ -204,8 +208,17 @@ class SimulatorBridge:
             timeout = get_simulator_timeout(self.simulator)
 
         cmd = self._build_command(netlist_path, output_path, threads)
+        result.command = cmd
         result.log += f"Command: {' '.join(cmd)}\n"
         self._cancelled = False
+
+        preflight_errors = self._preflight_checks()
+        if preflight_errors:
+            result.errors.extend(preflight_errors)
+            result.elapsed_time = time.time() - start_time
+            if callback:
+                callback(result)
+            return result
 
         try:
             self._process = subprocess.Popen(
@@ -214,7 +227,11 @@ class SimulatorBridge:
             )
             stdout, stderr = self._process.communicate(timeout=timeout)
             result.raw_output = stdout
-            result.log += stdout + stderr
+            result.return_code = int(self._process.returncode or 0)
+            if stdout:
+                result.log += "\n[stdout]\n" + stdout
+            if stderr:
+                result.log += "\n[stderr]\n" + stderr
             result.success = (self._process.returncode == 0 and not self._cancelled)
 
             if self._cancelled:
@@ -224,6 +241,14 @@ class SimulatorBridge:
                     f"{self.simulator} exited with code {self._process.returncode}")
                 if stderr:
                     result.errors.append(stderr.strip())
+
+            fatal_lines, warning_lines = self._collect_output_diagnostics(stdout, stderr)
+            result.warnings.extend(warning_lines)
+            if warning_lines:
+                result.log += "\n[diagnostics]\n" + "\n".join(f"WARNING: {line}" for line in warning_lines) + "\n"
+            if fatal_lines:
+                result.errors.extend(fatal_lines)
+                result.success = False
 
             if result.success:
                 if self.simulator == "GSPICE":
@@ -247,6 +272,66 @@ class SimulatorBridge:
         if callback:
             callback(result)
         return result
+
+    def _preflight_checks(self) -> list[str]:
+        """Return actionable preflight errors before launching a simulator."""
+        errors: list[str] = []
+        exe_resolved = self.exe_path
+        if not (os.path.isfile(exe_resolved) or shutil.which(exe_resolved)):
+            errors.append(f"{self.simulator} executable not found: {self.exe_path}")
+            errors.append("Set the simulator path in configuration or add it to PATH.")
+        if not os.path.isdir(self.work_dir):
+            errors.append(f"Simulator work directory does not exist: {self.work_dir}")
+        else:
+            try:
+                probe = os.path.join(self.work_dir, ".sim_probe")
+                with open(probe, "w", encoding="utf-8") as f:
+                    f.write("ok")
+                os.remove(probe)
+            except OSError as exc:
+                errors.append(f"Simulator work directory is not writable: {self.work_dir} ({exc})")
+        return errors
+
+    def _collect_output_diagnostics(self, stdout: str, stderr: str) -> tuple[list[str], list[str]]:
+        """Classify simulator output lines into fatal errors and warnings."""
+        fatal_patterns = [
+            re.compile(r"\berror\b", re.IGNORECASE),
+            re.compile(r"\bfatal\b", re.IGNORECASE),
+            re.compile(r"requires at least", re.IGNORECASE),
+            re.compile(r"could not open file", re.IGNORECASE),
+            re.compile(r"simulation failed", re.IGNORECASE),
+        ]
+        warning_patterns = [
+            re.compile(r"\bwarning\b", re.IGNORECASE),
+        ]
+
+        fatal: list[str] = []
+        warnings: list[str] = []
+        for raw_line in (stdout + "\n" + stderr).splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if any(p.search(line) for p in warning_patterns):
+                warnings.append(line)
+            if any(p.search(line) for p in fatal_patterns):
+                fatal.append(line)
+
+        # De-duplicate while preserving order.
+        seen = set()
+        fatal_unique = []
+        for line in fatal:
+            if line not in seen:
+                seen.add(line)
+                fatal_unique.append(line)
+
+        seen = set()
+        warning_unique = []
+        for line in warnings:
+            if line not in seen:
+                seen.add(line)
+                warning_unique.append(line)
+
+        return fatal_unique, warning_unique
 
     def _safe_sim_name(self, sim_name: str) -> str:
         """Return a filesystem-safe simulation deck basename."""

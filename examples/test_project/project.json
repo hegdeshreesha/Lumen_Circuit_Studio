@@ -1,0 +1,219 @@
+{
+  "project_name": "test_project",
+  "pdk": "ihp_sg13g2",
+  "active_corner": "tt",
+  "model_libraries": [
+    {
+      "name": "cornerCAP",
+      "path": "LumenCircuitStudio\\..\\ihp_pdk\\ihp-sg13g2\\libs.tech\\xyce\\models\\cornerCAP.lib",
+      "corners": [
+        "cap_typ",
+        "cap_typ_stat",
+        "cap_bcs",
+        "cap_wcs"
+      ]
+    },
+    {
+      "name": "cornerDIO",
+      "path": "LumenCircuitStudio\\..\\ihp_pdk\\ihp-sg13g2\\libs.tech\\xyce\\models\\cornerDIO.lib",
+      "corners": [
+        "dio_tt",
+        "dio_tt_stat",
+        "dio_ss",
+        "dio_ff"
+      ]
+    },
+    {
+      "name": "cornerHBT",
+      "path": "LumenCircuitStudio\\..\\ihp_pdk\\ihp-sg13g2\\libs.tech\\xyce\\models\\cornerHBT.lib",
+      "corners": [
+        "hbt_typ",
+        "hbt_typ_stat",
+        "hbt_bcs",
+        "hbt_wcs"
+      ]
+    },
+    {
+      "name": "cornerMOShv",
+      "path": "LumenCircuitStudio\\..\\ihp_pdk\\ihp-sg13g2\\libs.tech\\xyce\\models\\cornerMOShv.lib",
+      "corners": [
+        "mos_tt",
+        "mos_tt_stat",
+        "mos_ss",
+        "mos_ff",
+        "mos_sf",
+        "mos_fs"
+      ]
+    },
+    {
+      "name": "cornerMOSlv",
+      "path": "LumenCircuitStudio\\..\\ihp_pdk\\ihp-sg13g2\\libs.tech\\xyce\\models\\cornerMOSlv.lib",
+      "corners": [
+        "mos_tt",
+        "mos_tt_stat",
+        "mos_ss",
+        "mos_ff",
+        "mos_sf",
+        "mos_fs"
+      ]
+    },
+    {
+      "name": "cornerRES",
+      "path": "LumenCircuitStudio\\..\\ihp_pdk\\ihp-sg13g2\\libs.tech\\xyce\\models\\cornerRES.lib",
+      "corners": [
+        "res_typ",
+        "res_typ_stat",
+        "res_bcs",
+        "res_wcs"
+      ]
+    },
+    {
+      "name": "diodes",
+      "path": "LumenCircuitStudio\\..\\ihp_pdk\\ihp-sg13g2\\libs.tech\\xyce\\models\\diodes.lib",
+      "corners": [
+        "default"
+      ]
+    },
+    {
+      "name": "resistors",
+      "path": "LumenCircuitStudio\\..\\ihp_pdk\\ihp-sg13g2\\libs.tech\\xyce\\models\\resistors.lib",
+      "corners": [
+        "default"
+      ]
+    },
+    {
+      "name": "resistors_parm",
+      "path": "LumenCircuitStudio\\..\\ihp_pdk\\ihp-sg13g2\\libs.tech\\xyce\\models\\resistors_parm.lib",
+      "corners": [
+        "default"
+      ]
+    },
+    {
+      "name": "sg13g2_esd",
+      "path": "LumenCircuitStudio\\..\\ihp_pdk\\ihp-sg13g2\\libs.tech\\xyce\\models\\sg13g2_esd.lib",
+      "corners": [
+        "default"
+      ]
+    },
+    {
+      "name": "IHP_PDK_basic_components",
+      "path": "LumenCircuitStudio\\..\\ihp_pdk\\ihp-sg13g2\\libs.tech\\qucs-s\\user_lib\\IHP_PDK_basic_components.lib",
+      "corners": [
+        "default"
+      ]
+    },
+    {
+      "name": "IHP_PDK_nonlinear_components",
+      "path": "LumenCircuitStudio\\..\\ihp_pdk\\ihp-sg13g2\\libs.tech\\qucs-s\\user_lib\\IHP_PDK_nonlinear_components.lib",
+      "corners": [
+        "default"
+      ]
+    },
+    {
+      "name": "IHP_PDK_stdcells",
+      "path": "LumenCircuitStudio\\..\\ihp_pdk\\ihp-sg13g2\\libs.tech\\qucs-s\\user_lib\\IHP_PDK_stdcells.lib",
+      "corners": [
+        "default"
+      ]
+    },
+    {
+      "name": "cornerCAP",
+      "path": "LumenCircuitStudio\\..\\ihp_pdk\\ihp-sg13g2\\libs.tech\\ngspice\\models\\cornerCAP.lib",
+      "corners": [
+        "cap_typ",
+        "cap_typ_mismatch",
+        "cap_typ_stat",
+        "cap_bcs",
+        "cap_bcs_mismatch",
+        "cap_wcs",
+        "cap_wcs_mismatch"
+      ]
+    },
+    {
+      "name": "cornerDIO",
+      "path": "LumenCircuitStudio\\..\\ihp_pdk\\ihp-sg13g2\\libs.tech\\ngspice\\models\\cornerDIO.lib",
+      "corners": [
+        "dio_tt",
+        "dio_tt_stat",
+        "dio_ss",
+        "dio_ff"
+      ]
+    },
+    {
+      "name": "cornerHBT",
+      "path": "LumenCircuitStudio\\..\\ihp_pdk\\ihp-sg13g2\\libs.tech\\ngspice\\models\\cornerHBT.lib",
+      "corners": [
+        "hbt_typ",
+        "hbt_typ_mismatch",
+        "hbt_typ_stat",
+        "hbt_bcs",
+        "hbt_bcs_mismatch",
+        "hbt_wcs",
+        "hbt_wcs_mismatch"
+      ]
+    },
+    {
+      "name": "cornerMOShv",
+      "path": "LumenCircuitStudio\\..\\ihp_pdk\\ihp-sg13g2\\libs.tech\\ngspice\\models\\cornerMOShv.lib",
+      "corners": [
+        "mos_tt",
+        "mos_tt_mismatch",
+        "mos_tt_stat",
+        "mos_ss",
+        "mos_ss_mismatch",
+        "mos_ff",
+        "mos_ff_mismatch",
+        "mos_sf",
+        "mos_sf_mismatch",
+        "mos_fs",
+        "mos_fs_mismatch"
+      ]
+    },
+    {
+      "name": "cornerMOSlv",
+      "path": "LumenCircuitStudio\\..\\ihp_pdk\\ihp-sg13g2\\libs.tech\\ngspice\\models\\cornerMOSlv.lib",
+      "corners": [
+        "mos_tt",
+        "mos_tt_mismatch",
+        "mos_tt_stat",
+        "mos_ss",
+        "mos_ss_mismatch",
+        "mos_ff",
+        "mos_ff_mismatch",
+        "mos_sf",
+        "mos_sf_mismatch",
+        "mos_fs",
+        "mos_fs_mismatch"
+      ]
+    },
+    {
+      "name": "cornerRES",
+      "path": "LumenCircuitStudio\\..\\ihp_pdk\\ihp-sg13g2\\libs.tech\\ngspice\\models\\cornerRES.lib",
+      "corners": [
+        "res_typ",
+        "res_typ_mismatch",
+        "res_typ_stat",
+        "res_bcs",
+        "res_bcs_mismatch",
+        "res_wcs",
+        "res_wcs_mismatch"
+      ]
+    },
+    {
+      "name": "diodes",
+      "path": "LumenCircuitStudio\\..\\ihp_pdk\\ihp-sg13g2\\libs.tech\\ngspice\\models\\diodes.lib",
+      "corners": [
+        "default"
+      ]
+    },
+    {
+      "name": "sg13g2_esd",
+      "path": "LumenCircuitStudio\\..\\ihp_pdk\\ihp-sg13g2\\libs.tech\\ngspice\\models\\sg13g2_esd.lib",
+      "corners": [
+        "default"
+      ]
+    }
+  ],
+  "cds_lib_path": "test_project\\cds.lib",
+  "created_at": "2026-05-09T12:58:18.414864"
+}

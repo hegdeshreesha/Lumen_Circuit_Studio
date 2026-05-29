@@ -21,10 +21,10 @@ from PyQt6.QtGui import QAction, QKeySequence
 from lumen.core.database import LibraryDatabase
 from lumen.gui.library_browser import LibraryBrowserWidget
 from lumen.gui.schematic_editor import SchematicEditor
+from lumen.gui.symbol_editor import SymbolEditor
 from lumen.gui.property_editor import PropertyEditorWidget
 from lumen.gui.branding import apply_window_branding, logo_label, logo_url
-
-import os
+from lumen.core.pdk_service import resolve_workspace
 
 
 class LumenMainWindow(QMainWindow):
@@ -32,13 +32,13 @@ class LumenMainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Lumen Circuit Studio — v0.3.0")
+        self.setWindowTitle("Lumen Circuit Studio — v0.5")
         apply_window_branding(self)
         self.setMinimumSize(1280, 800)
         self.resize(1600, 1000)
 
         # Initialize database
-        workspace = os.path.join(os.path.expanduser("~"), "LumenWorkspace")
+        workspace = resolve_workspace("")
         self.db = LibraryDatabase(workspace)
 
         # Central tab widget for editors
@@ -75,6 +75,7 @@ class LumenMainWindow(QMainWindow):
 
         self.act_open = QAction("Open...", self)
         self.act_open.setShortcut(QKeySequence("Ctrl+O"))
+        self.act_open.triggered.connect(self._on_open)
 
         self.act_save = QAction("Save", self)
         self.act_save.setShortcut(QKeySequence("Ctrl+S"))
@@ -82,6 +83,7 @@ class LumenMainWindow(QMainWindow):
 
         self.act_save_as = QAction("Save As...", self)
         self.act_save_as.setShortcut(QKeySequence("Ctrl+Shift+S"))
+        self.act_save_as.triggered.connect(self._on_save_as)
 
         self.act_exit = QAction("Exit", self)
         self.act_exit.setShortcut(QKeySequence("Alt+F4"))
@@ -90,31 +92,40 @@ class LumenMainWindow(QMainWindow):
         # Edit
         self.act_undo = QAction("Undo", self)
         self.act_undo.setShortcut(QKeySequence("Ctrl+Z"))
+        self.act_undo.triggered.connect(self._on_undo)
 
         self.act_redo = QAction("Redo", self)
         self.act_redo.setShortcut(QKeySequence("Ctrl+Y"))
+        self.act_redo.triggered.connect(self._on_redo)
 
         self.act_copy = QAction("Copy", self)
         self.act_copy.setShortcut(QKeySequence("Ctrl+C"))
+        self.act_copy.triggered.connect(self._on_copy)
 
         self.act_paste = QAction("Paste", self)
         self.act_paste.setShortcut(QKeySequence("Ctrl+V"))
+        self.act_paste.triggered.connect(self._on_paste)
 
         self.act_delete = QAction("Delete", self)
         self.act_delete.setShortcut(QKeySequence("Delete"))
+        self.act_delete.triggered.connect(self._on_delete)
 
         self.act_select_all = QAction("Select All", self)
         self.act_select_all.setShortcut(QKeySequence("Ctrl+A"))
+        self.act_select_all.triggered.connect(self._on_select_all)
 
         # View
         self.act_zoom_in = QAction("Zoom In", self)
         self.act_zoom_in.setShortcut(QKeySequence("Ctrl+="))
+        self.act_zoom_in.triggered.connect(self._on_zoom_in)
 
         self.act_zoom_out = QAction("Zoom Out", self)
         self.act_zoom_out.setShortcut(QKeySequence("Ctrl+-"))
+        self.act_zoom_out.triggered.connect(self._on_zoom_out)
 
         self.act_zoom_fit = QAction("Zoom to Fit", self)
         self.act_zoom_fit.setShortcut(QKeySequence("F"))
+        self.act_zoom_fit.triggered.connect(self._on_zoom_fit)
 
         # Draw
         self.act_add_wire = QAction("Wire (W)", self)
@@ -127,6 +138,7 @@ class LumenMainWindow(QMainWindow):
 
         self.act_add_pin = QAction("Pin (P)", self)
         self.act_add_pin.setShortcut(QKeySequence("P"))
+        self.act_add_pin.triggered.connect(self._on_add_pin)
 
         self.act_add_label = QAction("Net Label (L)", self)
         self.act_add_label.setShortcut(QKeySequence("L"))
@@ -139,11 +151,14 @@ class LumenMainWindow(QMainWindow):
         # Simulation
         self.act_netlist = QAction("Generate Netlist", self)
         self.act_netlist.setShortcut(QKeySequence("Ctrl+Shift+N"))
+        self.act_netlist.triggered.connect(self._on_generate_netlist)
 
         self.act_simulate = QAction("Run Simulation", self)
         self.act_simulate.setShortcut(QKeySequence("F5"))
+        self.act_simulate.triggered.connect(self._on_simulate)
 
         self.act_ade = QAction("Open SimENV...", self)
+        self.act_ade.triggered.connect(self._on_open_ade)
 
         # Hierarchy
         self.act_push_down = QAction("Push Down (E)", self)
@@ -306,7 +321,7 @@ class LumenMainWindow(QMainWindow):
         sb.addPermanentWidget(self.mode_label)
         sb.addPermanentWidget(self.coord_label)
         sb.addPermanentWidget(self.grid_label)
-        sb.showMessage("Ready — Lumen Circuit Studio v0.3.0")
+        sb.showMessage("Ready — Lumen Circuit Studio v0.5")
 
     # ── Welcome Tab ───────────────────────────────────────────
 
@@ -354,8 +369,11 @@ class LumenMainWindow(QMainWindow):
             self.editor_tabs.setCurrentWidget(editor)
             self.log(f"Opened {library}/{cell}/{view}")
         elif view == "symbol":
-            # TODO: Symbol editor
-            self.log(f"Symbol editor not yet implemented for {cell}")
+            editor = SymbolEditor(self.db, library, cell, view, parent=self)
+            editor.coord_changed.connect(self._update_coords)
+            self.editor_tabs.addTab(editor, tab_title)
+            self.editor_tabs.setCurrentWidget(editor)
+            self.log(f"Opened {library}/{cell}/{view}")
         else:
             self.log(f"View type '{view}' not yet supported")
 
@@ -405,11 +423,73 @@ class LumenMainWindow(QMainWindow):
         self.editor_tabs.setCurrentIndex(idx)
         self.log("New schematic created")
 
+    def _on_open(self):
+        libs = [lib.name for lib in self.db.get_libraries()]
+        if not libs:
+            QMessageBox.warning(self, "Open View", "No libraries found.")
+            return
+        from PyQt6.QtWidgets import QInputDialog
+        lib, ok = QInputDialog.getItem(self, "Open View", "Library:", libs, 0, False)
+        if not ok or not lib:
+            return
+        cells = self.db.get_cells(lib)
+        if not cells:
+            QMessageBox.warning(self, "Open View", f"No cells in {lib}.")
+            return
+        cell, ok = QInputDialog.getItem(self, "Open View", "Cell:", cells, 0, False)
+        if not ok or not cell:
+            return
+        views = self.db.get_views(lib, cell)
+        if not views:
+            QMessageBox.warning(self, "Open View", f"No views for {lib}/{cell}.")
+            return
+        view, ok = QInputDialog.getItem(self, "Open View", "View:", views, 0, False)
+        if not ok or not view:
+            return
+        self._open_view(lib, cell, view)
+
     def _on_save(self):
         editor = self._current_editor()
         if editor and hasattr(editor, 'save'):
             editor.save()
             self.log("Saved")
+
+    def _on_save_as(self):
+        editor = self._current_editor()
+        if not editor:
+            return
+        from PyQt6.QtWidgets import QInputDialog
+        if isinstance(editor, SchematicEditor):
+            lib = editor.library or ""
+            current = editor.cell or "untitled"
+            cell, ok = QInputDialog.getText(self, "Save As", "New cell name:", text=f"{current}_copy")
+            if not ok or not cell:
+                return
+            target_lib = lib
+            if not target_lib:
+                libs = [entry.name for entry in self.db.get_libraries()]
+                if not libs:
+                    QMessageBox.warning(self, "Save As", "Create a library first.")
+                    return
+                target_lib, ok = QInputDialog.getItem(self, "Save As", "Library:", libs, 0, False)
+                if not ok or not target_lib:
+                    return
+            editor.save_as(target_lib, cell, editor.view)
+            self.log(f"Saved as {target_lib}/{cell}/{editor.view}")
+            return
+        if isinstance(editor, SymbolEditor):
+            data = editor._snapshot()
+            lib = editor.library
+            current = editor.cell or "symbol"
+            cell, ok = QInputDialog.getText(self, "Save As", "New cell name:", text=f"{current}_copy")
+            if not ok or not cell:
+                return
+            if not self.db.cell_exists(lib, cell):
+                self.db.create_cell(lib, cell)
+            data["name"] = cell
+            data["library"] = lib
+            self.db.save_view(lib, cell, "symbol", data)
+            self.log(f"Saved as {lib}/{cell}/symbol")
 
     def _on_draw_wire(self):
         editor = self._current_editor()
@@ -421,6 +501,13 @@ class LumenMainWindow(QMainWindow):
         if editor and isinstance(editor, SchematicEditor):
             editor.start_instance_placement()
 
+    def _on_add_pin(self):
+        editor = self._current_editor()
+        if isinstance(editor, SchematicEditor):
+            editor.set_mode("pin")
+        elif isinstance(editor, SymbolEditor):
+            editor._set_tool("pin")
+
     def _on_add_label(self):
         editor = self._current_editor()
         if editor and isinstance(editor, SchematicEditor):
@@ -428,8 +515,126 @@ class LumenMainWindow(QMainWindow):
 
     def _on_escape(self):
         editor = self._current_editor()
-        if editor and isinstance(editor, SchematicEditor):
+        if isinstance(editor, SchematicEditor):
             editor.set_mode("select")
+        elif isinstance(editor, SymbolEditor):
+            editor._set_tool("select")
+
+    def _on_undo(self):
+        editor = self._current_editor()
+        if editor and hasattr(editor, "undo"):
+            editor.undo()
+
+    def _on_redo(self):
+        editor = self._current_editor()
+        if editor and hasattr(editor, "redo"):
+            editor.redo()
+
+    def _on_copy(self):
+        editor = self._current_editor()
+        if editor and hasattr(editor, "copy_selected"):
+            editor.copy_selected()
+
+    def _on_paste(self):
+        editor = self._current_editor()
+        if editor and hasattr(editor, "paste_clipboard"):
+            editor.paste_clipboard()
+
+    def _on_delete(self):
+        editor = self._current_editor()
+        if editor and hasattr(editor, "delete_selected"):
+            editor.delete_selected()
+
+    def _on_select_all(self):
+        editor = self._current_editor()
+        if editor and hasattr(editor, "select_all"):
+            editor.select_all()
+
+    def _on_zoom_in(self):
+        editor = self._current_editor()
+        if editor and hasattr(editor, "zoom_in"):
+            editor.zoom_in()
+
+    def _on_zoom_out(self):
+        editor = self._current_editor()
+        if editor and hasattr(editor, "zoom_out"):
+            editor.zoom_out()
+
+    def _on_zoom_fit(self):
+        editor = self._current_editor()
+        if editor and hasattr(editor, "zoom_fit"):
+            editor.zoom_fit()
+
+    def _on_generate_netlist(self):
+        editor = self._current_editor()
+        if not isinstance(editor, SchematicEditor):
+            QMessageBox.information(self, "Generate Netlist", "Open a schematic tab first.")
+            return
+        try:
+            from lumen.core.netlist import NetlistGenerator
+            editor.save()
+            gen = NetlistGenerator(self.db)
+            gen.set_target_simulator("GSPICE")
+            netlist = gen.generate(editor.library, editor.cell, editor.view)
+            self.output_log.setPlainText(netlist)
+            errs = gen.get_errors()
+            for err in errs:
+                self.output_log.append(f"* WARNING: {err}")
+            self.log(f"Netlist generated for {editor.library}/{editor.cell}")
+        except Exception as exc:
+            import traceback
+            details = traceback.format_exc()
+            self.output_log.setPlainText(
+                f"* ERROR: Netlist generation crashed\n"
+                f"* {exc}\n\n{details}"
+            )
+            self.log(f"Netlist generation crashed: {exc}")
+
+    def _on_simulate(self):
+        editor = self._current_editor()
+        if not isinstance(editor, SchematicEditor):
+            QMessageBox.information(self, "Run Simulation", "Open a schematic tab first.")
+            return
+        try:
+            from lumen.core.netlist import NetlistGenerator
+            from lumen.core.simulator import SimulatorBridge
+            editor.save()
+            gen = NetlistGenerator(self.db)
+            gen.set_target_simulator("GSPICE")
+            netlist = gen.generate(editor.library, editor.cell, editor.view)
+            bridge = SimulatorBridge()
+            result = bridge.simulate(netlist, sim_name=editor.cell)
+        except Exception as exc:
+            import traceback
+            details = traceback.format_exc()
+            self.output_log.setPlainText(
+                f"* ERROR: Simulation aborted due to netlist crash\n"
+                f"* {exc}\n\n{details}"
+            )
+            self.log(f"Simulation aborted: netlist crash: {exc}")
+            return
+        if result.success:
+            self.log(f"Simulation completed: {result.simulator} ({result.elapsed_time:.2f}s)")
+        else:
+            self.log(f"Simulation failed (exit code {result.return_code})")
+            for err in result.errors:
+                self.log(f"  {err}")
+        for warning in result.warnings:
+            self.log(f"  warning: {warning}")
+        if result.command:
+            self.log(f"Command: {' '.join(result.command)}")
+        self.output_log.setPlainText(result.log or netlist)
+
+    def _on_open_ade(self):
+        editor = self._current_editor()
+        if not isinstance(editor, SchematicEditor):
+            QMessageBox.information(self, "Open SimENV", "Open a schematic tab first.")
+            return
+        from lumen.gui.ade_window import ADEWindow
+        win = ADEWindow(self.db, editor.library, editor.cell, parent=self)
+        win.show()
+        self._editor_windows = getattr(self, "_editor_windows", [])
+        self._editor_windows.append(win)
 
     def _close_tab(self, index: int):
         if index > 0:  # Don't close welcome tab
@@ -439,7 +644,7 @@ class LumenMainWindow(QMainWindow):
         QMessageBox.about(
             self, "About Lumen Circuit Studio",
             f"<p align='center'><img src='{logo_url()}' width='300'></p>"
-            "<p>Version 0.3.0</p>"
+            "<p>Version 0.5.0</p>"
             "<p>Next-Generation Open-Source Analog/Mixed-Signal EDA Suite</p>"
             "<p>Powered by GSPICE Simulator Engine</p>"
             "<hr>"

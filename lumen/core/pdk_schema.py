@@ -892,7 +892,9 @@ class PDKDiscoveryEngine:
             tags=["cmos", "open-source", "mixed-signal"],
         )
         # Set path to existing sky130 PDK if available
-        local_path = Path("C:/EDA/ihp_pdk/ihp-sg13g2").parent.parent / "sky130"
+        local_path = Path("C:/EDA/LumenCircuitStudio/external/ihp_pdk/ihp-sg13g2").parent.parent / "sky130"
+        if not local_path.exists():
+            local_path = Path("C:/EDA/ihp_pdk/ihp-sg13g2").parent.parent / "sky130"
         if local_path.exists():
             pdk.root_path = str(local_path)
             pdk.installed = True
@@ -900,7 +902,9 @@ class PDKDiscoveryEngine:
 
     def _build_ihp_sg13g2(self) -> PDKInfo:
         cwd = os.getcwd()
-        ihp_path = os.path.join(cwd, "ihp_pdk", "ihp-sg13g2")
+        ihp_path = os.path.join(cwd, "external", "ihp_pdk", "ihp-sg13g2")
+        if not os.path.isdir(ihp_path):
+            ihp_path = os.path.join(cwd, "ihp_pdk", "ihp-sg13g2")
         installed = os.path.isdir(ihp_path)
 
         pdk = PDKInfo(

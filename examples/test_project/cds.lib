@@ -1,0 +1,18 @@
+# Lumen Circuit Studio Library Definitions
+# Generated: 2026-05-09T12:58:18.413505
+
+DEFINE ihp_sg13g2 c:\EDA\LumenCircuitStudio\..\ihp_pdk  # IHP SG13G2 PDK
+DEFINE test_project test_project\design  # test_project design library
+DEFINE ihp_sg13g2_models_cornerCAP LumenCircuitStudio\..\ihp_pdk\ihp-sg13g2\libs.tech\ngspice\models  # cornerCAP model library (7 corners)
+DEFINE ihp_sg13g2_models_cornerDIO LumenCircuitStudio\..\ihp_pdk\ihp-sg13g2\libs.tech\ngspice\models  # cornerDIO model library (4 corners)
+DEFINE ihp_sg13g2_models_cornerHBT LumenCircuitStudio\..\ihp_pdk\ihp-sg13g2\libs.tech\ngspice\models  # cornerHBT model library (7 corners)
+DEFINE ihp_sg13g2_models_cornerMOShv LumenCircuitStudio\..\ihp_pdk\ihp-sg13g2\libs.tech\ngspice\models  # cornerMOShv model library (11 corners)
+DEFINE ihp_sg13g2_models_cornerMOSlv LumenCircuitStudio\..\ihp_pdk\ihp-sg13g2\libs.tech\ngspice\models  # cornerMOSlv model library (11 corners)
+DEFINE ihp_sg13g2_models_cornerRES LumenCircuitStudio\..\ihp_pdk\ihp-sg13g2\libs.tech\ngspice\models  # cornerRES model library (7 corners)
+DEFINE ihp_sg13g2_models_diodes LumenCircuitStudio\..\ihp_pdk\ihp-sg13g2\libs.tech\ngspice\models  # diodes model library (1 corners)
+DEFINE ihp_sg13g2_models_resistors LumenCircuitStudio\..\ihp_pdk\ihp-sg13g2\libs.tech\xyce\models  # resistors model library (1 corners)
+DEFINE ihp_sg13g2_models_resistors_parm LumenCircuitStudio\..\ihp_pdk\ihp-sg13g2\libs.tech\xyce\models  # resistors_parm model library (1 corners)
+DEFINE ihp_sg13g2_models_sg13g2_esd LumenCircuitStudio\..\ihp_pdk\ihp-sg13g2\libs.tech\ngspice\models  # sg13g2_esd model library (1 corners)
+DEFINE ihp_sg13g2_models_IHP_PDK_basic_components LumenCircuitStudio\..\ihp_pdk\ihp-sg13g2\libs.tech\qucs-s\user_lib  # IHP_PDK_basic_components model library (1 corners)
+DEFINE ihp_sg13g2_models_IHP_PDK_nonlinear_components LumenCircuitStudio\..\ihp_pdk\ihp-sg13g2\libs.tech\qucs-s\user_lib  # IHP_PDK_nonlinear_components model library (1 corners)
+DEFINE ihp_sg13g2_models_IHP_PDK_stdcells LumenCircuitStudio\..\ihp_pdk\ihp-sg13g2\libs.tech\qucs-s\user_lib  # IHP_PDK_stdcells model library (1 corners)

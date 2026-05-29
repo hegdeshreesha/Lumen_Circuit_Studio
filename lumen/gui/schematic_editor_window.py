@@ -7,12 +7,13 @@ toolbars, property panel, and canvas. Opens one per design.
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QDockWidget, QToolBar,
     QStatusBar, QLabel, QMessageBox, QTextEdit, QInputDialog, QFileDialog,
-    QTabWidget
+    QTabWidget, QApplication, QProgressDialog
 )
-from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtCore import Qt, QSize, QThread
 from PyQt6.QtGui import QAction, QKeySequence
 
 from lumen.core.database import LibraryDatabase
+from lumen.core.layout_xl import LayoutXLService
 from lumen.gui.schematic_editor import SchematicEditor
 from lumen.gui.property_editor import PropertyEditorWidget
 from lumen.gui.branding import apply_window_branding
@@ -30,6 +31,7 @@ class SchematicEditorWindow(QMainWindow):
         self.cell = cell
         self.view = view
         self.ciw = ciw
+        self.layout_service = LayoutXLService(self.db)
         self._hierarchy_stack: list[tuple[str, str, str]] = []
 
         self.setWindowTitle(f"Lumen — {cell} ({view}) — [{library}]")
@@ -182,6 +184,16 @@ class SchematicEditorWindow(QMainWindow):
         self.act_waveform = QAction("Waveform Viewer", self)
         self.act_waveform.triggered.connect(self._on_open_waveform)
 
+        # Layout integration actions
+        self.act_open_layout = self._make_action(
+            "Open Layout (KLayout)", "Ctrl+Shift+L", self._on_open_layout)
+        self.act_update_layout = self._make_action(
+            "Update Layout From Schematic", slot=self._on_update_layout)
+        self.act_layout_runtime = self._make_action(
+            "KLayout Runtime...", slot=self._on_layout_runtime)
+        self.act_run_drc = self._make_action("Run DRC...", slot=self._on_run_drc)
+        self.act_run_lvs = self._make_action("Run LVS...", slot=self._on_run_lvs)
+
         # Cadence-style file/design commands
         self.act_new_cellview = self._make_action("New Cellview...", "Ctrl+N", self._on_new_cellview)
         self.act_open_cellview = self._make_action("Open Cellview...", "Ctrl+O", self._on_open_cellview)
@@ -247,6 +259,7 @@ class SchematicEditorWindow(QMainWindow):
             self.act_netlist: "netlist",
             self.act_simulate: "run",
             self.act_waveform: "wave",
+            self.act_open_layout: "open",
             self.act_health_check: "health",
             self.act_command_palette: "palette",
         }
@@ -331,6 +344,15 @@ class SchematicEditorWindow(QMainWindow):
         hier_menu.addSeparator()
         hier_menu.addAction(self.act_symbol)
 
+        layout_menu = menubar.addMenu("&Layout")
+        layout_menu.addAction(self.act_open_layout)
+        layout_menu.addAction(self.act_update_layout)
+        layout_menu.addSeparator()
+        layout_menu.addAction(self.act_run_drc)
+        layout_menu.addAction(self.act_run_lvs)
+        layout_menu.addSeparator()
+        layout_menu.addAction(self.act_layout_runtime)
+
         # Simulation
         sim_menu = menubar.addMenu("&Simulation")
         sim_menu.addAction(self.act_check_save)
@@ -397,6 +419,13 @@ class SchematicEditorWindow(QMainWindow):
         sim_tb.addAction(self.act_simulate)
         sim_tb.addAction(self.act_waveform)
         self.addToolBar(sim_tb)
+
+        layout_tb = QToolBar("Layout")
+        layout_tb.setIconSize(QSize(18, 18))
+        layout_tb.addAction(self.act_open_layout)
+        layout_tb.addAction(self.act_run_drc)
+        layout_tb.addAction(self.act_run_lvs)
+        self.addToolBar(layout_tb)
 
         smart_tb = QToolBar("Lumen")
         smart_tb.setIconSize(QSize(18, 18))
@@ -595,13 +624,194 @@ class SchematicEditorWindow(QMainWindow):
         self.grid_label.setText(f"Grid: {value}")
 
     def _on_layer_palette(self):
+        summary = self.layout_service.runtime_summary()
+        active = summary.get("active_executable", "") or "<not configured>"
+        version = summary.get("active_version", "") or "unknown"
         QMessageBox.information(
             self,
             "Layer Palette",
             "Schematic layers available now:\n\n"
             "- wire: signal wire\n- bus: vector/bus wire\n- pin: top-level port\n"
             "- label: net label\n- annotation: note/text\n\n"
-            "Physical layout layers will be added with the layout editor.")
+            f"KLayout runtime: {active}\n"
+            f"KLayout version: {version}\n\n"
+            "Use Layout menu for Open Layout / DRC / LVS actions.",
+        )
+
+    def _on_open_layout(self):
+        self.open_layout_editor()
+
+    def open_layout_editor(self) -> bool:
+        ok, msg = self.layout_service.ensure_runtime(auto_install=False)
+        if not ok:
+            choice = QMessageBox.question(
+                self,
+                "KLayout Not Found",
+                f"{msg}\n\nInstall KLayout automatically now?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if choice == QMessageBox.StandardButton.Yes:
+                install = self._run_klayout_install()
+                if install.logs and self.ciw:
+                    for line in install.logs[-5:]:
+                        self.ciw.log(f"[KLayout install] {line}")
+                if not install.success:
+                    QMessageBox.warning(self, "KLayout Install Failed", install.message)
+                    return False
+            else:
+                return False
+
+        result = self.layout_service.open_layout_editor(self.library, self.cell)
+        self.statusBar().showMessage(result.message, 5000)
+        if self.ciw:
+            self.ciw.log(f"[Layout] {result.message}")
+        if not result.success:
+            QMessageBox.warning(self, "Open Layout Failed", result.message)
+        return result.success
+
+    def _on_update_layout(self):
+        result = self.layout_service.update_layout_from_schematic(self.library, self.cell)
+        self.statusBar().showMessage(result.message, 5000)
+        if self.ciw:
+            self.ciw.log(f"[Layout] {result.message}")
+        QMessageBox.information(self, "Update Layout", result.message)
+
+    def _on_layout_runtime(self):
+        summary = self.layout_service.runtime_summary()
+        active = summary.get("active_executable", "") or ""
+        version = summary.get("active_version", "") or "unknown"
+        discovered = summary.get("discovered", [])
+        if not discovered and not active:
+            install_choice = QMessageBox.question(
+                self,
+                "KLayout Runtime",
+                "No KLayout installation was detected.\n\nInstall automatically now?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if install_choice == QMessageBox.StandardButton.Yes:
+                install = self._run_klayout_install()
+                if install.logs and self.ciw:
+                    for line in install.logs[-8:]:
+                        self.ciw.log(f"[KLayout install] {line}")
+                if install.success:
+                    self.statusBar().showMessage("KLayout installed and configured", 5000)
+                else:
+                    QMessageBox.warning(self, "KLayout Install Failed", install.message)
+                summary = self.layout_service.runtime_summary()
+                active = summary.get("active_executable", "") or ""
+                version = summary.get("active_version", "") or "unknown"
+                discovered = summary.get("discovered", [])
+        lines = [f"Active runtime: {active or '<not configured>'}", f"Version: {version}", ""]
+        lines.append("Discovered runtimes:")
+        if discovered:
+            for idx, item in enumerate(discovered, start=1):
+                item_version = item.get("version", "") or "unknown"
+                lines.append(f"{idx}. {item.get('executable', '')} ({item_version})")
+        else:
+            lines.append("  none found automatically")
+        lines.append("")
+        lines.append("Enter executable path to override (blank to keep current).")
+
+        path, ok = QInputDialog.getText(
+            self,
+            "KLayout Runtime",
+            "\n".join(lines),
+            text=active,
+        )
+        if not ok:
+            return
+        path = path.strip()
+        if not path:
+            return
+        if self.layout_service.set_runtime_executable(path):
+            refreshed = self.layout_service.runtime_summary()
+            runtime = refreshed.get("active_executable", path)
+            runtime_version = refreshed.get("active_version", "unknown")
+            msg = f"KLayout runtime set to {runtime} ({runtime_version})"
+            self.statusBar().showMessage(msg, 5000)
+            if self.ciw:
+                self.ciw.log(f"[Layout] {msg}")
+        else:
+            QMessageBox.warning(
+                self,
+                "KLayout Runtime",
+                "The provided executable path is invalid or not runnable.",
+            )
+
+    class _KLayoutInstallThread(QThread):
+        def __init__(self, layout_service, parent=None):
+            super().__init__(parent)
+            self.layout_service = layout_service
+            self.result = None
+
+        def run(self):
+            self.result = self.layout_service.install_runtime_if_missing()
+
+    def _run_klayout_install(self):
+        worker = self._KLayoutInstallThread(self.layout_service, self)
+        progress = QProgressDialog("Installing KLayout. This may take a few minutes...", "", 0, 0, self)
+        progress.setCancelButton(None)
+        progress.setWindowModality(Qt.WindowModality.ApplicationModal)
+        progress.setMinimumDuration(0)
+        progress.setWindowTitle("Installing KLayout")
+        progress.show()
+
+        worker.start()
+        while worker.isRunning():
+            QApplication.processEvents()
+            worker.wait(100)
+
+        progress.close()
+        return worker.result
+
+    def _on_run_drc(self):
+        script_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select KLayout DRC Script",
+            "",
+            "KLayout DRC (*.lydrc *.drc *.rb *.py);;All Files (*)",
+        )
+        if not script_path:
+            return
+        result = self.layout_service.run_drc(self.library, self.cell, script_path)
+        self.statusBar().showMessage(result.message, 7000)
+        if self.ciw:
+            self.ciw.log(f"[Layout] {result.message}")
+        if result.success:
+            QMessageBox.information(self, "DRC", result.message)
+        else:
+            QMessageBox.warning(self, "DRC Failed", result.message)
+
+    def _on_run_lvs(self):
+        script_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select KLayout LVS Script",
+            "",
+            "KLayout LVS (*.lylvs *.lvs *.rb *.py);;All Files (*)",
+        )
+        if not script_path:
+            return
+        netlist_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Optional: Select Schematic Netlist",
+            "",
+            "SPICE Netlist (*.sp *.cir *.net *.spice);;All Files (*)",
+        )
+        result = self.layout_service.run_lvs(
+            self.library,
+            self.cell,
+            script_path,
+            schematic_netlist=netlist_path or "",
+        )
+        self.statusBar().showMessage(result.message, 7000)
+        if self.ciw:
+            self.ciw.log(f"[Layout] {result.message}")
+        if result.success:
+            QMessageBox.information(self, "LVS", result.message)
+        else:
+            QMessageBox.warning(self, "LVS Failed", result.message)
 
     def _on_wire_name(self):
         name, ok = QInputDialog.getText(self, "Wire Name", "Net/bus name:")
@@ -763,32 +973,57 @@ class SchematicEditorWindow(QMainWindow):
 
     def _on_generate_netlist(self):
         """Generate and display the SPICE netlist."""
-        self.editor.save()  # Save first
-        from lumen.core.netlist import NetlistGenerator
-        gen = NetlistGenerator(self.db)
-        netlist = gen.generate(self.library, self.cell, self.view)
-        self.netlist_view.setPlainText(netlist)
-        errors = gen.get_errors()
-        if errors:
-            for e in errors:
-                self.netlist_view.append(f"\n* WARNING: {e}")
-        if self.ciw:
-            self.ciw.log(f"Netlist generated for {self.library}/{self.cell}")
+        try:
+            self.editor.save()  # Save first
+            from lumen.core.netlist import NetlistGenerator
+            gen = NetlistGenerator(self.db)
+            gen.set_target_simulator("GSPICE")
+            netlist = gen.generate(self.library, self.cell, self.view)
+            self.netlist_view.setPlainText(netlist)
+            errors = gen.get_errors()
             if errors:
                 for e in errors:
-                    self.ciw.log(f"  Warning: {e}")
-        self.statusBar().showMessage(
-            f"Netlist: {len(netlist.splitlines())} lines", 5000)
+                    self.netlist_view.append(f"\n* WARNING: {e}")
+            if self.ciw:
+                self.ciw.log(f"Netlist generated for {self.library}/{self.cell}")
+                if errors:
+                    for e in errors:
+                        self.ciw.log(f"  Warning: {e}")
+            self.statusBar().showMessage(
+                f"Netlist: {len(netlist.splitlines())} lines", 5000)
+        except Exception as exc:
+            import traceback
+            details = traceback.format_exc()
+            self.netlist_view.setPlainText(
+                f"* ERROR: Netlist generation crashed\n"
+                f"* {exc}\n\n{details}"
+            )
+            if self.ciw:
+                self.ciw.log(f"Netlist generation crashed: {exc}")
+            self.statusBar().showMessage("Netlist generation failed", 5000)
 
     def _on_simulate(self):
         """Generate netlist and run GSPICE simulation."""
-        self.editor.save()
-        from lumen.core.netlist import NetlistGenerator
-        from lumen.core.simulator import SimulatorBridge
+        try:
+            self.editor.save()
+            from lumen.core.netlist import NetlistGenerator
+            from lumen.core.simulator import SimulatorBridge
 
-        gen = NetlistGenerator(self.db)
-        netlist = gen.generate(self.library, self.cell, self.view)
-        self.netlist_view.setPlainText(netlist)
+            gen = NetlistGenerator(self.db)
+            gen.set_target_simulator("GSPICE")
+            netlist = gen.generate(self.library, self.cell, self.view)
+            self.netlist_view.setPlainText(netlist)
+        except Exception as exc:
+            import traceback
+            details = traceback.format_exc()
+            self.netlist_view.setPlainText(
+                f"* ERROR: Netlist generation crashed before simulation\n"
+                f"* {exc}\n\n{details}"
+            )
+            if self.ciw:
+                self.ciw.log(f"Simulation aborted: netlist crash: {exc}")
+            self.statusBar().showMessage("Simulation aborted (netlist failure)", 5000)
+            return
 
         bridge = SimulatorBridge()
         if not bridge.is_available():
@@ -817,13 +1052,19 @@ class SchematicEditorWindow(QMainWindow):
             if result.waveforms:
                 self._show_waveforms(result.waveforms)
         else:
-            self.netlist_view.append(f"\n* SIMULATION FAILED")
+            self.netlist_view.append(f"\n* SIMULATION FAILED (exit code {result.return_code})")
             for e in result.errors:
                 self.netlist_view.append(f"* ERROR: {e}")
             if self.ciw:
                 self.ciw.log("Simulation FAILED")
                 for e in result.errors:
                     self.ciw.log(f"  {e}")
+        if result.warnings:
+            self.netlist_view.append("* WARNINGS:")
+            for warning in result.warnings:
+                self.netlist_view.append(f"* WARNING: {warning}")
+        if result.command:
+            self.netlist_view.append(f"* COMMAND: {' '.join(result.command)}")
 
         self.statusBar().showMessage(
             "Simulation done" if result.success else "Simulation failed", 5000)

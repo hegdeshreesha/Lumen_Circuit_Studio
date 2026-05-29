@@ -16,14 +16,15 @@ import time
 import copy
 import threading
 import re
+import random
 from dataclasses import dataclass, field, asdict
-from pathlib import Path
 from typing import Optional, Callable
 from enum import Enum
 
 from lumen.core.database import LibraryDatabase
 from lumen.core.netlist import NetlistGenerator, NetlistDirectives
 from lumen.core.simulator import SimulatorBridge, SimulationResult
+from lumen.core.results_store import ResultsStore, RunManifest, hash_text, hash_files
 
 
 # ── Analysis Types ─────────────────────────────────────────────
@@ -518,14 +519,15 @@ class ADESession:
         # Expression calculator
         self._calc = ExpressionCalculator()
 
-        # PDK registry (lazy)
+    # PDK registry (lazy)
         self._pdk_registry = None
+        self._results_store = ResultsStore(str(getattr(self.db, "workspace", "")))
 
     def _get_pdk_registry(self):
         if self._pdk_registry is None:
-            from lumen.core.pdk_unified import PDKRegistry
-            workspace = str(Path(self.db.workspace).parent)
-            self._pdk_registry = PDKRegistry(workspace)
+            from lumen.core.pdk_service import get_registry
+            workspace = str(getattr(self.db, "workspace", ""))
+            self._pdk_registry = get_registry(workspace)
         return self._pdk_registry
 
     # ── Configuration Methods (Ocean-like API) ────────────────
@@ -647,6 +649,7 @@ class ADESession:
                        sweep_values: dict = None) -> str:
         """Build the complete SPICE netlist for the current state."""
         gen = NetlistGenerator(self.db)
+        gen.set_target_simulator(self.state.simulator)
         directives = NetlistDirectives()
 
         # Design variables
@@ -726,6 +729,24 @@ class ADESession:
 
     # ── Run Simulation ───────────────────────────────────────
 
+    def _extract_model_paths(self, netlist: str) -> list[str]:
+        """Extract .include/.lib file references from a netlist."""
+        paths: list[str] = []
+        for raw in (netlist or "").splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            up = line.upper()
+            if up.startswith(".INCLUDE"):
+                parts = line.split(maxsplit=1)
+                if len(parts) > 1:
+                    paths.append(parts[1].strip().strip('"'))
+            elif up.startswith(".LIB"):
+                parts = line.split(maxsplit=2)
+                if len(parts) > 1:
+                    paths.append(parts[1].strip().strip('"'))
+        return paths
+
     def run(self, callback: Optional[Callable] = None) -> list[RunRecord]:
         """
         Run the simulation according to the current state.
@@ -795,6 +816,29 @@ class ADESession:
                 if key not in self._results:
                     self._results[key] = []
                 self._results[key].append(record)
+                manifest = RunManifest(
+                    run_id=record.run_id,
+                    simulator=self.state.simulator,
+                    design=f"{self.state.library}/{self.state.cell}/{self.state.view}",
+                    corner=corner.name,
+                    analysis=analysis.analysis_type.value,
+                    seed=0,
+                    deck_hash=hash_text(netlist),
+                    model_hash=hash_files(self._extract_model_paths(netlist)),
+                    elapsed_time=record.elapsed_time,
+                    success=record.success,
+                )
+                self._results_store.record(
+                    {
+                        "run_id": record.run_id,
+                        "success": record.success,
+                        "elapsed_time": record.elapsed_time,
+                        "analysis": record.analysis,
+                        "corner": record.corner_name,
+                        "waveforms": record.waveforms,
+                    },
+                    manifest,
+                )
 
             if callback:
                 callback(result)
@@ -843,6 +887,10 @@ class ADESession:
         self._results.clear()
         self._run_history.clear()
 
+    def compare_runs(self, run_id_a: str, run_id_b: str) -> dict:
+        """Compare two runs from the persistent results database."""
+        return self._results_store.compare(run_id_a, run_id_b)
+
     # ── Expression Evaluation ─────────────────────────────────
 
     def evaluate(self, expression: str, run_index: int = -1) -> Optional[dict]:
@@ -865,6 +913,62 @@ class ADESession:
                     "data": record.waveforms[signal],
                 })
         return results
+
+    def run_statistical_signoff(self, mc_runs: int = 8, seed: int = 1,
+                                sigma_fraction: float = 0.03) -> dict:
+        """Run multi-corner Monte Carlo signoff over numeric design variables."""
+        rng = random.Random(seed)
+        base_vars = dict(self.state.design_variables)
+        corners = self._get_active_corners()
+        if not corners:
+            corners = [CornerConfig("default", 25.0, 1.8, "tt")]
+
+        summary = {
+            "seed": seed,
+            "mc_runs": mc_runs,
+            "runs": 0,
+            "passes": 0,
+            "fails": 0,
+            "corners": [c.name for c in corners],
+            "details": [],
+        }
+
+        for corner in corners:
+            for idx in range(max(1, mc_runs)):
+                perturbed = {}
+                for key, raw in base_vars.items():
+                    text = str(raw)
+                    m = re.match(r"^\s*([+-]?\d+(?:\.\d+)?)\s*$", text)
+                    if m:
+                        base = float(m.group(1))
+                        delta = rng.gauss(0.0, sigma_fraction)
+                        perturbed[key] = f"{base * (1.0 + delta):.6g}"
+                    else:
+                        perturbed[key] = raw
+                netlist = self._build_netlist(corner, perturbed)
+                bridge = SimulatorBridge(self.state.simulator, self.state.simulator_path)
+                result = bridge.simulate(
+                    netlist=netlist,
+                    sim_name=f"{self.state.cell}_{corner.name}_mc{idx + 1}",
+                    threads=self.state.threads,
+                    timeout=self.state.timeout,
+                )
+                summary["runs"] += 1
+                if result.success:
+                    summary["passes"] += 1
+                else:
+                    summary["fails"] += 1
+                summary["details"].append({
+                    "corner": corner.name,
+                    "index": idx + 1,
+                    "success": bool(result.success),
+                    "elapsed_time": float(result.elapsed_time),
+                    "errors": list(result.errors),
+                })
+
+        self.state.design_variables = base_vars
+        summary["pass_rate"] = (summary["passes"] / summary["runs"]) if summary["runs"] else 0.0
+        return summary
 
     # ── Convergence Analysis ──────────────────────────────────
 

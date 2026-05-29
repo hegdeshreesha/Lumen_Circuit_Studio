@@ -31,6 +31,7 @@ from lumen.core.commands import (
     CommandStack, AddItemCommand, DeleteItemsCommand, MoveItemsCommand,
     CompoundCommand, RotateCommand, MirrorCommand, LabelCommand
 )
+from lumen.core.pdk_service import get_registry
 from lumen.gui.branding import apply_window_branding
 
 
@@ -117,12 +118,12 @@ class SchematicPinItem(QGraphicsItemGroup):
 
     def _color(self) -> QColor:
         if self.pin_usage == "power":
-            return QColor("#ffb703")
+            return QColor("#ff6464")
         if self.pin_usage == "ground":
-            return QColor("#8ecae6")
+            return QColor("#d94848")
         if self.pin_usage == "clock":
-            return QColor("#c77dff")
-        return PIN_COLOR
+            return QColor("#ff7a7a")
+        return QColor("#e54848")
 
     def _orientation_vector(self) -> tuple[int, int]:
         return {
@@ -141,10 +142,10 @@ class SchematicPinItem(QGraphicsItemGroup):
     def _build_graphics(self):
         self._clear_group()
         color = self._color()
-        pen = QPen(color, 1.2)
+        outline = QColor(color).darker(165)
+        pen = QPen(outline, 1.2)
         brush = QBrush(color)
 
-        # Reuse xschem pin geometry exactly (ipin/opin/iopin), then orient it.
         def orient_point(x: float, y: float) -> tuple[float, float]:
             if self.pin_orientation == "R90":
                 return (y, -x)
@@ -159,46 +160,23 @@ class SchematicPinItem(QGraphicsItemGroup):
             pin_kind = "inout"
 
         if pin_kind == "input":
-            line_start = (-5.0, 0.0)
-            line_end = (0.0, 0.0)
             poly_pts = [
-                (-5.0, 0.0), (-8.75, -5.0), (-17.5, -5.0),
-                (-13.75, 0.0), (-17.5, 5.0), (-8.75, 5.0), (-5.0, 0.0),
+                (0.0, -4.0), (-6.0, -8.0), (-22.0, -8.0),
+                (-18.0, 0.0), (-22.0, 8.0), (-6.0, 8.0), (0.0, 4.0),
             ]
-            label_anchor = (-18.75, -8.75)
+            label_anchor = (-28.0, -9.0)
         elif pin_kind == "output":
-            line_start = (0.0, 0.0)
-            line_end = (8.75, 0.0)
             poly_pts = [
-                (17.5, 0.0), (13.75, -5.0), (5.0, -5.0),
-                (8.75, 0.0), (5.0, 5.0), (13.75, 5.0), (17.5, 0.0),
+                (0.0, -4.0), (6.0, -8.0), (22.0, -8.0),
+                (18.0, 0.0), (22.0, 8.0), (6.0, 8.0), (0.0, 4.0),
             ]
-            label_anchor = (20.0, -8.75)
+            label_anchor = (26.0, -9.0)
         else:
-            line_start = (0.0, 0.0)
-            line_end = (3.125, 0.0)
             poly_pts = [
-                (13.75, 5.0), (17.5, 0.0), (13.75, -5.0),
-                (6.875, -5.0), (3.125, 0.0), (6.875, 5.0), (13.75, 5.0),
+                (0.0, -5.0), (5.0, -9.0), (20.0, -9.0),
+                (20.0, 9.0), (5.0, 9.0), (0.0, 5.0),
             ]
-            label_anchor = (19.8438, -9.375)
-
-        # Xschem pin box: B 5 -1.25 -1.25 1.25 1.25
-        marker_pts = [orient_point(-1.25, -1.25), orient_point(1.25, 1.25)]
-        marker_x = min(marker_pts[0][0], marker_pts[1][0])
-        marker_y = min(marker_pts[0][1], marker_pts[1][1])
-        marker_w = abs(marker_pts[1][0] - marker_pts[0][0])
-        marker_h = abs(marker_pts[1][1] - marker_pts[0][1])
-        marker = QGraphicsRectItem(marker_x, marker_y, marker_w, marker_h)
-        marker.setPen(pen)
-        marker.setBrush(QBrush(Qt.BrushStyle.NoBrush))
-        self.addToGroup(marker)
-
-        lsx, lsy = orient_point(*line_start)
-        lex, ley = orient_point(*line_end)
-        stub = QGraphicsLineItem(lsx, lsy, lex, ley)
-        stub.setPen(pen)
-        self.addToGroup(stub)
+            label_anchor = (24.0, -10.0)
 
         poly_path = QPainterPath()
         first = orient_point(*poly_pts[0])
@@ -211,6 +189,12 @@ class SchematicPinItem(QGraphicsItemGroup):
         poly_item.setPen(pen)
         poly_item.setBrush(brush)
         self.addToGroup(poly_item)
+
+        ax, ay = orient_point(0.0, 0.0)
+        anchor = QGraphicsEllipseItem(ax - 1.6, ay - 1.6, 3.2, 3.2)
+        anchor.setPen(QPen(QColor("#f8f8f8"), 0.8))
+        anchor.setBrush(QBrush(QColor("#f2f2f2")))
+        self.addToGroup(anchor)
 
         label = QGraphicsTextItem(self.pin_name)
         label.setDefaultTextColor(color)
@@ -659,6 +643,8 @@ class SchematicEditor(QWidget):
 
         self._setup_ui()
         self._load_data()
+        # Ensure consistent startup interaction (rubber-band + drag/select).
+        self.set_mode("select")
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -1358,6 +1344,8 @@ class SchematicEditor(QWidget):
             self.set_mode('label')
         elif key == Qt.Key.Key_P and mod == Qt.KeyboardModifier.NoModifier:
             self.set_mode('pin')
+        elif key == Qt.Key.Key_Q and mod == Qt.KeyboardModifier.NoModifier:
+            self.show_selected_properties()
         elif key == Qt.Key.Key_R and mod == Qt.KeyboardModifier.NoModifier:
             self.rotate_selected()
         elif key == Qt.Key.Key_X and mod == Qt.KeyboardModifier.NoModifier:
@@ -1807,6 +1795,12 @@ class InstanceBrowserDialog(QDialog):
             win = editor.window()
             if hasattr(win, 'ciw') and win.ciw and hasattr(win.ciw, 'pdk_registry'):
                 return win.ciw.pdk_registry
+            db = getattr(editor, "db", None)
+            workspace = str(getattr(db, "workspace", "")) if db else ""
+            try:
+                return get_registry(workspace)
+            except Exception:
+                return None
         return None
 
     def _on_lib_selected(self, lib_name: str):

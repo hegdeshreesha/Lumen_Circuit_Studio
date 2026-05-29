@@ -5,12 +5,14 @@ Tree-based library/cell/view navigator, similar to Cadence's Library Manager.
 """
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QTreeWidget, QTreeWidgetItem,
-    QLineEdit, QMenu, QMessageBox, QInputDialog, QHBoxLayout, QPushButton
+    QLineEdit, QMenu, QMessageBox, QInputDialog, QHBoxLayout, QPushButton,
+    QComboBox, QCheckBox
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QAction, QColor, QBrush, QFont
 
 from lumen.core.database import LibraryDatabase
+from lumen.core.component_capabilities import is_supported
 
 
 class LibraryBrowserWidget(QWidget):
@@ -55,6 +57,24 @@ class LibraryBrowserWidget(QWidget):
         search_layout.addWidget(self.refresh_btn)
         layout.addLayout(search_layout)
 
+        filter_layout = QHBoxLayout()
+        self.category_filter = QComboBox()
+        self.category_filter.addItems([
+            "All Categories",
+            "native",
+            "lumped components",
+            "sources",
+            "nonlinear components",
+            "system components",
+            "digital components",
+        ])
+        self.category_filter.currentTextChanged.connect(lambda _t: self.refresh())
+        filter_layout.addWidget(self.category_filter)
+        self.capability_filter = QCheckBox("GSPICE-supported only")
+        self.capability_filter.toggled.connect(lambda _v: self.refresh())
+        filter_layout.addWidget(self.capability_filter)
+        layout.addLayout(filter_layout)
+
         # Tree widget
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["Name", "Type"])
@@ -82,6 +102,8 @@ class LibraryBrowserWidget(QWidget):
 
             # Add cells
             for cell_name in self.db.get_cells(lib.name):
+                if not self._cell_matches_filters(lib.name, cell_name):
+                    continue
                 cell_item = QTreeWidgetItem([
                     f"{self.ICONS['cell']} {cell_name}", "Cell"
                 ])
@@ -104,6 +126,20 @@ class LibraryBrowserWidget(QWidget):
 
             self.tree.addTopLevelItem(lib_item)
             lib_item.setExpanded(True)
+
+    def _cell_matches_filters(self, library: str, cell: str) -> bool:
+        selected = self.category_filter.currentText()
+        sym = self.db.load_view(library, cell, "symbol") or {}
+        if selected and selected != "All Categories":
+            cat = str(sym.get("qucs_category", "native")).strip().lower() or "native"
+            if cat != selected.lower():
+                return False
+        if self.capability_filter.isChecked():
+            model = str(sym.get("spice_model", ""))
+            supported, _ = is_supported(model, "GSPICE")
+            if not supported:
+                return False
+        return True
 
     def _on_double_click(self, item: QTreeWidgetItem, column: int):
         """Open a view when double-clicked."""

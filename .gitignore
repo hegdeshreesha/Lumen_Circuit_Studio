@@ -35,3 +35,14 @@ simulations/
 scratch/
 test_workspace/
 my_design/
+
+# Local workspace/runtime artifacts
+.lumen_schema.json
+lumen_libs.json
+primitives/
+runs/
+logs/
+
+# Large local tool installers (do not commit binaries)
+external/tools/*.exe
+external/tools/*.zip

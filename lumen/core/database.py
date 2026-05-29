@@ -77,12 +77,41 @@ class LibraryDatabase:
     LIB_META = ".lumen_lib.json"
     CELL_META = ".lumen_cell.json"
     REGISTRY_FILE = "lumen_libs.json"
+    SCHEMA_STATE = ".lumen_schema.json"
+    CURRENT_SCHEMA_VERSION = 2
 
     def __init__(self, workspace_dir: str):
         self.workspace = Path(workspace_dir)
         self.workspace.mkdir(parents=True, exist_ok=True)
+        self._migrate_workspace_schema()
         self._libraries: dict[str, LibraryInfo] = {}
         self._load_registry()
+
+    def _schema_state_path(self) -> Path:
+        return self.workspace / self.SCHEMA_STATE
+
+    def _migrate_workspace_schema(self):
+        """Apply idempotent workspace schema migrations."""
+        state_path = self._schema_state_path()
+        version = 0
+        if state_path.exists():
+            try:
+                with open(state_path, "r") as f:
+                    state = json.load(f)
+                version = int(state.get("version", 0))
+            except Exception:
+                version = 0
+        # v1: ensure support directories exist
+        if version < 1:
+            for rel in ("runs", "logs", "scratch", "exports"):
+                (self.workspace / rel).mkdir(parents=True, exist_ok=True)
+            version = 1
+        # v2: ensure schema marker for primitives refresh behavior
+        if version < 2:
+            (self.workspace / "primitives").mkdir(parents=True, exist_ok=True)
+            version = 2
+        with open(state_path, "w") as f:
+            json.dump({"version": version}, f, indent=2)
 
     # ── Registry ──────────────────────────────────────────────
 
@@ -345,7 +374,7 @@ class LibraryDatabase:
 
     def _primitive_catalog(self):
         """Return Lumen's analogLib-style built-in primitive catalog."""
-        return {
+        catalog = {
             # Passive devices
             "res": self._primitive_resistor(),
             "res_var": self._primitive_variable_resistor(),
@@ -407,9 +436,193 @@ class LibraryDatabase:
             "sw_i": self._primitive_current_switch(),
             "tline": self._primitive_tline(),
         }
+        for name, component in self._qucs_compat_catalog().items():
+            catalog.setdefault(name, component)
+        return catalog
 
     # ── Primitive Symbol Definitions ──────────────────────────
     # Each returns (symbol_data, schematic_data) — schematic is None for primitives
+
+    def _qucs_compat_catalog(self) -> dict[str, tuple[dict, None]]:
+        """Return additional QUCS-compatible primitives not yet modeled natively."""
+        descriptors = [
+            # Lumped components
+            {"name": "dc_block", "prefix": "X", "spice": "DCBLOCK", "pins": ["PLUS", "MINUS"], "abbr": "DCB", "category": "lumped components", "params": [("C", "1uF", "capacitance in Farad")]},
+            {"name": "dc_feed", "prefix": "X", "spice": "DCFEED", "pins": ["PLUS", "MINUS"], "abbr": "DCF", "category": "lumped components", "params": [("L", "1uH", "inductance in Henry")]},
+            {"name": "bias_t", "prefix": "X", "spice": "BIAST", "pins": ["RF_IN", "RF_OUT", "DC_IN"], "abbr": "BT", "category": "lumped components", "params": [("L", "1uH", "inductance"), ("C", "1uF", "capacitance")]},
+            {"name": "attenuator", "prefix": "X", "spice": "ATTENUATOR", "pins": ["IN", "OUT"], "abbr": "ATT", "category": "lumped components", "params": [("L", "10dB", "attenuation"), ("Zref", "50", "reference impedance")]},
+            {"name": "isolator", "prefix": "X", "spice": "ISOLATOR", "pins": ["IN", "OUT"], "abbr": "ISO", "category": "lumped components", "params": [("Z1", "50", "input impedance"), ("Z2", "50", "output impedance")]},
+            {"name": "circulator", "prefix": "X", "spice": "CIRCULATOR", "pins": ["P1", "P2", "P3"], "abbr": "CIR", "category": "lumped components", "params": [("Zref", "50", "reference impedance")]},
+            {"name": "phase_shifter", "prefix": "X", "spice": "PSHIFT", "pins": ["IN", "OUT"], "abbr": "PHI", "category": "lumped components", "params": [("phi", "90", "phase in degree"), ("Zref", "50", "reference impedance")]},
+            {"name": "coupler_ideal", "prefix": "X", "spice": "COUPLER", "pins": ["P1", "P2", "P3", "P4"], "abbr": "CPL", "category": "lumped components", "params": [("k", "0.7071", "coupling factor"), ("phi", "180", "phase shift")]},
+            {"name": "hybrid", "prefix": "X", "spice": "HYBRID", "pins": ["P1", "P2", "P3", "P4"], "abbr": "HYB", "category": "lumped components", "params": [("phi", "90", "phase shift"), ("Zref", "50", "reference impedance")]},
+            {"name": "voltage_probe", "prefix": "PR", "spice": "VPROBE", "pins": ["NODE"], "abbr": "VP", "category": "lumped components"},
+            {"name": "time_switch", "prefix": "S", "spice": "TSW", "pins": ["PLUS", "MINUS"], "abbr": "TSW", "category": "lumped components", "params": [("t_open", "1n", "open time"), ("t_close", "2n", "close time")]},
+            {"name": "relay", "prefix": "W", "spice": "RELAY", "pins": ["PLUS", "MINUS", "CTRL_P", "CTRL_N"], "abbr": "RLY", "category": "lumped components", "params": [("model", "CSW", "relay model")]},
+            {"name": "transformer_ideal", "prefix": "TR", "spice": "TR", "pins": ["P1", "N1", "P2", "N2"], "abbr": "TR", "category": "lumped components", "params": [("T", "1", "turn ratio")]},
+            {"name": "transformer_sym", "prefix": "TR", "spice": "STR", "pins": ["P1", "N1", "P2", "N2", "P3", "N3"], "abbr": "STR", "category": "lumped components", "params": [("T1", "1", "coil ratio 1"), ("T2", "1", "coil ratio 2")]},
+            {"name": "mutual_ind_3", "prefix": "K", "spice": "MUT3", "pins": ["L1", "L2", "L3"], "abbr": "K3", "category": "lumped components", "params": [("L1", "1m", "inductor 1"), ("L2", "1m", "inductor 2"), ("L3", "1m", "inductor 3")]},
+
+            # Sources
+            {"name": "ac_power", "prefix": "P", "spice": "PAC", "pins": ["PLUS", "MINUS"], "abbr": "PAC", "category": "sources", "params": [("P", "0dBm", "power"), ("Z", "50", "reference impedance")]},
+            {"name": "am_vsource", "prefix": "V", "spice": "VAM", "pins": ["PLUS", "MINUS"], "abbr": "AM", "category": "sources", "params": [("Uo", "0", "offset"), ("Uac", "1", "carrier amplitude"), ("fm", "1k", "modulation frequency")]},
+            {"name": "pm_vsource", "prefix": "V", "spice": "VPM", "pins": ["PLUS", "MINUS"], "abbr": "PM", "category": "sources", "params": [("Uo", "0", "offset"), ("Uac", "1", "carrier amplitude"), ("fm", "1k", "modulation frequency")]},
+            {"name": "noise_vsource", "prefix": "V", "spice": "VNOISE", "pins": ["PLUS", "MINUS"], "abbr": "VN", "category": "sources", "params": [("En", "1n", "noise density")]},
+            {"name": "noise_isource", "prefix": "I", "spice": "INOISE", "pins": ["PLUS", "MINUS"], "abbr": "IN", "category": "sources", "params": [("In", "1p", "noise density")]},
+            {"name": "pulse_vsingle", "prefix": "V", "spice": "VPULSE1", "pins": ["PLUS", "MINUS"], "abbr": "PV1", "category": "sources", "params": [("v1", "0", "low"), ("v2", "1", "high"), ("td", "1n", "delay")]},
+            {"name": "pulse_isingle", "prefix": "I", "spice": "IPULSE1", "pins": ["PLUS", "MINUS"], "abbr": "PI1", "category": "sources", "params": [("i1", "0", "low"), ("i2", "1m", "high"), ("td", "1n", "delay")]},
+            {"name": "pulse_vrect", "prefix": "V", "spice": "VPULSE_RECT", "pins": ["PLUS", "MINUS"], "abbr": "PVR", "category": "sources", "params": [("v1", "0", "low"), ("v2", "1", "high"), ("pw", "10n", "pulse width"), ("per", "20n", "period")]},
+            {"name": "pulse_irect", "prefix": "I", "spice": "IPULSE_RECT", "pins": ["PLUS", "MINUS"], "abbr": "PIR", "category": "sources", "params": [("i1", "0", "low"), ("i2", "1m", "high"), ("pw", "10n", "pulse width"), ("per", "20n", "period")]},
+            {"name": "pulse_vexp", "prefix": "V", "spice": "VPULSE_EXP", "pins": ["PLUS", "MINUS"], "abbr": "PVE", "category": "sources", "params": [("v1", "0", "initial"), ("v2", "1", "final"), ("tau", "1n", "time constant")]},
+            {"name": "pulse_iexp", "prefix": "I", "spice": "IPULSE_EXP", "pins": ["PLUS", "MINUS"], "abbr": "PIE", "category": "sources", "params": [("i1", "0", "initial"), ("i2", "1m", "final"), ("tau", "1n", "time constant")]},
+            {"name": "file_vsource", "prefix": "V", "spice": "VFILE", "pins": ["PLUS", "MINUS"], "abbr": "VF", "category": "sources", "params": [("File", "vfile.dat", "sample file path")]},
+            {"name": "file_isource", "prefix": "I", "spice": "IFILE", "pins": ["PLUS", "MINUS"], "abbr": "IF", "category": "sources", "params": [("File", "ifile.dat", "sample file path")]},
+            {"name": "noise_corr", "prefix": "N", "spice": "NCORR", "pins": ["OUT1", "OUT2"], "abbr": "NC", "category": "sources", "params": [("rho", "0.5", "correlation coefficient")]},
+            {"name": "noise_corr_v", "prefix": "V", "spice": "VNCORR", "pins": ["OUT1", "OUT2"], "abbr": "VC", "category": "sources", "params": [("rho", "0.5", "correlation coefficient")]},
+            {"name": "noise_corr_i", "prefix": "I", "spice": "INCORR", "pins": ["OUT1", "OUT2"], "abbr": "IC", "category": "sources", "params": [("rho", "0.5", "correlation coefficient")]},
+
+            # Nonlinear
+            {"name": "diac", "prefix": "D", "spice": "DIAC", "pins": ["A1", "A2"], "abbr": "DIAC", "category": "nonlinear components", "params": [("Vbo", "30", "breakover voltage")]},
+            {"name": "thyristor", "prefix": "SCR", "spice": "THYRISTOR", "pins": ["A", "K", "G"], "abbr": "SCR", "category": "nonlinear components", "params": [("model", "SCR", "thyristor model")]},
+            {"name": "triac", "prefix": "TRI", "spice": "TRIAC", "pins": ["MT1", "MT2", "G"], "abbr": "TRI", "category": "nonlinear components", "params": [("model", "TRIAC", "triac model")]},
+            {"name": "mos_depl", "prefix": "M", "spice": "MOS_DEPL", "pins": ["D", "G", "S"], "abbr": "DMOS", "category": "nonlinear components", "params": [("model", "DMOS", "depletion MOS model")]},
+            {"name": "mos_bulk", "prefix": "M", "spice": "MOS_BULK", "pins": ["D", "G", "S", "B"], "abbr": "MOSB", "category": "nonlinear components", "params": [("model", "MOS", "bulk MOS model"), ("W", "1u", "width"), ("L", "180n", "length")]},
+            {"name": "hjt_sub", "prefix": "Q", "spice": "HJT_SUB", "pins": ["C", "B", "E", "SUB"], "abbr": "HJT", "category": "nonlinear components", "params": [("model", "BJT", "bipolar with substrate model")]},
+            {"name": "fbh_hbt_va", "prefix": "X", "spice": "FBH_HBT_VA", "pins": ["C", "B", "E"], "abbr": "FBH", "category": "nonlinear components"},
+            {"name": "hicum_l2_21_va", "prefix": "X", "spice": "HICUM_L2_21_VA", "pins": ["C", "B", "E"], "abbr": "H21", "category": "nonlinear components"},
+            {"name": "hicum_l2_22_va", "prefix": "X", "spice": "HICUM_L2_22_VA", "pins": ["C", "B", "E"], "abbr": "H22", "category": "nonlinear components"},
+            {"name": "hicum_l2_23_va", "prefix": "X", "spice": "HICUM_L2_23_VA", "pins": ["C", "B", "E"], "abbr": "H23", "category": "nonlinear components"},
+            {"name": "hicum_l0_112_va", "prefix": "X", "spice": "HICUM_L0_112_VA", "pins": ["C", "B", "E"], "abbr": "H0112", "category": "nonlinear components"},
+            {"name": "hicum_l0_12_va", "prefix": "X", "spice": "HICUM_L0_12_VA", "pins": ["C", "B", "E"], "abbr": "H012", "category": "nonlinear components"},
+            {"name": "mesfet_va", "prefix": "X", "spice": "MESFET_VA", "pins": ["D", "G", "S"], "abbr": "MES", "category": "nonlinear components"},
+            {"name": "ekv26mos_va", "prefix": "X", "spice": "EKV26MOS_VA", "pins": ["D", "G", "S", "B"], "abbr": "EKV", "category": "nonlinear components"},
+            {"name": "opamp_mod_va", "prefix": "X", "spice": "OPAMP_MOD_VA", "pins": ["INP", "INN", "OUT", "VDD", "VSS"], "abbr": "OPM", "category": "nonlinear components"},
+            {"name": "log_amp_va", "prefix": "X", "spice": "LOGAMP_VA", "pins": ["INP", "INN", "OUT"], "abbr": "LOG", "category": "nonlinear components"},
+            {"name": "pot_va", "prefix": "X", "spice": "POT_VA", "pins": ["A", "W", "B"], "abbr": "POT", "category": "nonlinear components"},
+            {"name": "photodiode_va", "prefix": "X", "spice": "PHOTODIODE_VA", "pins": ["A", "K", "LUX"], "abbr": "PD", "category": "nonlinear components"},
+            {"name": "phototransistor_va", "prefix": "X", "spice": "PHOTOTRANSISTOR_VA", "pins": ["C", "E", "LUX"], "abbr": "PT", "category": "nonlinear components"},
+
+            # System
+            {"name": "eqn_device", "prefix": "EDD", "spice": "EDD", "pins": ["P1", "N1", "P2", "N2"], "abbr": "EDD", "category": "system components", "params": [("Expr", "I(P1,N1)=0", "equation expression")]},
+            {"name": "eqn_rf_device", "prefix": "ERF", "spice": "ERF", "pins": ["P1", "P2", "P3", "P4"], "abbr": "ERF", "category": "system components", "params": [("Matrix", "S", "RF parameter type")]},
+            {"name": "eqn_rf_2port", "prefix": "ER2", "spice": "ERF2", "pins": ["IN", "OUT"], "abbr": "ER2", "category": "system components", "params": [("Matrix", "S", "2-port parameter type")]},
+            {"name": "sparam_file", "prefix": "SP", "spice": "SPFILE", "pins": ["P1", "P2"], "abbr": "S2P", "category": "system components", "params": [("File", "network.s2p", "S-parameter file path")]},
+            {"name": "spice_netlist", "prefix": "X", "spice": "SPICE_NETLIST", "pins": ["A", "B"], "abbr": "SPICE", "category": "system components", "params": [("File", "subckt.cir", "SPICE netlist file path")]},
+            {"name": "subckt_file", "prefix": "X", "spice": "SUB_FILE", "pins": ["A", "B"], "abbr": "SUB", "category": "system components", "params": [("File", "sub.sch", "Qucs schematic file path")]},
+            {"name": "vhdl_file", "prefix": "U", "spice": "VHDL_FILE", "pins": ["IN", "OUT"], "abbr": "VHDL", "category": "system components", "params": [("File", "module.vhdl", "VHDL file path")]},
+            {"name": "verilog_file", "prefix": "U", "spice": "VERILOG_FILE", "pins": ["IN", "OUT"], "abbr": "VER", "category": "system components", "params": [("File", "module.v", "Verilog file path")]},
+
+            # Digital
+            {"name": "digital_source", "prefix": "S", "spice": "DIGI_SOURCE", "pins": ["OUT"], "abbr": "DSRC", "category": "digital components", "params": [("init", "low", "initial value"), ("times", "1ns;1ns", "toggle times"), ("V", "1V", "high level")]},
+            {"name": "gate_or", "prefix": "Y", "spice": "OR", "pins": ["A", "B", "Y"], "abbr": "OR", "category": "digital components"},
+            {"name": "gate_nor", "prefix": "Y", "spice": "NOR", "pins": ["A", "B", "Y"], "abbr": "NOR", "category": "digital components"},
+            {"name": "gate_and", "prefix": "Y", "spice": "AND", "pins": ["A", "B", "Y"], "abbr": "AND", "category": "digital components"},
+            {"name": "gate_nand", "prefix": "Y", "spice": "NAND", "pins": ["A", "B", "Y"], "abbr": "NAND", "category": "digital components"},
+            {"name": "gate_xor", "prefix": "Y", "spice": "XOR", "pins": ["A", "B", "Y"], "abbr": "XOR", "category": "digital components"},
+            {"name": "gate_xnor", "prefix": "Y", "spice": "XNOR", "pins": ["A", "B", "Y"], "abbr": "XNOR", "category": "digital components"},
+            {"name": "inverter_dig", "prefix": "Y", "spice": "INV", "pins": ["A", "Y"], "abbr": "NOT", "category": "digital components"},
+            {"name": "buffer_dig", "prefix": "Y", "spice": "BUF", "pins": ["A", "Y"], "abbr": "BUF", "category": "digital components"},
+            {"name": "dff", "prefix": "Y", "spice": "DFF", "pins": ["D", "CLK", "Q", "QN"], "abbr": "DFF", "category": "digital components"},
+            {"name": "rsff", "prefix": "Y", "spice": "RSFF", "pins": ["R", "S", "Q", "QN"], "abbr": "RS", "category": "digital components"},
+            {"name": "jkff", "prefix": "Y", "spice": "JKFF", "pins": ["J", "K", "CLK", "Q", "QN"], "abbr": "JK", "category": "digital components"},
+            {"name": "logic0", "prefix": "Y", "spice": "LOGIC0", "pins": ["Y"], "abbr": "0", "category": "digital components"},
+            {"name": "logic1", "prefix": "Y", "spice": "LOGIC1", "pins": ["Y"], "abbr": "1", "category": "digital components"},
+            {"name": "tff_sr", "prefix": "Y", "spice": "TFF_SR", "pins": ["T", "CLK", "S", "R", "Q"], "abbr": "TFF", "category": "digital components"},
+            {"name": "jkff_sr", "prefix": "Y", "spice": "JKFF_SR", "pins": ["J", "K", "CLK", "S", "R", "Q"], "abbr": "JKSR", "category": "digital components"},
+            {"name": "dff_sr", "prefix": "Y", "spice": "DFF_SR", "pins": ["D", "CLK", "S", "R", "Q"], "abbr": "DSR", "category": "digital components"},
+            {"name": "priority_encoder", "prefix": "Y", "spice": "PRIO_ENC", "pins": ["I0", "I1", "I2", "I3", "Y1", "Y0"], "abbr": "ENC", "category": "digital components"},
+            {"name": "grey_to_bin", "prefix": "Y", "spice": "GREY2BIN", "pins": ["G0", "G1", "G2", "G3", "B0", "B1", "B2", "B3"], "abbr": "G2B", "category": "digital components"},
+            {"name": "bin_to_grey", "prefix": "Y", "spice": "BIN2GREY", "pins": ["B0", "B1", "B2", "B3", "G0", "G1", "G2", "G3"], "abbr": "B2G", "category": "digital components"},
+            {"name": "d_latch", "prefix": "Y", "spice": "DLATCH", "pins": ["D", "EN", "Q"], "abbr": "LAT", "category": "digital components"},
+            {"name": "d2a_level", "prefix": "Y", "spice": "DLS_1TON", "pins": ["DIN", "AOUT"], "abbr": "D2A", "category": "digital components", "params": [("LEVEL", "5V", "analog voltage level"), ("Delay", "1ns", "time delay")]},
+            {"name": "a2d_level", "prefix": "Y", "spice": "DLS_NTO1", "pins": ["AIN", "DOUT"], "abbr": "A2D", "category": "digital components", "params": [("LEVEL", "5V", "threshold level"), ("Delay", "1ns", "time delay")]},
+            {"name": "mux2to1", "prefix": "Y", "spice": "MUX2TO1", "pins": ["I0", "I1", "S", "Y"], "abbr": "MUX2", "category": "digital components"},
+            {"name": "mux4to1", "prefix": "Y", "spice": "MUX4TO1", "pins": ["I0", "I1", "I2", "I3", "S0", "S1", "Y"], "abbr": "MUX4", "category": "digital components"},
+            {"name": "mux8to1", "prefix": "Y", "spice": "MUX8TO1", "pins": ["I0", "I1", "I2", "I3", "I4", "I5", "I6", "I7", "S0", "S1", "S2", "Y"], "abbr": "MUX8", "category": "digital components"},
+            {"name": "demux2to4", "prefix": "Y", "spice": "DEMUX2TO4", "pins": ["IN", "S0", "S1", "Y0", "Y1", "Y2", "Y3"], "abbr": "DMX2", "category": "digital components"},
+            {"name": "demux3to8", "prefix": "Y", "spice": "DEMUX3TO8", "pins": ["IN", "S0", "S1", "S2", "Y0", "Y1", "Y2", "Y3", "Y4", "Y5", "Y6", "Y7"], "abbr": "DMX3", "category": "digital components"},
+            {"name": "demux4to16", "prefix": "Y", "spice": "DEMUX4TO16", "pins": ["IN", "S0", "S1", "S2", "S3", "Y0", "Y1", "Y2", "Y3", "Y4", "Y5", "Y6", "Y7", "Y8", "Y9", "Y10", "Y11", "Y12", "Y13", "Y14", "Y15"], "abbr": "DMX4", "category": "digital components"},
+            {"name": "andor4x2", "prefix": "Y", "spice": "ANDOR4X2", "pins": ["A0", "A1", "A2", "A3", "B0", "B1", "Y"], "abbr": "4x2", "category": "digital components"},
+            {"name": "andor4x3", "prefix": "Y", "spice": "ANDOR4X3", "pins": ["A0", "A1", "A2", "A3", "B0", "B1", "B2", "Y"], "abbr": "4x3", "category": "digital components"},
+            {"name": "andor4x4", "prefix": "Y", "spice": "ANDOR4X4", "pins": ["A0", "A1", "A2", "A3", "B0", "B1", "B2", "B3", "Y"], "abbr": "4x4", "category": "digital components"},
+            {"name": "pattern2bit", "prefix": "Y", "spice": "PAT2", "pins": ["Y0", "Y1"], "abbr": "PAT2", "category": "digital components", "params": [("Number", "0", "pattern value")]},
+            {"name": "pattern3bit", "prefix": "Y", "spice": "PAT3", "pins": ["Y0", "Y1", "Y2"], "abbr": "PAT3", "category": "digital components", "params": [("Number", "0", "pattern value")]},
+            {"name": "pattern4bit", "prefix": "Y", "spice": "PAT4", "pins": ["Y0", "Y1", "Y2", "Y3"], "abbr": "PAT4", "category": "digital components", "params": [("Number", "0", "pattern value")]},
+            {"name": "comp_1bit", "prefix": "Y", "spice": "COMP1", "pins": ["A", "B", "GT", "EQ", "LT"], "abbr": "CMP1", "category": "digital components"},
+            {"name": "comp_2bit", "prefix": "Y", "spice": "COMP2", "pins": ["A0", "A1", "B0", "B1", "GT", "EQ", "LT"], "abbr": "CMP2", "category": "digital components"},
+            {"name": "comp_4bit", "prefix": "Y", "spice": "COMP4", "pins": ["A0", "A1", "A2", "A3", "B0", "B1", "B2", "B3", "GT", "EQ", "LT"], "abbr": "CMP4", "category": "digital components"},
+            {"name": "half_adder_1bit", "prefix": "Y", "spice": "HADD1", "pins": ["A", "B", "SUM", "COUT"], "abbr": "HA", "category": "digital components"},
+            {"name": "full_adder_1bit", "prefix": "Y", "spice": "FADD1", "pins": ["A", "B", "CIN", "SUM", "COUT"], "abbr": "FA1", "category": "digital components"},
+            {"name": "full_adder_2bit", "prefix": "Y", "spice": "FADD2", "pins": ["A0", "A1", "B0", "B1", "CIN", "S0", "S1", "COUT"], "abbr": "FA2", "category": "digital components"},
+        ]
+
+        catalog: dict[str, tuple[dict, None]] = {}
+        for spec in descriptors:
+            params = [{"name": p[0], "default": p[1], "description": p[2]} for p in spec.get("params", [])]
+            catalog[spec["name"]] = self._qucs_block_component(
+                spec["name"],
+                spec.get("prefix", "X"),
+                spec.get("spice", spec["name"]),
+                spec.get("pins", []),
+                params,
+                spec.get("abbr", ""),
+                spec.get("category", ""),
+            )
+        return catalog
+
+    def _qucs_block_component(self, name: str, prefix: str, spice_model: str,
+                              pin_names: list[str], parameters: list[dict],
+                              abbrev: str = "", category: str = ""):
+        """Build a simple QUCS-compatible block symbol from pin metadata."""
+        pin_defs: list[dict] = []
+        n = max(1, len(pin_names))
+        left_count = (n + 1) // 2
+        right_count = n - left_count
+        max_side = max(left_count, right_count, 1)
+        pitch = 16
+        half_span = max(16, (max_side - 1) * pitch // 2)
+        rect_x1, rect_x2 = -24, 24
+        rect_y1, rect_y2 = -half_span - 10, half_span + 10
+
+        def side_y(index: int, count: int) -> int:
+            if count <= 1:
+                return 0
+            return int(round((-((count - 1) / 2.0) + index) * pitch))
+
+        shapes = [{"type": "rect", "x": rect_x1, "y": rect_y1, "w": rect_x2 - rect_x1, "h": rect_y2 - rect_y1}]
+
+        left_names = pin_names[:left_count]
+        right_names = pin_names[left_count:]
+
+        for idx, pname in enumerate(left_names):
+            y = side_y(idx, len(left_names))
+            pin_defs.append({"name": pname, "x": -44, "y": y, "direction": "input"})
+            shapes.append({"type": "line", "x1": -44, "y1": y, "x2": rect_x1, "y2": y})
+
+        for idx, pname in enumerate(right_names):
+            y = side_y(idx, len(right_names))
+            pin_defs.append({"name": pname, "x": 44, "y": y, "direction": "output"})
+            shapes.append({"type": "line", "x1": rect_x2, "y1": y, "x2": 44, "y2": y})
+
+        if not right_names and left_names:
+            pin_defs[0]["direction"] = "inout"
+
+        marker = abbrev or name.upper()[:5]
+        shapes.append({"type": "text", "text": marker, "x": -16, "y": -6, "size": 8, "bold": True})
+
+        symbol, _ = self._primitive_symbol(
+            name=name,
+            prefix=prefix,
+            spice_model=spice_model,
+            pins=pin_defs,
+            shapes=shapes,
+            parameters=parameters,
+            label={"text": "@name", "x": 28, "y": -6},
+            description=f"QUCS-compatible {category} primitive".strip(),
+        )
+        symbol["qucs_compatible"] = True
+        symbol["qucs_category"] = category
+        return symbol, None
 
     def _primitive_symbol(self, name: str, prefix: str, spice_model: str,
                           pins: list[dict], shapes: list[dict],

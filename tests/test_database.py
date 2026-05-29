@@ -102,6 +102,13 @@ class TestLibraryDatabase(unittest.TestCase):
         self.assertTrue(self.db.cell_exists("primitives", "nmos"))
         self.assertTrue(self.db.cell_exists("primitives", "pmos"))
 
+    def test_workspace_schema_state_created(self):
+        state = Path(self.test_dir) / ".lumen_schema.json"
+        self.assertTrue(state.exists())
+        with open(state, "r") as f:
+            data = json.load(f)
+        self.assertGreaterEqual(int(data.get("version", 0)), 2)
+
     def test_primitives_include_analoglib_style_catalog(self):
         """Test that the built-in catalog exposes common analogLib-style cells."""
         expected_cells = {
@@ -118,6 +125,38 @@ class TestLibraryDatabase(unittest.TestCase):
 
         self.assertTrue(expected_cells.issubset(cells))
         for cell in expected_cells:
+            self.assertTrue(self.db.view_exists("primitives", cell, "symbol"))
+
+    def test_primitives_include_qucs_component_families(self):
+        """Built-ins should include QUCS-compatible lumped/source/nonlinear/system/digital components."""
+        expected_qucs_cells = {
+            # Lumped
+            "dc_block", "dc_feed", "bias_t", "attenuator", "isolator",
+            "circulator", "phase_shifter", "coupler_ideal", "hybrid",
+            "voltage_probe", "time_switch", "relay", "transformer_ideal",
+            "transformer_sym", "mutual_ind_3",
+            # Sources
+            "ac_power", "am_vsource", "pm_vsource", "noise_vsource",
+            "noise_isource", "pulse_vsingle", "pulse_isingle",
+            "pulse_vrect", "pulse_irect", "pulse_vexp", "pulse_iexp",
+            "file_vsource", "file_isource", "noise_corr", "noise_corr_v",
+            "noise_corr_i",
+            # Nonlinear
+            "diac", "thyristor", "triac", "mos_depl", "mos_bulk",
+            "hjt_sub", "ekv26mos_va", "mesfet_va", "fbh_hbt_va",
+            # System
+            "eqn_device", "eqn_rf_device", "eqn_rf_2port", "sparam_file",
+            "spice_netlist", "subckt_file", "vhdl_file", "verilog_file",
+            # Digital
+            "digital_source", "gate_or", "gate_nor", "gate_and", "gate_nand",
+            "gate_xor", "gate_xnor", "inverter_dig", "buffer_dig",
+            "dff", "rsff", "jkff", "logic0", "logic1", "mux2to1",
+            "mux4to1", "mux8to1", "demux2to4", "demux3to8", "demux4to16",
+            "half_adder_1bit", "full_adder_1bit", "full_adder_2bit",
+        }
+        cells = set(self.db.get_cells("primitives"))
+        self.assertTrue(expected_qucs_cells.issubset(cells))
+        for cell in expected_qucs_cells:
             self.assertTrue(self.db.view_exists("primitives", cell, "symbol"))
 
     def test_primitive_symbols_have_meaningful_markings(self):

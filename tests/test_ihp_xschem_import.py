@@ -6,7 +6,12 @@ from lumen.core.pdk_unified import PDKRegistry
 from lumen.core.xschem_symbol_import import XschemSymbolParser
 
 
-IHP_XSCHEM_ROOT = Path(r"C:\EDA\ihp_pdk\ihp-sg13g2\libs.tech\xschem")
+_IHP_XSCHEM_CANDIDATES = [
+    Path(r"C:\EDA\LumenCircuitStudio\external\ihp_pdk\ihp-sg13g2\libs.tech\xschem"),
+    Path(r"C:\EDA\LumenCircuitStudio\ihp_pdk\ihp-sg13g2\libs.tech\xschem"),
+    Path(r"C:\EDA\ihp_pdk\ihp-sg13g2\libs.tech\xschem"),
+]
+IHP_XSCHEM_ROOT = next((p for p in _IHP_XSCHEM_CANDIDATES if p.exists()), _IHP_XSCHEM_CANDIDATES[0])
 
 
 @unittest.skipUnless(IHP_XSCHEM_ROOT.exists(), "Local IHP Open PDK xschem library not installed")

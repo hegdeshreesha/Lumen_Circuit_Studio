@@ -20,7 +20,7 @@ from PyQt6.QtGui import QAction, QFont, QColor
 from lumen.core.database import LibraryDatabase
 from lumen.core.netlist import NetlistGenerator, NetlistDirectives
 from lumen.core.simulator import SimulatorBridge, SIMULATOR_INFO, get_supported_analyses, get_simulator_label
-from lumen.core.pdk_unified import PDKRegistry
+from lumen.core.pdk_service import get_registry
 from lumen.gui.branding import apply_window_branding
 
 
@@ -598,7 +598,7 @@ class ADEWindow(QMainWindow):
         """Create a PDK registry scoped to the design workspace."""
         workspace = str(getattr(self.db, "workspace", "")) or ""
         try:
-            return PDKRegistry(workspace)
+            return get_registry(workspace)
         except Exception as exc:
             self._startup_warnings.append(f"PDK registry unavailable: {exc}")
             return None
@@ -1239,6 +1239,7 @@ class ADEWindow(QMainWindow):
 
     def _build_full_netlist(self) -> str:
         gen = NetlistGenerator(self.db)
+        gen.set_target_simulator(self._current_simulator)
 
         # Configure directives from SimENV
         directives = NetlistDirectives()
@@ -1323,6 +1324,7 @@ class ADEWindow(QMainWindow):
         netlists = []
         for corner in corners:
             gen = NetlistGenerator(self.db)
+            gen.set_target_simulator(self._current_simulator)
 
             directives = NetlistDirectives()
             self._configure_pdk_model_directives(

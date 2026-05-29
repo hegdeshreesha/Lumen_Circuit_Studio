@@ -16,16 +16,16 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("Lumen Circuit Studio")
     app.setOrganizationName("LumenEDA")
-    app.setApplicationVersion("0.3.0")
+    app.setApplicationVersion("0.5.0")
     app.setWindowIcon(app_icon())
     app.setFont(QFont("Segoe UI", 9))
 
     apply_theme(app)
 
-    from lumen.gui.ciw_window import CIWWindow
-    ciw = CIWWindow()
-    ciw.show()
-    ciw.open_library_manager()
+    from lumen.gui.apw_window import APWWindow
+    apw = APWWindow()
+    apw.show()
+    apw.open_library_manager()
 
     return app.exec()
 

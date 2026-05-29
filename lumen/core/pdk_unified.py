@@ -720,21 +720,32 @@ class PDKRegistry:
         if pdk.root_path:
             candidates.append(Path(pdk.root_path))
 
-        eda_root = Path("C:/EDA")
+        workspace_root = Path(self.workspace).resolve() if self.workspace else Path.cwd().resolve()
+        eda_root = workspace_root.parent if workspace_root.name.lower() == "lumencircuitstudio" else Path("C:/EDA")
         if pdk.name == "ihp_sg13g2":
             candidates.extend([
+                workspace_root / "external" / "ihp_pdk" / "ihp-sg13g2",
+                workspace_root / "ihp_pdk" / "ihp-sg13g2",
+                eda_root / "LumenCircuitStudio" / "external" / "ihp_pdk" / "ihp-sg13g2",
+                eda_root / "LumenCircuitStudio" / "ihp_pdk" / "ihp-sg13g2",
                 eda_root / "ihp_pdk" / "ihp-sg13g2",
                 eda_root / "ihp-sg13g2",
                 eda_root / "IHP-Open-PDK" / "ihp-sg13g2",
             ])
         elif pdk.name == "sky130":
             candidates.extend([
+                workspace_root / "external" / "xschem_sky130",
+                workspace_root / "xschem_sky130",
+                eda_root / "LumenCircuitStudio" / "external" / "xschem_sky130",
+                eda_root / "LumenCircuitStudio" / "xschem_sky130",
                 eda_root / "skywater-pdk",
                 eda_root / "sky130A",
                 eda_root / "xschem_sky130",
             ])
         elif pdk.name == "gf180mcu":
             candidates.extend([
+                eda_root / "LumenCircuitStudio" / "gf180mcu-pdk",
+                eda_root / "LumenCircuitStudio" / "gf180mcu",
                 eda_root / "gf180mcu-pdk",
                 eda_root / "gf180mcu",
             ])
@@ -752,7 +763,7 @@ class PDKRegistry:
 
     def _enrich_ihp_from_xschem(self, pdk: PDKInfo) -> None:
         """Use IHP's shipped Xschem libraries as the visible device catalog."""
-        root = Path(pdk.root_path) if pdk.root_path else Path("C:/EDA/ihp_pdk/ihp-sg13g2")
+        root = Path(pdk.root_path) if pdk.root_path else Path(self.workspace) / "external" / "ihp_pdk" / "ihp-sg13g2"
         xschem_root = root / "libs.tech" / "xschem"
         if not xschem_root.exists():
             return

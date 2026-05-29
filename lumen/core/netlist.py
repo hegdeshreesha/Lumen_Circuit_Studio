@@ -10,10 +10,14 @@ Supports two connectivity models:
 """
 import os
 import math
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional, Any
 from lumen.core.database import LibraryDatabase
 from lumen.core.connectivity import ConnectivityEngine
+from lumen.core.component_validation import validate_symbol_params, parse_spice_number
+from lumen.core.component_imports import validate_system_component
+from lumen.core.component_capabilities import is_supported
 
 
 @dataclass
@@ -46,6 +50,10 @@ class NetlistGenerator:
         self._use_connectivity = use_connectivity
         self._connectivity: Optional[ConnectivityEngine] = None
         self._pdk_registry: Any = None
+        self._target_simulator = "GSPICE"
+        self._dynamic_includes: set[str] = set()
+        self._custom_blocks: list[str] = []
+        self._spfile_subckt_added = False
 
     def set_pdk_model(self, model_path: str, corner: str = ""):
         """Set PDK model file path and optional corner for .lib inclusion."""
@@ -55,6 +63,10 @@ class NetlistGenerator:
     def set_use_connectivity(self, use: bool):
         """Enable/disable the new ConnectivityEngine."""
         self._use_connectivity = use
+
+    def set_target_simulator(self, simulator: str):
+        """Set target simulator for capability-aware netlisting."""
+        self._target_simulator = str(simulator or "GSPICE").upper()
 
     def generate(self, library: str, cell: str,
                  view: str = "schematic", flat: bool = True) -> str:
@@ -73,6 +85,9 @@ class NetlistGenerator:
         self._warnings = []
         self._net_counter = 0
         self._connectivity = None
+        self._dynamic_includes = set()
+        self._custom_blocks = []
+        self._spfile_subckt_added = False
 
         data = self.db.load_view(library, cell, view)
         if not data:
@@ -84,7 +99,8 @@ class NetlistGenerator:
         lines.append(f"*")
 
         # PDK model includes
-        lines.extend(self._generate_pdk_includes())
+        initial_include_lines = self._generate_pdk_includes()
+        lines.extend(initial_include_lines)
 
         # Build net connectivity map
         if self._use_connectivity:
@@ -117,6 +133,18 @@ class NetlistGenerator:
             lines.extend(f"  {l}" for l in inst_lines)
             lines.append(f".ENDS {cell}")
 
+        include_seen = set(initial_include_lines)
+        late_include_lines = [line for line in self._generate_pdk_includes() if line not in include_seen]
+        if late_include_lines:
+            lines.append("")
+            lines.append("* Dynamic Includes")
+            lines.extend(late_include_lines)
+
+        if self._custom_blocks:
+            lines.append("")
+            lines.append("* Generated Helper Subcircuits")
+            lines.extend(self._custom_blocks)
+
         # Generate convergence helpers (.NODESET, .IC)
         lines.extend(self._generate_convergence_helpers())
 
@@ -131,6 +159,16 @@ class NetlistGenerator:
         lines.append("")
 
         return "\n".join(lines)
+
+    def _add_dynamic_include(self, path: str):
+        """Add a resolved include path once to directives."""
+        if not path:
+            return
+        p = str(Path(path))
+        if p in self._dynamic_includes:
+            return
+        self._dynamic_includes.add(p)
+        self._directives.includes.append({"path": p})
 
     def _generate_pdk_includes(self) -> list[str]:
         """Generate .include and .lib directives for PDK model files."""
@@ -251,9 +289,9 @@ class NetlistGenerator:
         if self._pdk_registry is not None:
             return self._pdk_registry
         try:
-            from lumen.core.pdk_unified import PDKRegistry
+            from lumen.core.pdk_service import get_registry
             workspace = str(getattr(self.db, "workspace", ""))
-            self._pdk_registry = PDKRegistry(workspace)
+            self._pdk_registry = get_registry(workspace)
         except Exception:
             self._pdk_registry = False
         return self._pdk_registry or None
@@ -319,29 +357,61 @@ class NetlistGenerator:
         """Return symbol-style pin dictionaries for an instance."""
         sym = self._get_symbol_or_generated(library, cell)
         if sym and isinstance(sym.get("pins", []), list):
-            return sym.get("pins", [])
+            out: list[dict] = []
+            for idx, pin in enumerate(sym.get("pins", [])):
+                rec = self._coerce_pin_record(pin, library, cell, idx)
+                if rec is not None:
+                    out.append(rec)
+            return out
 
         dev = self._resolve_pdk_device(library, cell)
         if not dev:
             return []
 
         pins: list[dict] = []
-        for pin in getattr(dev, "pins", []):
-            if isinstance(pin, dict):
-                pins.append({
-                    "name": pin.get("name", ""),
-                    "x": pin.get("x", 0),
-                    "y": pin.get("y", 0),
-                    "net_name": pin.get("net_name"),
-                })
-            else:
-                pins.append({
-                    "name": getattr(pin, "name", ""),
-                    "x": getattr(pin, "x", 0),
-                    "y": getattr(pin, "y", 0),
-                    "net_name": getattr(pin, "net_name", None),
-                })
+        for idx, pin in enumerate(getattr(dev, "pins", [])):
+            rec = self._coerce_pin_record(pin, library, cell, idx)
+            if rec is not None:
+                pins.append(rec)
         return pins
+
+    def _coerce_pin_record(self, pin: Any, library: str, cell: str, index: int) -> Optional[dict]:
+        """Normalize heterogeneous pin payloads into dict form."""
+        if isinstance(pin, dict):
+            name = str(pin.get("name", "")).strip()
+            if not name:
+                self._warnings.append(
+                    f"Ignored unnamed pin #{index + 1} in {library}/{cell}."
+                )
+                return None
+            return {
+                "name": name,
+                "x": pin.get("x", 0),
+                "y": pin.get("y", 0),
+                "net_name": pin.get("net_name"),
+            }
+
+        if isinstance(pin, str):
+            name = pin.strip()
+            if not name:
+                self._warnings.append(
+                    f"Ignored empty pin string #{index + 1} in {library}/{cell}."
+                )
+                return None
+            return {"name": name, "x": 0, "y": 0, "net_name": None}
+
+        name = str(getattr(pin, "name", "")).strip()
+        if not name:
+            self._warnings.append(
+                f"Ignored unknown pin object #{index + 1} in {library}/{cell}."
+            )
+            return None
+        return {
+            "name": name,
+            "x": getattr(pin, "x", 0),
+            "y": getattr(pin, "y", 0),
+            "net_name": getattr(pin, "net_name", None),
+        }
 
     def _pdk_term_order(self, device: Any, fallback_pins: list[dict]) -> list[str]:
         """Resolve terminal order for netlisting, CDF-style."""
@@ -781,11 +851,42 @@ class NetlistGenerator:
                 )
                 continue
             spice_model = sym.get("spice_model", "")
+            supported, reason = is_supported(spice_model, self._target_simulator)
+            if not supported:
+                self._errors.append(f"{iname} ({cell_name}): {reason}")
+                continue
+
+            validation = validate_symbol_params(sym, params, iname)
+            self._warnings.extend(validation.warnings)
+            self._errors.extend(validation.errors)
+            if validation.errors:
+                continue
+
+            import_check = validate_system_component(
+                spice_model,
+                params,
+                str(getattr(self.db, "workspace", "")),
+            )
+            resolved_import_path = ""
+            if import_check is not None:
+                if not import_check.ok:
+                    self._errors.extend(f"{iname}: {msg}" for msg in import_check.errors)
+                    continue
+                if import_check.resolved_path:
+                    resolved_import_path = import_check.resolved_path
+                    if str(spice_model).upper() not in ("SPFILE",):
+                        self._add_dynamic_include(import_check.resolved_path)
+
             if spice_model in ("gnd", "vdd", "vss", "port", "no_conn"):
                 continue
 
             prefix = sym.get("prefix", "X")
-            pin_order = [p["name"] for p in sym.get("pins", [])]
+            pin_order = self._extract_pin_order(sym, iname, lib_name, cell_name)
+            if not pin_order:
+                self._warnings.append(
+                    f"Skipping {iname}: symbol {lib_name}/{cell_name} has no valid pin names."
+                )
+                continue
 
             # Collect net names in pin order
             nets = []
@@ -827,6 +928,8 @@ class NetlistGenerator:
                 if phase:
                     line += f" {phase}"
                 lines.append(line)
+            elif spice_model == "PAC":
+                lines.extend(self._emit_pac_source(iname, nets, params))
             elif spice_model in ("VPULSE", "IPULSE"):
                 args = [
                     params.get("v1", "0"),
@@ -851,6 +954,35 @@ class NetlistGenerator:
             elif spice_model in ("VPWL", "IPWL"):
                 points = params.get("points", "0 0 1n 1")
                 lines.append(f"{iname} {net_str} PWL({points})")
+            elif spice_model in ("VAM", "VPM"):
+                uo = params.get("Uo", "0")
+                uac = params.get("Uac", "1")
+                fm = params.get("fm", "1k")
+                fc = params.get("fc", params.get("freq", "1M"))
+                if spice_model == "VAM":
+                    line = f"{iname} {net_str} AM({uo} {uac} {fm} {fc})"
+                else:
+                    line = f"{iname} {net_str} PM({uo} {uac} {fm} {fc})"
+                lines.append(line)
+            elif spice_model in ("VNOISE", "INOISE"):
+                density = params.get("En", params.get("In", "1n"))
+                src_prefix = "V" if spice_model == "VNOISE" else "I"
+                line = f"{iname} {net_str} DC 0 AC 0"
+                lines.append(f"* {iname}: {src_prefix} noise density parameter {density}")
+                lines.append(line)
+            elif spice_model in ("DIGI_SOURCE",):
+                # Analogized digital source for mixed-signal compatibility.
+                init = str(params.get("init", "low")).lower()
+                vhi = params.get("V", "1")
+                vlo = params.get("VLO", "0")
+                td = params.get("td", "1n")
+                tr = params.get("tr", "100p")
+                tf = params.get("tf", "100p")
+                pw = params.get("pw", "1n")
+                per = params.get("per", "2n")
+                v1 = vlo if init in ("0", "low", "false") else vhi
+                v2 = vhi if init in ("0", "low", "false") else vlo
+                lines.append(f"{iname} {net_str} PULSE({v1} {v2} {td} {tr} {tf} {pw} {per})")
             elif spice_model == "IPROBE":
                 lines.append(f"{iname} {net_str} DC 0")
             elif spice_model == "D":
@@ -951,12 +1083,207 @@ class NetlistGenerator:
             elif spice_model == "BI":
                 expr = params.get("expr", "0")
                 lines.append(f"{iname} {net_str} I={expr}")
+            elif spice_model in ("OR", "NOR", "AND", "NAND", "XOR", "XNOR", "INV", "BUF", "LOGIC0", "LOGIC1"):
+                lines.extend(self._emit_digital_behavioral(iname, spice_model, pin_order, nets, params))
+            elif spice_model in ("SPFILE",):
+                lines.extend(self._emit_spfile_instance(iname, nets, params, resolved_import_path))
+            elif spice_model in ("SPICE_NETLIST", "SUB_FILE"):
+                lines.append(f"* {iname}: external subcircuit from file {params.get('File', '')}")
+                lines.append(f"{iname} {net_str} {cell_name}")
+            elif spice_model in ("VHDL_FILE", "VERILOG_FILE"):
+                lines.append(f"* {iname}: HDL co-sim placeholder ({spice_model}) file={params.get('File', '')}")
+                lines.append(f"{iname} {net_str} {cell_name}")
+            elif str(spice_model).upper().endswith("_VA"):
+                model_file = params.get("ModelFile", "")
+                if model_file:
+                    from lumen.core.component_imports import validate_component_file
+                    chk = validate_component_file(
+                        str(model_file),
+                        str(getattr(self.db, "workspace", "")),
+                        (".va", ".osdi", ".so", ".dll"),
+                    )
+                    if not chk.ok:
+                        self._errors.extend(f"{iname}: {msg}" for msg in chk.errors)
+                        continue
+                    if chk.resolved_path:
+                        self._add_dynamic_include(chk.resolved_path)
+                param_str = " ".join(f"{k}={v}" for k, v in params.items() if k != "ModelFile")
+                if param_str:
+                    lines.append(f"{iname} {net_str} {spice_model} {param_str}")
+                else:
+                    lines.append(f"{iname} {net_str} {spice_model}")
             else:
                 # Generic subcircuit call with proper pin mapping
                 param_str = " ".join(f"{k}={v}" for k, v in params.items())
+                model_name = spice_model or cell_name
                 if param_str:
-                    lines.append(f"{iname} {net_str} {cell_name} {param_str}")
+                    lines.append(f"{iname} {net_str} {model_name} {param_str}")
                 else:
-                    lines.append(f"{iname} {net_str} {cell_name}")
+                    lines.append(f"{iname} {net_str} {model_name}")
 
+        return lines
+
+    def _parse_dbm(self, raw: Any, default_dbm: float = 0.0) -> float:
+        text = str(raw if raw is not None else "").strip()
+        if not text:
+            return default_dbm
+        low = text.lower()
+        if low.endswith("dbm"):
+            try:
+                return float(low[:-3].strip())
+            except ValueError:
+                return default_dbm
+        try:
+            return float(parse_spice_number(text))
+        except Exception:
+            return default_dbm
+
+    def _extract_pin_order(self, sym: dict, iname: str, lib_name: str, cell_name: str) -> list[str]:
+        """Extract pin order robustly from symbol data.
+
+        Imported or user-edited symbols may carry mixed pin encodings.
+        """
+        pins = sym.get("pins", []) if isinstance(sym, dict) else []
+        out: list[str] = []
+        for idx, pin in enumerate(pins):
+            pname = ""
+            if isinstance(pin, dict):
+                pname = str(pin.get("name", "")).strip()
+            elif isinstance(pin, str):
+                pname = pin.strip()
+            else:
+                pname = str(getattr(pin, "name", "")).strip()
+            if not pname:
+                self._warnings.append(
+                    f"{iname}: ignored unnamed pin #{idx + 1} in {lib_name}/{cell_name}."
+                )
+                continue
+            out.append(pname)
+        return out
+
+    def _emit_pac_source(self, iname: str, nets: list[str], params: dict) -> list[str]:
+        """Emit QUCS-style AC power source as a Norton equivalent."""
+        if len(nets) < 2:
+            self._errors.append(f"{iname}: PAC requires two terminals (PLUS/MINUS).")
+            return []
+
+        z_raw = params.get("Z", params.get("Z0", "50"))
+        try:
+            z_ohm = float(parse_spice_number(z_raw))
+        except Exception:
+            z_ohm = 50.0
+            self._warnings.append(f"{iname}: invalid PAC impedance '{z_raw}', defaulting to 50 ohm.")
+        z_ohm = max(z_ohm, 1e-12)
+
+        p_dbm = self._parse_dbm(params.get("P", "0dBm"), 0.0)
+        p_watt = 1e-3 * pow(10.0, p_dbm / 10.0)
+        i_ac = math.sqrt(max(0.0, 8.0 * p_watt / z_ohm))
+        phase = str(params.get("phase", "")).strip()
+
+        n_plus, n_minus = nets[0], nets[1]
+        lines = [
+            f"* {iname}: PAC Norton equivalent (P={p_dbm} dBm, Z={z_ohm} ohm)",
+            f"G{iname}_PAC {n_plus} {n_minus} {n_plus} {n_minus} {1.0 / z_ohm}",
+        ]
+        src = f"I{iname}_PAC {n_plus} {n_minus} DC 0 AC {i_ac:.9g}"
+        if phase:
+            src += f" {phase}"
+        lines.append(src)
+        return lines
+
+    def _normalize_touchstone_path(self, path: str) -> str:
+        return str(path or "").strip().replace("\\", "/").lower()
+
+    def _emit_spfile_instance(self, iname: str, nets: list[str], params: dict, resolved_path: str) -> list[str]:
+        """Emit S-parameter file component netlist lines."""
+        if len(nets) < 2:
+            self._errors.append(f"{iname}: SPFILE requires two pins (P1/P2).")
+            return []
+
+        file_param = str(params.get("File", "")).strip()
+        file_path = self._normalize_touchstone_path(resolved_path or file_param)
+        zref = params.get("Zref", params.get("Z", "50"))
+        n1, n2 = nets[0], nets[1]
+
+        if self._target_simulator == "NGSPICE":
+            subckt_name = "LUMEN_S2P_GENERIC"
+            if not self._spfile_subckt_added:
+                self._custom_blocks.extend([
+                    f".SUBCKT {subckt_name} 1 2 3 touchstone={{touchstone}} zref=50",
+                    "R1N 1 100 {-zref}",
+                    "R1P 100 101 {2*zref}",
+                    "R2N 2 200 {-zref}",
+                    "R2P 200 201 {2*zref}",
+                    "A0101 %vd 100 3 %vd 101 102 m_a0101",
+                    ".model m_a0101 xfer file=touchstone span=9",
+                    "A0102 %vd 200 3 %vd 102 3 m_a0102",
+                    ".model m_a0102 xfer file=touchstone span=9 offset=3",
+                    "A0201 %vd 100 3 %vd 201 202 m_a0201",
+                    ".model m_a0201 xfer file=touchstone span=9 offset=5",
+                    "A0202 %vd 200 3 %vd 202 3 m_a0202",
+                    ".model m_a0202 xfer file=touchstone span=9 offset=7",
+                    f".ENDS {subckt_name}",
+                ])
+                self._spfile_subckt_added = True
+            return [
+                f"* {iname}: SPFILE touchstone={file_path}",
+                f"X{iname}_SP {n1} {n2} 0 {subckt_name} touchstone=\"{file_path}\" zref={zref}",
+            ]
+
+        self._warnings.append(
+            f"{iname}: SPFILE full xfer model available in Ngspice; "
+            f"using passive fallback for {self._target_simulator}."
+        )
+        return [
+            f"* {iname}: SPFILE fallback for {self._target_simulator} file={file_path}",
+            f"R{iname}_SP {n1} {n2} {zref}",
+        ]
+
+    def _emit_digital_behavioral(self, iname: str, spice_model: str,
+                                 pin_order: list[str], nets: list[str],
+                                 params: dict) -> list[str]:
+        """Emit simple analog behavioral approximations for digital primitives."""
+        mapping = {pin_order[i]: nets[i] for i in range(min(len(pin_order), len(nets)))}
+        vhi = params.get("VHI", "1")
+        vlo = params.get("VLO", "0")
+        th = params.get("TH", "0.5")
+        lines: list[str] = []
+
+        def lv(net: str) -> str:
+            return f"(V({net})>{th})"
+
+        if spice_model == "LOGIC0":
+            y = mapping.get("Y", mapping.get("OUT", nets[0] if nets else "0"))
+            lines.append(f"V{iname}_const {y} 0 DC {vlo}")
+            return lines
+        if spice_model == "LOGIC1":
+            y = mapping.get("Y", mapping.get("OUT", nets[0] if nets else "0"))
+            lines.append(f"V{iname}_const {y} 0 DC {vhi}")
+            return lines
+
+        if spice_model in ("INV", "BUF"):
+            a = mapping.get("A", mapping.get("IN", "0"))
+            y = mapping.get("Y", mapping.get("OUT", "0"))
+            expr = f"{vhi}*({lv(a)})"
+            if spice_model == "INV":
+                expr = f"{vhi}*(1-({lv(a)}))"
+            lines.append(f"B{iname} {y} 0 V={expr}")
+            return lines
+
+        a = mapping.get("A", "0")
+        b = mapping.get("B", "0")
+        y = mapping.get("Y", mapping.get("OUT", "0"))
+        if spice_model == "AND":
+            cond = f"({lv(a)}&&{lv(b)})"
+        elif spice_model == "NAND":
+            cond = f"!( {lv(a)}&&{lv(b)} )"
+        elif spice_model == "OR":
+            cond = f"({lv(a)}||{lv(b)})"
+        elif spice_model == "NOR":
+            cond = f"!( {lv(a)}||{lv(b)} )"
+        elif spice_model == "XOR":
+            cond = f"(({lv(a)})!=({lv(b)}))"
+        else:  # XNOR
+            cond = f"(({lv(a)})==({lv(b)}))"
+        lines.append(f"B{iname} {y} 0 V=({vhi})*({cond})")
         return lines

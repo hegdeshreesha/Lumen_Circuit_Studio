@@ -33,7 +33,7 @@ class LibraryManagerWindow(QMainWindow):
     def __init__(self, db: LibraryDatabase, ciw=None, parent=None):
         super().__init__(parent)
         self.db = db
-        self.ciw = ciw  # Reference to CIW for opening editors
+        self.ciw = ciw  # Reference to APW for opening editors
         self.setWindowTitle("Lumen — Library Manager")
         apply_window_branding(self)
         self.setMinimumSize(900, 550)
@@ -384,7 +384,7 @@ class LibraryManagerWindow(QMainWindow):
             self._open_editor(self._selected_library, self._selected_cell, view)
 
     def _open_editor(self, library: str, cell: str, view: str):
-        """Ask the CIW to open the appropriate editor."""
+        """Ask the APW to open the appropriate editor."""
         if self.ciw:
             if view in ("schematic", "symbol"):
                 self.ciw.open_schematic_editor(library, cell, view)
