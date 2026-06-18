@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QAction, QKeySequence
+from pathlib import Path
 
 from lumen.core.database import LibraryDatabase
 from lumen.gui.symbol_editor import SymbolEditor
@@ -385,7 +386,21 @@ class SymbolEditorWindow(QMainWindow):
         if not ok or not cell:
             return
         if not self.db.cell_exists(self.library, cell):
-            self.db.create_cell(self.library, cell)
+            try:
+                lib_info = self.db.get_library(self.library)
+                default_cell_path = str(Path(lib_info.path) / cell) if lib_info else cell
+                cell_path, ok_path = QInputDialog.getText(
+                    self,
+                    "New Cell Path",
+                    f"Path for {self.library}/{cell}:",
+                    text=default_cell_path,
+                )
+                if not ok_path or not cell_path.strip():
+                    return
+                self.db.create_cell(self.library, cell, cell_path.strip())
+            except ValueError as exc:
+                QMessageBox.warning(self, "New Symbol", str(exc))
+                return
         win = SymbolEditorWindow(self.db, self.library, cell, "symbol", self.ciw)
         win.show()
         self._child_window = win
@@ -408,7 +423,21 @@ class SymbolEditorWindow(QMainWindow):
         data["name"] = cell
         data["library"] = self.library
         if not self.db.cell_exists(self.library, cell):
-            self.db.create_cell(self.library, cell)
+            try:
+                lib_info = self.db.get_library(self.library)
+                default_cell_path = str(Path(lib_info.path) / cell) if lib_info else cell
+                cell_path, ok_path = QInputDialog.getText(
+                    self,
+                    "New Cell Path",
+                    f"Path for {self.library}/{cell}:",
+                    text=default_cell_path,
+                )
+                if not ok_path or not cell_path.strip():
+                    return
+                self.db.create_cell(self.library, cell, cell_path.strip())
+            except ValueError as exc:
+                QMessageBox.warning(self, "Save Symbol As", str(exc))
+                return
         self.db.save_view(self.library, cell, "symbol", data)
         self.statusBar().showMessage(f"Saved symbol as {self.library}/{cell}/symbol", 3000)
 

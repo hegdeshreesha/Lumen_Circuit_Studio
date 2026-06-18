@@ -11,13 +11,16 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QSize, QThread
 from PyQt6.QtGui import QAction, QKeySequence
+from pathlib import Path
 
 from lumen.core.database import LibraryDatabase
 from lumen.core.layout_xl import LayoutXLService
+from lumen.core.simulator_runtime import SimulatorRuntimeManager
 from lumen.gui.schematic_editor import SchematicEditor
 from lumen.gui.property_editor import PropertyEditorWidget
 from lumen.gui.branding import apply_window_branding
 from lumen.gui.icons import editor_icon
+from lumen.gui.simulator_manager_window import ensure_simulator_available
 
 
 class SchematicEditorWindow(QMainWindow):
@@ -171,7 +174,7 @@ class SchematicEditorWindow(QMainWindow):
         # Simulation
         self.act_check_save = QAction("Check && Save", self)
         self.act_check_save.setShortcut(QKeySequence("Ctrl+Shift+S"))
-        self.act_check_save.triggered.connect(self._on_save)
+        self.act_check_save.triggered.connect(self._on_check_save)
 
         self.act_netlist = QAction("Generate Netlist", self)
         self.act_netlist.setShortcut(QKeySequence("Ctrl+Shift+N"))
@@ -181,7 +184,7 @@ class SchematicEditorWindow(QMainWindow):
         self.act_simulate.setShortcut(QKeySequence("F5"))
         self.act_simulate.triggered.connect(self._on_simulate)
 
-        self.act_waveform = QAction("Waveform Viewer", self)
+        self.act_waveform = QAction("SigView", self)
         self.act_waveform.triggered.connect(self._on_open_waveform)
 
         # Layout integration actions
@@ -522,8 +525,22 @@ class SchematicEditorWindow(QMainWindow):
             self, "New Cellview", "View:", ["schematic", "symbol", "veriloga", "config"], 0, False)
         if not ok:
             return
-        if not self.db.cell_exists(self.library, cell):
-            self.db.create_cell(self.library, cell)
+        try:
+            if not self.db.cell_exists(self.library, cell):
+                lib_info = self.db.get_library(self.library)
+                default_cell_path = str(Path(lib_info.path) / cell) if lib_info else cell
+                cell_path, ok_path = QInputDialog.getText(
+                    self,
+                    "New Cell Path",
+                    f"Path for {self.library}/{cell}:",
+                    text=default_cell_path,
+                )
+                if not ok_path or not cell_path.strip():
+                    return
+                self.db.create_cell(self.library, cell, cell_path.strip())
+        except ValueError as exc:
+            QMessageBox.warning(self, "New Cellview", str(exc))
+            return
         if view == "schematic":
             self.db.save_view(self.library, cell, view, {
                 "type": "schematic", "name": cell, "library": self.library,
@@ -552,20 +569,30 @@ class SchematicEditorWindow(QMainWindow):
         view, ok = QInputDialog.getItem(self, "Open Cellview", "View:", views, 0, False)
         if not ok:
             return
-        if view == "symbol":
-            from lumen.gui.symbol_editor_window import SymbolEditorWindow
-            win = SymbolEditorWindow(self.db, self.library, cell, view, self.ciw)
-        else:
-            win = SchematicEditorWindow(self.db, self.library, cell, view, self.ciw)
-        win.show()
-        self._child_window = win
+        self._child_window = self._open_cellview_window(self.library, cell, view)
 
     def _on_save_as(self):
         cell, ok = QInputDialog.getText(
             self, "Save As", "New cell name:", text=f"{self.cell}_copy")
         if not ok or not cell:
             return
-        self.editor.save_as(self.library, cell, self.view)
+        try:
+            cell_path = ""
+            if not self.db.cell_exists(self.library, cell):
+                lib_info = self.db.get_library(self.library)
+                default_cell_path = str(Path(lib_info.path) / cell) if lib_info else cell
+                cell_path, ok_path = QInputDialog.getText(
+                    self,
+                    "New Cell Path",
+                    f"Path for {self.library}/{cell}:",
+                    text=default_cell_path,
+                )
+                if not ok_path or not cell_path.strip():
+                    return
+            self.editor.save_as(self.library, cell, self.view, cell_path.strip())
+        except ValueError as exc:
+            QMessageBox.warning(self, "Save As", str(exc))
+            return
         self.statusBar().showMessage(f"Saved as {self.library}/{cell}/{self.view}", 3000)
 
     def _on_export_image(self):
@@ -844,29 +871,78 @@ class SchematicEditorWindow(QMainWindow):
         if not inst:
             QMessageBox.information(self, "Descend", "Select an instance to descend into.")
             return
-        if not self.db.view_exists(inst.library_name, inst.cell_name, "schematic"):
+        views = self.db.get_views(inst.library_name, inst.cell_name)
+        if not views:
             QMessageBox.information(
                 self,
                 "Descend",
-                f"{inst.library_name}/{inst.cell_name} has no schematic view.",
+                f"{inst.library_name}/{inst.cell_name} has no views to descend into.",
             )
             return
-        self._hierarchy_stack.append((self.library, self.cell, self.view))
-        win = SchematicEditorWindow(
-            self.db, inst.library_name, inst.cell_name, "schematic", self.ciw)
-        win._hierarchy_stack = list(self._hierarchy_stack)
-        win.show()
-        self._child_window = win
+        preferred = "schematic" if "schematic" in views else views[0]
+        view, ok = QInputDialog.getItem(
+            self,
+            "Descend",
+            f"Select view for {inst.library_name}/{inst.cell_name}:",
+            views,
+            views.index(preferred),
+            False,
+        )
+        if not ok or not view:
+            return
+
+        new_stack = list(self._hierarchy_stack) + [(self.library, self.cell, self.view)]
+        self._child_window = self._open_cellview_window(
+            inst.library_name,
+            inst.cell_name,
+            view,
+            hierarchy_stack=new_stack,
+        )
 
     def _on_return(self):
         if not self._hierarchy_stack:
             QMessageBox.information(self, "Return", "Already at the top of this edit stack.")
             return
         library, cell, view = self._hierarchy_stack.pop()
-        win = SchematicEditorWindow(self.db, library, cell, view, self.ciw)
-        win._hierarchy_stack = list(self._hierarchy_stack)
-        win.show()
-        self._child_window = win
+        self._child_window = self._open_cellview_window(
+            library, cell, view, hierarchy_stack=list(self._hierarchy_stack)
+        )
+
+    def _open_cellview_window(self, library: str, cell: str, view: str,
+                              hierarchy_stack: list[tuple[str, str, str]] | None = None):
+        """Open any view using the best editor available."""
+        if view == "schematic":
+            win = SchematicEditorWindow(self.db, library, cell, view, self.ciw)
+            if hierarchy_stack is not None:
+                win._hierarchy_stack = list(hierarchy_stack)
+            win.show()
+            return win
+
+        if view == "symbol":
+            from lumen.gui.symbol_editor_window import SymbolEditorWindow
+            win = SymbolEditorWindow(self.db, library, cell, view, self.ciw)
+            win.show()
+            return win
+
+        if view == "simenv":
+            if library == self.library and cell == self.cell:
+                return self.open_simenv_tab()
+            if self.ciw and hasattr(self.ciw, "open_ade"):
+                self.ciw.open_ade(library, cell)
+                return None
+
+        # For non-graphical views, use generic text/JSON editor.
+        try:
+            from lumen.gui.cellview_window import CellViewWindow
+            win = CellViewWindow(self.db, library, cell, view, ciw=self.ciw)
+            win.show()
+            return win
+        except Exception:
+            # If APW has central opening logic, fall back to it.
+            if self.ciw and hasattr(self.ciw, "open_cellview"):
+                self.ciw.open_cellview(library, cell, view)
+                return None
+            raise
 
     def _on_command_palette(self):
         commands = [
@@ -971,6 +1047,32 @@ class SchematicEditorWindow(QMainWindow):
             self.ciw.log(f"Saved: {self.library}/{self.cell}/{self.view}")
         self.statusBar().showMessage("Saved", 3000)
 
+    def _on_check_save(self):
+        """Cadence-style check-and-save with visible floating-terminal markers."""
+        self.editor.save()
+        issues = self.editor.check_connectivity(show_markers=True)
+        if self.ciw:
+            self.ciw.log(f"Check && Save: {self.library}/{self.cell}/{self.view}")
+            for issue in issues:
+                self.ciw.log(f"  WARNING: {issue}")
+
+        if issues:
+            shown = "\n".join(f"- {issue}" for issue in issues[:12])
+            extra = ""
+            if len(issues) > 12:
+                extra = f"\n- ... {len(issues) - 12} more warning(s)"
+            QMessageBox.warning(
+                self,
+                "Check && Save Warnings",
+                "Schematic saved, but floating terminals were found:\n\n"
+                f"{shown}{extra}\n\n"
+                "The affected terminals are flashing in red on the schematic.",
+            )
+            self.statusBar().showMessage(
+                f"Saved with {len(issues)} connectivity warning(s)", 7000)
+        else:
+            self.statusBar().showMessage("Check && Save passed", 4000)
+
     def _on_generate_netlist(self):
         """Generate and display the SPICE netlist."""
         try:
@@ -1004,15 +1106,28 @@ class SchematicEditorWindow(QMainWindow):
 
     def _on_simulate(self):
         """Generate netlist and run GSPICE simulation."""
+        if (
+            self._simenv_tab is not None
+            and self.workspace_tabs.currentWidget() is self._simenv_tab
+            and hasattr(self._simenv_tab, "_on_run")
+        ):
+            self._simenv_tab._on_run()
+            return
+
         try:
             self.editor.save()
             from lumen.core.netlist import NetlistGenerator
-            from lumen.core.simulator import SimulatorBridge
+            from lumen.core.simulator import SimulatorBridge, ensure_direct_run_analysis
+            import re
 
             gen = NetlistGenerator(self.db)
             gen.set_target_simulator("GSPICE")
             netlist = gen.generate(self.library, self.cell, self.view)
+            netlist, quick_note = ensure_direct_run_analysis(netlist)
             self.netlist_view.setPlainText(netlist)
+            if quick_note:
+                self.netlist_view.append(f"\n* INFO: {quick_note}")
+                self.netlist_view.append("* TIP: Use SimENV to set exact Transient/AC/DC analyses.")
         except Exception as exc:
             import traceback
             details = traceback.format_exc()
@@ -1025,7 +1140,18 @@ class SchematicEditorWindow(QMainWindow):
             self.statusBar().showMessage("Simulation aborted (netlist failure)", 5000)
             return
 
-        bridge = SimulatorBridge()
+        workspace = str(getattr(self.db, "workspace", ""))
+        runtime = SimulatorRuntimeManager(workspace)
+        runtime.apply_environment_overrides()
+        bridge = SimulatorBridge("GSPICE", exe_path=runtime.get_active_executable("GSPICE"))
+        if not bridge.is_available():
+            ready = ensure_simulator_available(self, workspace, "GSPICE", logger=self.ciw.log if self.ciw else None)
+            if ready:
+                runtime = SimulatorRuntimeManager(workspace)
+                runtime.apply_environment_overrides()
+                bridge = SimulatorBridge("GSPICE", exe_path=runtime.get_active_executable("GSPICE"))
+            else:
+                return
         if not bridge.is_available():
             self.netlist_view.append(
                 "\n* GSPICE not found. Netlist generated but simulation skipped.")
@@ -1045,7 +1171,12 @@ class SchematicEditorWindow(QMainWindow):
 
         if result.success:
             self.netlist_view.append(f"\n* Simulation completed successfully")
-            self.netlist_view.append(f"* Output: {result.output_path}")
+            if result.output_path:
+                self.netlist_view.append(f"* Output: {result.output_path}")
+            elif result.artifacts.get("waveforms"):
+                self.netlist_view.append(f"* Output: {result.artifacts.get('waveforms')}")
+            else:
+                self.netlist_view.append("* Output: (no RAW file generated by this simulator run)")
             if self.ciw:
                 self.ciw.log("Simulation completed successfully")
             # Open waveform viewer with results
@@ -1070,9 +1201,9 @@ class SchematicEditorWindow(QMainWindow):
             "Simulation done" if result.success else "Simulation failed", 5000)
 
     def _show_waveforms(self, waveforms: dict):
-        """Open the waveform viewer with results."""
-        from lumen.gui.waveform_viewer import WaveformViewerWindow
-        viewer = WaveformViewerWindow(parent=None)
+        """Open SigView with simulation results."""
+        from lumen.gui.waveform_viewer import SigViewWindow
+        viewer = SigViewWindow(parent=None)
         viewer.load_results(waveforms)
         viewer.show()
         # Keep reference so window isn't garbage collected
@@ -1081,9 +1212,9 @@ class SchematicEditorWindow(QMainWindow):
         self._waveform_viewers.append(viewer)
 
     def _on_open_waveform(self):
-        """Open an empty waveform viewer."""
-        from lumen.gui.waveform_viewer import WaveformViewerWindow
-        viewer = WaveformViewerWindow(parent=None)
+        """Open an empty SigView window."""
+        from lumen.gui.waveform_viewer import SigViewWindow
+        viewer = SigViewWindow(parent=None)
         viewer.show()
         if not hasattr(self, '_waveform_viewers'):
             self._waveform_viewers = []

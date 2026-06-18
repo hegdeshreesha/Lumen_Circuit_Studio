@@ -68,6 +68,14 @@ class NetlistGenerator:
         """Set target simulator for capability-aware netlisting."""
         self._target_simulator = str(simulator or "GSPICE").upper()
 
+    @staticmethod
+    def _as_float(value: object, default: float = 0.0) -> float:
+        """Best-effort float conversion for legacy/string schematic values."""
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
     def generate(self, library: str, cell: str,
                  view: str = "schematic", flat: bool = True) -> str:
         """Generate a SPICE netlist for the given cell.
@@ -526,7 +534,9 @@ class NetlistGenerator:
                 parent[ra] = rb
 
         def snap(val, grid=10):
-            return round(val / grid) * grid
+            v = self._as_float(val, 0.0)
+            g = self._as_float(grid, 10.0) or 10.0
+            return int(round(v / g) * g)
 
         # Process wires — union their endpoints and intermediate points
         for w in data.get("wires", []):
@@ -607,7 +617,7 @@ class NetlistGenerator:
             cell_name = inst.get("cell", "")
             lib_name = inst.get("library", "")
             ix, iy = snap(inst.get("x", 0)), snap(inst.get("y", 0))
-            rotation = float(inst.get("rotation", inst.get("rot", 0)))
+            rotation = self._as_float(inst.get("rotation", inst.get("rot", 0)), 0.0)
             transform = inst.get("transform")
 
             pins = self._pins_for_instance(lib_name, cell_name)
@@ -670,8 +680,8 @@ class NetlistGenerator:
             iname = inst.get("name", "?")
             cell_name = inst.get("cell", "")
             lib_name = inst.get("library", "")
-            ix = inst.get("x", 0)
-            iy = inst.get("y", 0)
+            ix = self._as_float(inst.get("x", 0), 0.0)
+            iy = self._as_float(inst.get("y", 0), 0.0)
 
             # Skip special instances
             if cell_name in ("gnd", "vdd"):
@@ -686,7 +696,7 @@ class NetlistGenerator:
                     ix,
                     iy,
                     pins,
-                    float(inst.get("rotation", inst.get("rot", 0))),
+                    self._as_float(inst.get("rotation", inst.get("rot", 0)), 0.0),
                     inst.get("transform"),
                 )
 
@@ -747,25 +757,25 @@ class NetlistGenerator:
                             rotation: float = 0,
                             transform: dict | None = None) -> tuple[int, int]:
         """Resolve a symbol-local pin through instance mirror/rotation/translation."""
-        px = float(pin.get("x", 0))
-        py = float(pin.get("y", 0))
+        px = NetlistGenerator._as_float(pin.get("x", 0), 0.0)
+        py = NetlistGenerator._as_float(pin.get("y", 0), 0.0)
 
         if transform:
-            m11 = float(transform.get("m11", 1))
-            m12 = float(transform.get("m12", 0))
-            m21 = float(transform.get("m21", 0))
-            m22 = float(transform.get("m22", 1))
-            dx = float(transform.get("dx", 0))
-            dy = float(transform.get("dy", 0))
+            m11 = NetlistGenerator._as_float(transform.get("m11", 1), 1.0)
+            m12 = NetlistGenerator._as_float(transform.get("m12", 0), 0.0)
+            m21 = NetlistGenerator._as_float(transform.get("m21", 0), 0.0)
+            m22 = NetlistGenerator._as_float(transform.get("m22", 1), 1.0)
+            dx = NetlistGenerator._as_float(transform.get("dx", 0), 0.0)
+            dy = NetlistGenerator._as_float(transform.get("dy", 0), 0.0)
             px, py = (m11 * px) + (m21 * py) + dx, (m12 * px) + (m22 * py) + dy
 
         if rotation:
-            theta = math.radians(float(rotation))
+            theta = math.radians(NetlistGenerator._as_float(rotation, 0.0))
             c = math.cos(theta)
             s = math.sin(theta)
             px, py = (c * px) - (s * py), (s * px) + (c * py)
 
-        return round(float(x) + px), round(float(y) + py)
+        return round(NetlistGenerator._as_float(x, 0.0) + px), round(NetlistGenerator._as_float(y, 0.0) + py)
 
     def _find_crossings(self, seg1: tuple, seg2: tuple) -> list[tuple[float, float]]:
         """Find crossing points between two wire segments."""
@@ -897,6 +907,20 @@ class NetlistGenerator:
 
             net_str = " ".join(nets)
 
+            def _param_first(*keys: str, default: str = ""):
+                """Get first non-empty parameter by key, case-insensitive."""
+                for key in keys:
+                    if key in params:
+                        value = params.get(key)
+                        if value not in ("", None):
+                            return value
+                lowered = {str(k).lower(): v for k, v in params.items()}
+                for key in keys:
+                    value = lowered.get(str(key).lower(), None)
+                    if value not in ("", None):
+                        return value
+                return default
+
             # Build SPICE line based on component type
             if spice_model == "R":
                 val = params.get("R", "1k")
@@ -908,22 +932,32 @@ class NetlistGenerator:
                 val = params.get("L", "1n")
                 lines.append(f"{iname} {net_str} {val}")
             elif spice_model == "V":
-                dc = params.get("DC", "0")
-                ac = params.get("AC", "")
+                dc = _param_first("dc", "DC", default="0")
+                ac = _param_first("acmag", "AC", default="")
+                phase = _param_first("acphase", "phase", default="")
                 line = f"{iname} {net_str} DC {dc}"
                 if ac:
                     line += f" AC {ac}"
+                    if phase:
+                        line += f" {phase}"
                 lines.append(line)
             elif spice_model == "I":
-                dc = params.get("DC", "0")
-                lines.append(f"{iname} {net_str} DC {dc}")
+                dc = _param_first("dc", "DC", default="0")
+                ac = _param_first("acmag", "AC", default="")
+                phase = _param_first("acphase", "phase", default="")
+                line = f"{iname} {net_str} DC {dc}"
+                if ac:
+                    line += f" AC {ac}"
+                    if phase:
+                        line += f" {phase}"
+                lines.append(line)
             elif spice_model in ("VDC", "IDC"):
-                dc = params.get("DC", "0")
+                dc = _param_first("dc", "DC", default="0")
                 lines.append(f"{iname} {net_str} DC {dc}")
             elif spice_model in ("VAC", "IAC"):
-                dc = params.get("DC", "0")
-                ac = params.get("AC", "1")
-                phase = params.get("phase", "")
+                dc = _param_first("dc", "DC", default="0")
+                ac = _param_first("acmag", "AC", default="1")
+                phase = _param_first("acphase", "phase", default="")
                 line = f"{iname} {net_str} DC {dc} AC {ac}"
                 if phase:
                     line += f" {phase}"
@@ -931,6 +965,7 @@ class NetlistGenerator:
             elif spice_model == "PAC":
                 lines.extend(self._emit_pac_source(iname, nets, params))
             elif spice_model in ("VPULSE", "IPULSE"):
+                dc = _param_first("dc", "DC", default="0")
                 args = [
                     params.get("v1", "0"),
                     params.get("v2", "1"),
@@ -940,8 +975,10 @@ class NetlistGenerator:
                     params.get("pw", "5n"),
                     params.get("per", "10n"),
                 ]
-                lines.append(f"{iname} {net_str} PULSE({' '.join(args)})")
+                line = f"{iname} {net_str} DC {dc} PULSE({' '.join(args)})"
+                lines.append(line)
             elif spice_model in ("VSIN", "ISIN"):
+                dc = _param_first("dc", "DC", default="0")
                 args = [
                     params.get("vo", "0"),
                     params.get("va", "1"),
@@ -950,10 +987,13 @@ class NetlistGenerator:
                     params.get("theta", "0"),
                     params.get("phase", "0"),
                 ]
-                lines.append(f"{iname} {net_str} SIN({' '.join(args)})")
+                line = f"{iname} {net_str} DC {dc} SIN({' '.join(args)})"
+                lines.append(line)
             elif spice_model in ("VPWL", "IPWL"):
+                dc = _param_first("dc", "DC", default="0")
                 points = params.get("points", "0 0 1n 1")
-                lines.append(f"{iname} {net_str} PWL({points})")
+                line = f"{iname} {net_str} DC {dc} PWL({points})"
+                lines.append(line)
             elif spice_model in ("VAM", "VPM"):
                 uo = params.get("Uo", "0")
                 uac = params.get("Uac", "1")

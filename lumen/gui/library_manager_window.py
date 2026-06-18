@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QAction, QKeySequence, QBrush, QColor, QFont
+from pathlib import Path
 
 from lumen.core.database import LibraryDatabase
 from lumen.gui.branding import apply_window_branding
@@ -28,6 +29,7 @@ class LibraryManagerWindow(QMainWindow):
         "layout": "🏗",
         "config": "⚙",
         "veriloga": "📄",
+        "simenv": "[S]",
     }
 
     def __init__(self, db: LibraryDatabase, ciw=None, parent=None):
@@ -386,10 +388,10 @@ class LibraryManagerWindow(QMainWindow):
     def _open_editor(self, library: str, cell: str, view: str):
         """Ask the APW to open the appropriate editor."""
         if self.ciw:
-            if view in ("schematic", "symbol"):
-                self.ciw.open_schematic_editor(library, cell, view)
+            if hasattr(self.ciw, "open_cellview"):
+                self.ciw.open_cellview(library, cell, view)
             else:
-                self.ciw.log(f"Editor for '{view}' not yet implemented")
+                self.ciw.open_schematic_editor(library, cell, view)
         self.statusBar().showMessage(f"Opened {library}/{cell}/{view}")
 
     # ── Context Menus ─────────────────────────────────────────
@@ -483,26 +485,39 @@ class LibraryManagerWindow(QMainWindow):
 
         name, ok = QInputDialog.getText(self, "New Cell", "Cell name:")
         if ok and name:
-            self.db.create_cell(library, name)
-            # Auto-create schematic and symbol views
-            self.db.save_view(library, name, "schematic", {
-                "type": "schematic", "name": name, "library": library,
-                "instances": [], "wires": [], "labels": [], "pins": []
-            })
-            self.db.save_view(library, name, "symbol", {
-                "type": "symbol", "name": name, "library": library,
-                "pins": [], "shapes": [], "parameters": [],
-                "label": {"text": name, "x": 0, "y": 0}
-            })
-            self.refresh()
-            # Re-select the library to refresh cell list
-            for i in range(self.lib_tree.topLevelItemCount()):
-                item = self.lib_tree.topLevelItem(i)
-                if item.data(0, Qt.ItemDataRole.UserRole) == library:
-                    self.lib_tree.setCurrentItem(item)
-                    break
-            if self.ciw:
-                self.ciw.log(f"Created cell: {library}/{name}")
+            try:
+                lib_info = self.db.get_library(library)
+                default_cell_path = str(Path(lib_info.path) / name) if lib_info else name
+                cell_path, ok_path = QInputDialog.getText(
+                    self,
+                    "New Cell Path",
+                    f"Path for {library}/{name}:",
+                    text=default_cell_path,
+                )
+                if not ok_path or not cell_path.strip():
+                    return
+                self.db.create_cell(library, name, cell_path.strip())
+                # Auto-create schematic and symbol views
+                self.db.save_view(library, name, "schematic", {
+                    "type": "schematic", "name": name, "library": library,
+                    "instances": [], "wires": [], "labels": [], "pins": []
+                })
+                self.db.save_view(library, name, "symbol", {
+                    "type": "symbol", "name": name, "library": library,
+                    "pins": [], "shapes": [], "parameters": [],
+                    "label": {"text": name, "x": 0, "y": 0}
+                })
+                self.refresh()
+                # Re-select the library to refresh cell list
+                for i in range(self.lib_tree.topLevelItemCount()):
+                    item = self.lib_tree.topLevelItem(i)
+                    if item.data(0, Qt.ItemDataRole.UserRole) == library:
+                        self.lib_tree.setCurrentItem(item)
+                        break
+                if self.ciw:
+                    self.ciw.log(f"Created cell: {library}/{name}")
+            except ValueError as exc:
+                QMessageBox.warning(self, "New Cell", str(exc))
 
     def _rename_library(self, old_name: str):
         new_name, ok = QInputDialog.getText(

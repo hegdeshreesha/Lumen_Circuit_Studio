@@ -20,16 +20,17 @@ from PyQt6.QtWidgets import (
     QInputDialog, QDialog, QDialogButtonBox, QListWidget,
     QListWidgetItem, QLabel, QHBoxLayout, QApplication, QRubberBand
 )
-from PyQt6.QtCore import Qt, QPointF, QRect, QRectF, pyqtSignal, QLineF
+from PyQt6.QtCore import Qt, QPointF, QRect, QRectF, pyqtSignal, QLineF, QTimer
 from PyQt6.QtGui import (
     QPen, QBrush, QColor, QPainter, QPainterPath, QFont,
     QTransform, QWheelEvent, QKeyEvent
 )
 
 from lumen.core.database import LibraryDatabase
+from lumen.core.netlist import NetlistGenerator
 from lumen.core.commands import (
     CommandStack, AddItemCommand, DeleteItemsCommand, MoveItemsCommand,
-    CompoundCommand, RotateCommand, MirrorCommand, LabelCommand
+    SetItemPositionsCommand, CompoundCommand, RotateCommand, MirrorCommand, LabelCommand
 )
 from lumen.core.pdk_service import get_registry
 from lumen.gui.branding import apply_window_branding
@@ -49,6 +50,9 @@ SELECTION_COLOR = QColor("#533483")
 GRID_COLOR_MAJOR = QColor(35, 35, 35)
 GRID_COLOR_MINOR = QColor(25, 25, 25)
 BG_COLOR = QColor("#0a0a0a")
+NET_HIGHLIGHT_COLOR = QColor("#ffd166")
+CURRENT_MARKER_COLOR = QColor("#ff6b6b")
+CONNECTIVITY_WARNING_COLOR = QColor("#ff3b30")
 PIN_GRAVITY_RADIUS = 6.0
 WIRE_ENDPOINT_GRAVITY_RADIUS = 3.5
 
@@ -56,6 +60,11 @@ WIRE_ENDPOINT_GRAVITY_RADIUS = 3.5
 def snap(val: float) -> float:
     """Snap a value to the nearest grid point."""
     return round(val / GRID_SIZE) * GRID_SIZE
+
+
+def snap_point(pos: QPointF) -> QPointF:
+    """Snap a scene/item position to the active schematic grid."""
+    return QPointF(snap(pos.x()), snap(pos.y()))
 
 
 # ── Custom Graphics Items ────────────────────────────────────
@@ -70,9 +79,12 @@ class WireItem(QGraphicsLineItem):
         self.setPen(pen)
         self.setFlag(QGraphicsLineItem.GraphicsItemFlag.ItemIsSelectable)
         self.setFlag(QGraphicsLineItem.GraphicsItemFlag.ItemIsMovable)
+        self.setFlag(QGraphicsLineItem.GraphicsItemFlag.ItemSendsGeometryChanges)
         self.net_name = ""
 
     def itemChange(self, change, value):
+        if change == QGraphicsLineItem.GraphicsItemChange.ItemPositionChange and isinstance(value, QPointF):
+            return snap_point(value)
         if change == QGraphicsLineItem.GraphicsItemChange.ItemSelectedChange:
             if value:
                 self.setPen(QPen(SELECTION_COLOR, WIRE_WIDTH + 1))
@@ -93,6 +105,12 @@ class NetLabelItem(QGraphicsTextItem):
         self.setFont(font)
         self.setFlag(QGraphicsTextItem.GraphicsItemFlag.ItemIsSelectable)
         self.setFlag(QGraphicsTextItem.GraphicsItemFlag.ItemIsMovable)
+        self.setFlag(QGraphicsTextItem.GraphicsItemFlag.ItemSendsGeometryChanges)
+
+    def itemChange(self, change, value):
+        if change == QGraphicsTextItem.GraphicsItemChange.ItemPositionChange and isinstance(value, QPointF):
+            return snap_point(value)
+        return super().itemChange(change, value)
 
 
 class SchematicPinItem(QGraphicsItemGroup):
@@ -115,6 +133,12 @@ class SchematicPinItem(QGraphicsItemGroup):
         self.setPos(x, y)
         self.setFlag(QGraphicsItemGroup.GraphicsItemFlag.ItemIsSelectable)
         self.setFlag(QGraphicsItemGroup.GraphicsItemFlag.ItemIsMovable)
+        self.setFlag(QGraphicsItemGroup.GraphicsItemFlag.ItemSendsGeometryChanges)
+
+    def itemChange(self, change, value):
+        if change == QGraphicsItemGroup.GraphicsItemChange.ItemPositionChange and isinstance(value, QPointF):
+            return snap_point(value)
+        return super().itemChange(change, value)
 
     def _color(self) -> QColor:
         if self.pin_usage == "power":
@@ -256,6 +280,12 @@ class InstanceItem(QGraphicsItemGroup):
         self.setPos(x, y)
         self.setFlag(QGraphicsItemGroup.GraphicsItemFlag.ItemIsSelectable)
         self.setFlag(QGraphicsItemGroup.GraphicsItemFlag.ItemIsMovable)
+        self.setFlag(QGraphicsItemGroup.GraphicsItemFlag.ItemSendsGeometryChanges)
+
+    def itemChange(self, change, value):
+        if change == QGraphicsItemGroup.GraphicsItemChange.ItemPositionChange and isinstance(value, QPointF):
+            return snap_point(value)
+        return super().itemChange(change, value)
 
     def _build_graphics(self):
         """Build the visual representation from symbol data."""
@@ -611,6 +641,7 @@ class SchematicEditor(QWidget):
 
     coord_changed = pyqtSignal(float, float)
     mode_changed = pyqtSignal(str)
+    output_pick_requested = pyqtSignal(str, object)
 
     def __init__(self, db: LibraryDatabase, library: str, cell: str,
                  view: str, parent=None):
@@ -630,6 +661,7 @@ class SchematicEditor(QWidget):
         self._placement_sym_data: dict | None = None
         self._move_start_positions: dict | None = None
         self._clipboard: list[dict] = []
+        self._output_pick_mode: str = ""
 
         # Undo/redo
         self.cmd_stack = CommandStack()
@@ -640,6 +672,14 @@ class SchematicEditor(QWidget):
         self.labels: list[NetLabelItem] = []
         self.pins: list[SchematicPinItem] = []
         self.junction_dots: list[JunctionDot] = []
+        self._net_highlight_overlays: list[QGraphicsLineItem] = []
+        self._current_probe_markers: list[QGraphicsEllipseItem] = []
+        self._current_probe_labels: list[QGraphicsTextItem] = []
+        self._connectivity_warning_items: list = []
+        self._connectivity_flash_ticks = 0
+        self._connectivity_warning_timer = QTimer(self)
+        self._connectivity_warning_timer.setInterval(180)
+        self._connectivity_warning_timer.timeout.connect(self._flash_connectivity_warnings)
 
         self._setup_ui()
         self._load_data()
@@ -674,6 +714,234 @@ class SchematicEditor(QWidget):
     def redraw(self):
         self.scene.update()
         self.canvas.viewport().update()
+
+    def begin_output_pick(self, kind: str):
+        """Enter one-shot output-pick mode for SimENV voltage/current outputs."""
+        self._output_pick_mode = kind if kind in ("voltage", "current") else ""
+        if self._output_pick_mode:
+            self.set_mode("select")
+            self.canvas.setCursor(Qt.CursorShape.CrossCursor)
+
+    def cancel_output_pick(self):
+        self._output_pick_mode = ""
+        if self._mode == "select":
+            self.canvas.setCursor(Qt.CursorShape.ArrowCursor)
+
+    def clear_probe_overlays(self):
+        """Clear all visual probe overlays (net highlights + current markers)."""
+        for item in self._net_highlight_overlays:
+            self.scene.removeItem(item)
+        self._net_highlight_overlays.clear()
+
+        for item in self._current_probe_markers:
+            self.scene.removeItem(item)
+        self._current_probe_markers.clear()
+
+        for item in self._current_probe_labels:
+            self.scene.removeItem(item)
+        self._current_probe_labels.clear()
+
+    def clear_connectivity_warnings(self):
+        """Remove floating-node warning markers from the schematic canvas."""
+        self._connectivity_warning_timer.stop()
+        for item in self._connectivity_warning_items:
+            if item.scene():
+                self.scene.removeItem(item)
+        self._connectivity_warning_items.clear()
+        self._connectivity_flash_ticks = 0
+
+    def check_connectivity(self, show_markers: bool = True) -> list[str]:
+        """Run a schematic connectivity check and optionally flash warnings."""
+        if show_markers:
+            self.clear_connectivity_warnings()
+
+        issues: list[str] = []
+        try:
+            gen = NetlistGenerator(self.db)
+            gen._build_net_map_connectivity(self.to_data())
+            engine = getattr(gen, "_connectivity", None)
+            floating = engine.find_floating_pins() if engine is not None else []
+        except Exception as exc:
+            issues.append(f"Connectivity check could not complete: {exc}")
+            return issues
+
+        marker_points: list[tuple[float, float, str]] = []
+        for fp in floating:
+            inst = str(fp.get("instance", "") or "")
+            pin = str(fp.get("pin", "") or "")
+            x = float(fp.get("x", 0) or 0)
+            y = float(fp.get("y", 0) or 0)
+            if inst == "__top__":
+                text = f"Floating top-level pin {pin} at ({x:.0f}, {y:.0f})"
+            else:
+                text = f"Floating terminal {inst}.{pin} at ({x:.0f}, {y:.0f})"
+            issues.append(text)
+            marker_points.append((x, y, pin or "!"))
+
+        if show_markers and marker_points:
+            self._show_connectivity_warning_markers(marker_points)
+        return issues
+
+    def _show_connectivity_warning_markers(self, marker_points: list[tuple[float, float, str]]):
+        pen = QPen(CONNECTIVITY_WARNING_COLOR, 2.4)
+        pen.setCosmetic(True)
+        brush = QBrush(Qt.BrushStyle.NoBrush)
+        for x, y, label_text in marker_points:
+            radius = 9.0
+            marker = QGraphicsEllipseItem(x - radius, y - radius, radius * 2, radius * 2)
+            marker.setPen(pen)
+            marker.setBrush(brush)
+            marker.setZValue(120)
+            marker.setFlag(QGraphicsEllipseItem.GraphicsItemFlag.ItemIsSelectable, False)
+            marker.setFlag(QGraphicsEllipseItem.GraphicsItemFlag.ItemIsMovable, False)
+            self.scene.addItem(marker)
+            self._connectivity_warning_items.append(marker)
+
+            label = QGraphicsTextItem("!")
+            label.setDefaultTextColor(CONNECTIVITY_WARNING_COLOR)
+            label.setFont(QFont("Consolas", 11, QFont.Weight.Bold))
+            label.setPos(x + 8, y - 20)
+            label.setZValue(121)
+            label.setFlag(QGraphicsTextItem.GraphicsItemFlag.ItemIsSelectable, False)
+            label.setFlag(QGraphicsTextItem.GraphicsItemFlag.ItemIsMovable, False)
+            self.scene.addItem(label)
+            self._connectivity_warning_items.append(label)
+
+        self._connectivity_flash_ticks = 0
+        self._connectivity_warning_timer.start()
+
+    def _flash_connectivity_warnings(self):
+        if not self._connectivity_warning_items:
+            self._connectivity_warning_timer.stop()
+            return
+        self._connectivity_flash_ticks += 1
+        visible = (self._connectivity_flash_ticks % 2) == 0
+        for item in self._connectivity_warning_items:
+            item.setVisible(visible)
+        if self._connectivity_flash_ticks >= 10:
+            self._connectivity_warning_timer.stop()
+            for item in self._connectivity_warning_items:
+                item.setVisible(True)
+
+    def highlight_nets(self, net_names: list[str]):
+        """Highlight wires whose assigned net names match any selected net."""
+        names = {str(n).strip() for n in net_names if str(n).strip()}
+        for item in self._net_highlight_overlays:
+            self.scene.removeItem(item)
+        self._net_highlight_overlays.clear()
+        if not names:
+            return
+
+        pen = QPen(NET_HIGHLIGHT_COLOR, WIRE_WIDTH + 2)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setCosmetic(True)
+        resolved_wire_nets = self._wire_net_names_by_geometry() if names else {}
+        for wire in self.wires:
+            wire_net = (wire.net_name or "").strip() or resolved_wire_nets.get(id(wire), "")
+            if wire_net not in names:
+                continue
+            line = wire.line()
+            pos = wire.pos()
+            overlay = QGraphicsLineItem(
+                line.x1() + pos.x(),
+                line.y1() + pos.y(),
+                line.x2() + pos.x(),
+                line.y2() + pos.y(),
+            )
+            overlay.setPen(pen)
+            overlay.setZValue(90)
+            overlay.setFlag(QGraphicsLineItem.GraphicsItemFlag.ItemIsSelectable, False)
+            overlay.setFlag(QGraphicsLineItem.GraphicsItemFlag.ItemIsMovable, False)
+            self.scene.addItem(overlay)
+            self._net_highlight_overlays.append(overlay)
+
+    def mark_current_terminals(self, terminals: list[tuple[str, str]]):
+        """Mark selected instance terminals with visible circles."""
+        for item in self._current_probe_markers:
+            self.scene.removeItem(item)
+        self._current_probe_markers.clear()
+        for item in self._current_probe_labels:
+            self.scene.removeItem(item)
+        self._current_probe_labels.clear()
+
+        for inst_name, pin_name in terminals:
+            inst = self._find_instance_by_name(inst_name)
+            if inst is None:
+                continue
+            pin_pos = inst.get_pin_scene_pos(pin_name)
+            if pin_pos is None:
+                continue
+
+            radius = 7.0
+            marker = QGraphicsEllipseItem(
+                pin_pos.x() - radius,
+                pin_pos.y() - radius,
+                radius * 2,
+                radius * 2,
+            )
+            marker.setPen(QPen(CURRENT_MARKER_COLOR, 2))
+            marker.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+            marker.setZValue(95)
+            marker.setFlag(QGraphicsEllipseItem.GraphicsItemFlag.ItemIsSelectable, False)
+            marker.setFlag(QGraphicsEllipseItem.GraphicsItemFlag.ItemIsMovable, False)
+            self.scene.addItem(marker)
+            self._current_probe_markers.append(marker)
+
+            text = QGraphicsTextItem(f"I:{inst_name}.{pin_name}")
+            text.setDefaultTextColor(CURRENT_MARKER_COLOR)
+            text.setFont(QFont("Consolas", 8, QFont.Weight.Bold))
+            text.setPos(pin_pos.x() + 8, pin_pos.y() - 16)
+            text.setZValue(96)
+            self.scene.addItem(text)
+            self._current_probe_labels.append(text)
+
+    def _find_instance_by_name(self, name: str) -> InstanceItem | None:
+        target = str(name or "").strip()
+        if not target:
+            return None
+        for inst in self.instances:
+            if inst.instance_name == target:
+                return inst
+        return None
+
+    def _wire_net_names_by_geometry(self) -> dict[int, str]:
+        """Map visible wires to canonical net names using netlist connectivity."""
+        data = self.get_data()
+        gen = NetlistGenerator(self.db)
+        try:
+            gen._build_net_map_connectivity(data)
+        except Exception:
+            return {}
+        engine = getattr(gen, "_connectivity", None)
+        if engine is None:
+            return {}
+
+        result: dict[int, str] = {}
+        for wire in self.wires:
+            line = wire.line()
+            pos = wire.pos()
+            x1, y1 = line.x1() + pos.x(), line.y1() + pos.y()
+            x2, y2 = line.x2() + pos.x(), line.y2() + pos.y()
+            mx, my = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+            name = self._connectivity_net_at(engine, mx, my)
+            if not name:
+                name = self._connectivity_net_at(engine, x1, y1)
+            if not name:
+                name = self._connectivity_net_at(engine, x2, y2)
+            if name:
+                result[id(wire)] = name
+        return result
+
+    def _connectivity_net_at(self, engine, x: float, y: float) -> str:
+        for seg in getattr(engine, "segments", {}).values():
+            if self._point_on_segment(x, y, (seg.x1, seg.y1), (seg.x2, seg.y2)):
+                for jid in (seg.start_junction_id, seg.end_junction_id):
+                    junction = engine.junctions.get(jid)
+                    name = str(getattr(junction, "net_name", "") or "").strip()
+                    if name:
+                        return name
+        junction = engine.get_junction_at(x, y) if hasattr(engine, "get_junction_at") else None
+        return str(getattr(junction, "net_name", "") or "").strip()
 
     def set_grid_visible(self, visible: bool):
         self.canvas.show_grid = visible
@@ -784,10 +1052,11 @@ class SchematicEditor(QWidget):
             return
         self.db.save_view(self.library, self.cell, self.view, self.to_data())
 
-    def save_as(self, library: str, cell: str, view: str = "schematic"):
+    def save_as(self, library: str, cell: str, view: str = "schematic",
+                cell_path: str = ""):
         """Save the current schematic data into another cellview."""
         if not self.db.cell_exists(library, cell):
-            self.db.create_cell(library, cell)
+            self.db.create_cell(library, cell, cell_path)
         data = self.to_data()
         data["name"] = cell
         data["library"] = library
@@ -1335,6 +1604,9 @@ class SchematicEditor(QWidget):
         mod = event.modifiers()
 
         if key == Qt.Key.Key_Escape:
+            if self._output_pick_mode:
+                self.cancel_output_pick()
+                return
             self.set_mode('select')
         elif key == Qt.Key.Key_W and mod == Qt.KeyboardModifier.NoModifier:
             self.set_mode('wire')
@@ -1378,6 +1650,11 @@ class SchematicEditor(QWidget):
             QGraphicsScene.mousePressEvent(self.scene, event)
             return
 
+        if self._output_pick_mode:
+            if self._handle_output_pick(pos):
+                event.accept()
+                return
+
         if self._mode in ('wire', 'bus'):
             wx, wy = self._snap_to_connection(sx, sy)
             self._handle_wire_click(wx, wy)
@@ -1406,6 +1683,105 @@ class SchematicEditor(QWidget):
                         moving = moving.parentItem()
                     self._move_start_positions[id(moving)] = QPointF(moving.pos())
             QGraphicsScene.mousePressEvent(self.scene, event)
+
+    def _handle_output_pick(self, pos: QPointF) -> bool:
+        mode = self._output_pick_mode
+        if mode == "voltage":
+            net = self._pick_net_at(pos)
+            if not net:
+                return False
+            self.highlight_nets([net])
+            self.output_pick_requested.emit("voltage", {"net": net})
+            self.cancel_output_pick()
+            return True
+
+        if mode == "current":
+            terminal = self._pick_terminal_at(pos)
+            if not terminal:
+                return False
+            inst_name, pin_name = terminal
+            self.mark_current_terminals([terminal])
+            self.output_pick_requested.emit("current", {"instance": inst_name, "pin": pin_name})
+            self.cancel_output_pick()
+            return True
+
+        return False
+
+    def _pick_net_at(self, pos: QPointF) -> str:
+        item = self.scene.itemAt(pos, QTransform())
+        top = item
+        while top is not None and top.parentItem():
+            top = top.parentItem()
+
+        if isinstance(top, NetLabelItem):
+            return top.toPlainText().strip()
+        if isinstance(top, SchematicPinItem):
+            return str(top.pin_name or "").strip()
+        if isinstance(top, WireItem):
+            name = str(getattr(top, "net_name", "") or "").strip()
+            if name:
+                return name
+
+        wire = top if isinstance(top, WireItem) else self._nearest_wire_at(pos, radius=8.0)
+        if wire is not None:
+            name = str(getattr(wire, "net_name", "") or "").strip()
+            if name:
+                return name
+            resolved = self._wire_net_names_by_geometry().get(id(wire), "")
+            if resolved:
+                return resolved
+
+        data = self.get_data()
+        gen = NetlistGenerator(self.db)
+        try:
+            gen._build_net_map_connectivity(data)
+            engine = getattr(gen, "_connectivity", None)
+            if engine is not None:
+                return self._connectivity_net_at(engine, pos.x(), pos.y())
+        except Exception:
+            return ""
+        return ""
+
+    def _nearest_wire_at(self, pos: QPointF, radius: float = 8.0) -> WireItem | None:
+        best_wire = None
+        best_dist = radius
+        for wire in self.wires:
+            line = wire.line()
+            wpos = wire.pos()
+            a = QPointF(line.x1() + wpos.x(), line.y1() + wpos.y())
+            b = QPointF(line.x2() + wpos.x(), line.y2() + wpos.y())
+            dist = self._distance_to_segment(pos, a, b)
+            if dist <= best_dist:
+                best_dist = dist
+                best_wire = wire
+        return best_wire
+
+    @staticmethod
+    def _distance_to_segment(p: QPointF, a: QPointF, b: QPointF) -> float:
+        ax, ay = a.x(), a.y()
+        bx, by = b.x(), b.y()
+        px, py = p.x(), p.y()
+        dx, dy = bx - ax, by - ay
+        denom = dx * dx + dy * dy
+        if denom <= 1e-12:
+            return math.hypot(px - ax, py - ay)
+        t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / denom))
+        cx, cy = ax + t * dx, ay + t * dy
+        return math.hypot(px - cx, py - cy)
+
+    def _pick_terminal_at(self, pos: QPointF) -> tuple[str, str] | None:
+        best: tuple[str, str] | None = None
+        best_dist = 12.0
+        for inst in self.instances:
+            for pin_name in inst.pin_positions.keys():
+                pin_pos = inst.get_pin_scene_pos(pin_name)
+                if pin_pos is None:
+                    continue
+                dist = math.hypot(pos.x() - pin_pos.x(), pos.y() - pin_pos.y())
+                if dist <= best_dist:
+                    best_dist = dist
+                    best = (inst.instance_name, pin_name)
+        return best
 
     def _scene_mouse_move(self, event):
         """Handle mouse move for previews."""
@@ -1436,31 +1812,24 @@ class SchematicEditor(QWidget):
     def _scene_mouse_release(self, event):
         """Track moves and create undo command."""
         if self._mode == 'select' and self._move_start_positions:
-            moved_items = []
-            move_deltas = {}  # item -> (dx, dy)
+            old_positions = {}
+            new_positions = {}
 
             for item in self.scene.selectedItems():
                 top = item
                 while top.parentItem():
                     top = top.parentItem()
                 old_pos = self._move_start_positions.get(id(top))
-                if old_pos and (top.pos() - old_pos).manhattanLength() > 1:
-                    dx = snap(top.pos().x()) - old_pos.x()
-                    dy = snap(top.pos().y()) - old_pos.y()
-                    top.setPos(snap(top.pos().x()), snap(top.pos().y()))
-                    if (dx, dy) != (0, 0):
-                        moved_items.append(top)
-                        move_deltas[id(top)] = (dx, dy)
+                if old_pos is None or top in new_positions:
+                    continue
+                snapped_pos = snap_point(top.pos())
+                top.setPos(snapped_pos)
+                if (snapped_pos - old_pos).manhattanLength() > 1:
+                    old_positions[top] = QPointF(old_pos)
+                    new_positions[top] = QPointF(snapped_pos)
 
-            # Create MoveItemsCommand for undo/redo if anything moved
-            if moved_items:
-                # Calculate total dx, dy for the command (average or most common)
-                if moved_items:
-                    # Just use the first item's delta for simplicity
-                    # A more sophisticated approach would track per-item
-                    first_delta = move_deltas.get(id(moved_items[0]), (0, 0))
-                    cmd = MoveItemsCommand(moved_items, first_delta[0], first_delta[1])
-                    self._execute_command(cmd)
+            if new_positions:
+                self._execute_command(SetItemPositionsCommand(old_positions, new_positions))
 
             self._move_start_positions = None
         QGraphicsScene.mouseReleaseEvent(self.scene, event)

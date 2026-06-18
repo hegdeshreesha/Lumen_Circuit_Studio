@@ -115,6 +115,26 @@ class MoveItemsCommand(Command):
             item.moveBy(-self.dx, -self.dy)
 
 
+class SetItemPositionsCommand(Command):
+    """Set absolute item positions for drag moves that already occurred."""
+
+    def __init__(self, old_positions: dict, new_positions: dict):
+        self.old_positions = dict(old_positions)
+        self.new_positions = dict(new_positions)
+        self.items = list(self.new_positions.keys())
+
+    def execute(self):
+        for item, pos in self.new_positions.items():
+            item.setPos(pos)
+
+    def undo(self):
+        for item, pos in self.old_positions.items():
+            item.setPos(pos)
+
+    def description(self) -> str:
+        return f"Move {len(self.items)} item(s)"
+
+
 class CompoundCommand(Command):
     """Groups multiple commands as one undo step."""
     def __init__(self, commands: list[Command]):

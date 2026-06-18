@@ -16,41 +16,54 @@ from PyQt6.QtCore import Qt, QSize, QThread, QTimer
 from PyQt6.QtGui import QAction, QActionGroup, QKeySequence, QFont, QTextCursor
 
 import os
+from pathlib import Path
 from lumen.core.database import LibraryDatabase
 from lumen.core.layout_xl import LayoutXLService
 from lumen.core.pdk_service import get_registry, resolve_workspace, clear_registry_cache
 from lumen.core.project_system import ProjectSystem
+from lumen.core.simulator_runtime import SimulatorRuntimeManager
 from lumen.gui.branding import apply_window_branding, logo_label, logo_url
+from lumen.gui.simulator_manager_window import SimulatorManagerWindow
 from lumen.gui.theme import THEME_DARK, THEME_LIGHT, apply_theme, current_theme
 
 
 class APWWindow(QMainWindow):
     """Analog Pilot Window — the main application hub."""
 
-    def __init__(self):
+    def __init__(self, startup_status=None):
         super().__init__()
+        self._startup_status_cb = startup_status
+        self._startup_status("Initializing APW...")
         self.setWindowTitle("Lumen Circuit Studio — APW")
         apply_window_branding(self)
         self.setMinimumSize(700, 400)
         self.resize(800, 450)
 
+        self._startup_status("Loading project context...")
         self.project_system = ProjectSystem()
         self.project_info = self.project_system.get_current_project()
-        self.workspace = resolve_workspace(self.project_system.get_current_workspace())
+        requested_workspace = resolve_workspace(self.project_system.get_current_workspace())
+        self.workspace = self._pick_writable_workspace(requested_workspace)
         os.environ["LUMEN_WORKSPACE"] = self.workspace
 
         # Initialize database
+        self._startup_status("Initializing workspace database...")
         self.db = LibraryDatabase(self.workspace)
         self.layout_service = LayoutXLService(self.db)
+        self.sim_runtime = SimulatorRuntimeManager(self.workspace)
+        self.sim_runtime.apply_environment_overrides()
 
         # Track child windows
         self._lib_manager = None
         self._editor_windows: list = []
         self._simenv_windows: list = []
+        self._sigview_windows: list = []
         self._pdk_manager = None
+        self._sim_manager = None
         self._recent_projects_menu = None
 
         # Initialize PDK registry
+        self._startup_status("Loading PDK registry...")
         self.pdk_registry = get_registry(self.workspace)
 
         self._autosave_timer = QTimer(self)
@@ -59,10 +72,15 @@ class APWWindow(QMainWindow):
         self._autosave_timer.start()
 
         # Build UI
+        self._startup_status("Building APW interface...")
         self._build_central_widget()
+        self._startup_status("Configuring APW theme...")
         self._apply_local_theme_styles()
+        self._startup_status("Creating APW actions...")
         self._create_actions()
+        self._startup_status("Creating APW menus...")
         self._create_menus()
+        self._startup_status("Creating APW status bar...")
         self._create_status_bar()
 
         self.log("Lumen Circuit Studio v0.5")
@@ -77,9 +95,46 @@ class APWWindow(QMainWindow):
         else:
             self.log("No active PDK — use Tools > PDK Manager to set one.")
         self.log("Type 'help' for available commands.\n")
-        self._maybe_offer_recovery()
+        # Run recovery prompt after initial startup settles to avoid splash deadlocks.
+        QTimer.singleShot(600, self._maybe_offer_recovery)
+        self._startup_status("APW ready")
+
+    def _pick_writable_workspace(self, requested_workspace: str) -> str:
+        """Return a writable workspace path, falling back if needed."""
+        candidates = [
+            Path(requested_workspace).expanduser(),
+            Path.cwd() / "LumenWorkspace",
+            Path.home() / ".lumen" / "workspace",
+        ]
+        for candidate in candidates:
+            try:
+                candidate = candidate.resolve()
+            except Exception:
+                continue
+            try:
+                candidate.mkdir(parents=True, exist_ok=True)
+                probe = candidate / ".lumen_write_probe"
+                with open(probe, "w", encoding="utf-8") as f:
+                    f.write("ok")
+                probe.unlink(missing_ok=True)
+                if str(candidate) != str(Path(requested_workspace).expanduser().resolve()):
+                    self._startup_status(f"Workspace fallback: {candidate}")
+                return str(candidate)
+            except Exception:
+                continue
+        raise RuntimeError(
+            "No writable workspace found. Please configure a writable workspace path."
+        )
 
     # ── Central Widget ────────────────────────────────────────
+
+    def _startup_status(self, message: str):
+        cb = self._startup_status_cb
+        if callable(cb):
+            try:
+                cb(message)
+            except Exception:
+                pass
 
     def _build_central_widget(self):
         central = QWidget()
@@ -217,6 +272,10 @@ class APWWindow(QMainWindow):
 
         self.act_klayout_runtime = QAction("KLayout Runtime...", self)
         self.act_klayout_runtime.triggered.connect(self._on_klayout_runtime)
+        self.act_sim_runtime = QAction("Simulator Manager...", self)
+        self.act_sim_runtime.triggered.connect(self.open_simulator_manager)
+        self.act_sigview = QAction("Open SigView", self)
+        self.act_sigview.triggered.connect(self.open_sigview)
 
         self.theme_group = QActionGroup(self)
         self.theme_group.setExclusive(True)
@@ -257,9 +316,11 @@ class APWWindow(QMainWindow):
         act_ade = QAction("SimENV - Simulation Environment", self)
         act_ade.triggered.connect(self._on_open_simenv_prompt)
         tools_menu.addAction(act_ade)
+        tools_menu.addAction(self.act_sigview)
         tools_menu.addSeparator()
         tools_menu.addAction(self.act_open_layout)
         tools_menu.addAction(self.act_klayout_runtime)
+        tools_menu.addAction(self.act_sim_runtime)
         tools_menu.addSeparator()
         act_pdk = QAction("PDK Manager...", self)
         act_pdk.setShortcut(QKeySequence("Ctrl+P"))
@@ -308,6 +369,16 @@ class APWWindow(QMainWindow):
             self._lib_manager.activateWindow()
         self.log("Opened Library Manager")
 
+    def open_simulator_manager(self):
+        """Open the Simulator Manager window (singleton)."""
+        if self._sim_manager is None or not self._sim_manager.isVisible():
+            self._sim_manager = SimulatorManagerWindow(self.workspace, ciw=self, parent=self)
+            self._sim_manager.show()
+        else:
+            self._sim_manager.raise_()
+            self._sim_manager.activateWindow()
+        self.log("Opened Simulator Manager")
+
     # ── Open Schematic Editor ─────────────────────────────────
 
     def open_schematic_editor(self, library: str, cell: str, view: str = "schematic"):
@@ -331,6 +402,40 @@ class APWWindow(QMainWindow):
             QMessageBox.critical(
                 self,
                 "Open Editor Failed",
+                f"Could not open {library}/{cell}/{view}.\n\n{exc}",
+            )
+
+    def open_cellview(self, library: str, cell: str, view: str = "schematic"):
+        """Open any cellview with the best available editor."""
+        if view == "schematic":
+            self.open_schematic_editor(library, cell, view)
+            return
+        if view == "symbol":
+            self.open_symbol_editor(library, cell, view)
+            return
+        if view == "simenv":
+            self.open_ade(library, cell)
+            return
+
+        for win in self._editor_windows:
+            if (win.isVisible() and getattr(win, "library", "") == library
+                    and getattr(win, "cell", "") == cell
+                    and getattr(win, "view", "") == view):
+                win.raise_()
+                win.activateWindow()
+                return
+
+        try:
+            from lumen.gui.cellview_window import CellViewWindow
+            editor = CellViewWindow(self.db, library, cell, view, ciw=self)
+            editor.show()
+            self._editor_windows.append(editor)
+            self.log(f"Opened editor: {library}/{cell}/{view}")
+        except Exception as exc:
+            self.log(f"Failed to open editor {library}/{cell}/{view}: {exc}")
+            QMessageBox.critical(
+                self,
+                "Open Cellview Failed",
                 f"Could not open {library}/{cell}/{view}.\n\n{exc}",
             )
 
@@ -382,6 +487,7 @@ class APWWindow(QMainWindow):
             self.log("  list_libs      — List all libraries")
             self.log("  open <lib> <cell> [view] - Open an editor")
             self.log("  simenv <lib> <cell> - Open SimENV")
+            self.log("  sigview - Open SigView")
             self.log("  layout <lib> <cell> - Open layout in KLayout")
             self.log("  klayout - Show KLayout runtime status")
             self.log("  help           - Show this help")
@@ -413,14 +519,13 @@ class APWWindow(QMainWindow):
         elif verb == "open" and len(parts) >= 3:
             lib, cell = parts[1], parts[2]
             view = parts[3] if len(parts) > 3 else "schematic"
-            if view == "symbol":
-                self.open_symbol_editor(lib, cell, view)
-            else:
-                self.open_schematic_editor(lib, cell, view)
+            self.open_cellview(lib, cell, view)
         elif verb == 'exit':
             self.close()
         elif verb in ('simenv', 'ade') and len(parts) >= 3:
             self.open_ade(parts[1], parts[2])
+        elif verb in ("sigview", "wave", "waveform"):
+            self.open_sigview()
         elif verb == "layout" and len(parts) >= 3:
             self.open_layout(parts[1], parts[2])
         elif verb == "klayout":
@@ -517,6 +622,9 @@ class APWWindow(QMainWindow):
         for win in list(self._simenv_windows):
             win.close()
         self._simenv_windows.clear()
+        for win in list(self._sigview_windows):
+            win.close()
+        self._sigview_windows.clear()
         if self._pdk_manager:
             self._pdk_manager.close()
             self._pdk_manager = None
@@ -582,10 +690,7 @@ class APWWindow(QMainWindow):
             cell = str(entry.get("cell", ""))
             view = str(entry.get("view", "schematic"))
             if lib and cell:
-                if view == "symbol":
-                    self.open_symbol_editor(lib, cell, view)
-                else:
-                    self.open_schematic_editor(lib, cell, view)
+                self.open_cellview(lib, cell, view)
 
         for entry in payload.get("open_simenv", []):
             lib = str(entry.get("library", ""))
@@ -621,7 +726,7 @@ class APWWindow(QMainWindow):
             "<p>Powered by GSPICE Simulator Engine</p>"
             "<hr>"
             "<p>Features: Schematic Capture · Symbol Editor · "
-            "Library Manager · SimENV · Waveform Viewer · PDK Manager</p>"
+            "Library Manager · SimENV · SigView · PDK Manager</p>"
         )
 
     def log(self, msg: str):
@@ -680,6 +785,24 @@ class APWWindow(QMainWindow):
                 self,
                 "Open SimENV Failed",
                 f"Could not open SimENV for {library}/{cell}.\n\n{exc}",
+            )
+
+    def open_sigview(self, waveforms: dict | None = None):
+        """Open SigView, optionally preloaded with waveform data."""
+        try:
+            from lumen.gui.waveform_viewer import SigViewWindow
+            viewer = SigViewWindow(parent=None)
+            if isinstance(waveforms, dict) and waveforms:
+                viewer.load_results(waveforms)
+            viewer.show()
+            self._sigview_windows.append(viewer)
+            self.log("Opened SigView")
+        except Exception as exc:
+            self.log(f"Failed to open SigView: {exc}")
+            QMessageBox.critical(
+                self,
+                "Open SigView Failed",
+                f"Could not open SigView.\n\n{exc}",
             )
 
     def _on_open_simenv_prompt(self):

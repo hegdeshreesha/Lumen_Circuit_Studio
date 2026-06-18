@@ -110,8 +110,13 @@ class LibraryDatabase:
         if version < 2:
             (self.workspace / "primitives").mkdir(parents=True, exist_ok=True)
             version = 2
-        with open(state_path, "w") as f:
-            json.dump({"version": version}, f, indent=2)
+        try:
+            with open(state_path, "w") as f:
+                json.dump({"version": version}, f, indent=2)
+        except OSError:
+            # Workspace can be read-only in restricted environments.
+            # Keep running with in-memory schema state instead of crashing.
+            pass
 
     # ── Registry ──────────────────────────────────────────────
 
@@ -221,20 +226,43 @@ class LibraryDatabase:
             return False
         return (Path(lib.path) / cell_name).is_dir()
 
-    def create_cell(self, library: str, cell_name: str) -> Path:
-        """Create a new cell directory inside a library."""
+    def create_cell(self, library: str, cell_name: str, cell_path: str = "") -> Path:
+        """Create a new cell directory inside a library.
+
+        Args:
+            library: Library name.
+            cell_name: Cell name.
+            cell_path: Optional explicit path for the cell directory.
+                If provided and it does not end with `cell_name`, `cell_name`
+                is appended automatically.
+        """
         lib = self._libraries.get(library)
         if not lib:
             raise ValueError(f"Library '{library}' not found")
-        cell_path = Path(lib.path) / cell_name
-        cell_path.mkdir(parents=True, exist_ok=True)
+        lib_root = Path(lib.path).resolve()
+        if cell_path:
+            requested = Path(cell_path).expanduser().resolve()
+            target_cell_path = requested if requested.name == cell_name else (requested / cell_name).resolve()
+        else:
+            target_cell_path = (lib_root / cell_name).resolve()
+
+        # Keep cells anchored under their library root so discovery/open logic stays stable.
+        try:
+            target_cell_path.relative_to(lib_root)
+        except ValueError:
+            raise ValueError(
+                f"Cell path must be inside library root: {lib_root}\n"
+                f"Requested: {target_cell_path}"
+            )
+
+        target_cell_path.mkdir(parents=True, exist_ok=True)
         # Write cell metadata
         from datetime import datetime
         now = datetime.now().isoformat()
         meta = {"name": cell_name, "views": [], "created": now, "modified": now}
-        with open(cell_path / self.CELL_META, "w") as f:
+        with open(target_cell_path / self.CELL_META, "w") as f:
             json.dump(meta, f, indent=2)
-        return cell_path
+        return target_cell_path
 
     def delete_cell(self, library: str, cell_name: str):
         lib = self._libraries.get(library)
@@ -684,15 +712,16 @@ class LibraryDatabase:
 
     def _source_parameters(self, mode: str):
         if mode == "dc":
-            return [{"name": "DC", "default": "1.0", "description": "DC value"}]
+            return [{"name": "dc", "default": "1.0", "description": "DC value"}]
         if mode == "ac":
             return [
-                {"name": "DC", "default": "0", "description": "DC value"},
-                {"name": "AC", "default": "1", "description": "AC magnitude"},
+                {"name": "dc", "default": "0", "description": "DC value"},
+                {"name": "acmag", "default": "1", "description": "AC magnitude"},
                 {"name": "phase", "default": "0", "description": "AC phase"},
             ]
         if mode == "pulse":
             return [
+                {"name": "dc", "default": "0", "description": "DC value"},
                 {"name": "v1", "default": "0", "description": "Initial value"},
                 {"name": "v2", "default": "1.8", "description": "Pulsed value"},
                 {"name": "td", "default": "0", "description": "Delay"},
@@ -703,6 +732,7 @@ class LibraryDatabase:
             ]
         if mode == "sin":
             return [
+                {"name": "dc", "default": "0", "description": "DC value"},
                 {"name": "vo", "default": "0", "description": "Offset"},
                 {"name": "va", "default": "1", "description": "Amplitude"},
                 {"name": "freq", "default": "1k", "description": "Frequency"},
@@ -711,14 +741,17 @@ class LibraryDatabase:
                 {"name": "phase", "default": "0", "description": "Phase"},
             ]
         if mode == "pwl":
-            return [{"name": "points", "default": "0 0 1n 1", "description": "PWL time/value pairs"}]
+            return [
+                {"name": "dc", "default": "0", "description": "DC value"},
+                {"name": "points", "default": "0 0 1n 1", "description": "PWL time/value pairs"},
+            ]
         return []
 
     def _primitive_source_variant(self, name: str, prefix: str, spice_model: str,
                                   mode: str, current: bool = False):
         label_value = {
-            "dc": "DC=@DC",
-            "ac": "AC=@AC",
+            "dc": "DC=@dc",
+            "ac": "AC=@acmag",
             "pulse": "PULSE",
             "sin": "SIN @freq",
             "pwl": "PWL",
@@ -844,10 +877,11 @@ class LibraryDatabase:
                 {"type": "text", "text": "V", "x": -5, "y": -5, "size": 8, "bold": True},
             ],
             "parameters": [
-                {"name": "DC", "default": "1.8", "description": "DC voltage"},
-                {"name": "AC", "default": "", "description": "AC magnitude"},
+                {"name": "dc", "default": "1.8", "description": "DC voltage"},
+                {"name": "acmag", "default": "", "description": "AC magnitude"},
+                {"name": "phase", "default": "0", "description": "AC phase"},
             ],
-            "label": {"text": "@name\\nDC=@DC", "x": 25, "y": 0}
+            "label": {"text": "@name\\nDC=@dc", "x": 25, "y": 0}
         }
         return sym, None
 
@@ -869,9 +903,11 @@ class LibraryDatabase:
                 {"type": "text", "text": "I", "x": -3, "y": -5, "size": 8, "bold": True},
             ],
             "parameters": [
-                {"name": "DC", "default": "1m", "description": "DC current"},
+                {"name": "dc", "default": "1m", "description": "DC current"},
+                {"name": "acmag", "default": "", "description": "AC magnitude"},
+                {"name": "phase", "default": "0", "description": "AC phase"},
             ],
-            "label": {"text": "@name\\nDC=@DC", "x": 25, "y": 0}
+            "label": {"text": "@name\\nDC=@dc", "x": 25, "y": 0}
         }
         return sym, None
 

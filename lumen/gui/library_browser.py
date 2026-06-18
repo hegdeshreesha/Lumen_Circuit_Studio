@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QAction, QColor, QBrush, QFont
+from pathlib import Path
 
 from lumen.core.database import LibraryDatabase
 from lumen.core.component_capabilities import is_supported
@@ -30,6 +31,7 @@ class LibraryBrowserWidget(QWidget):
         "layout": "🏗",
         "config": "⚙",
         "veriloga": "📄",
+        "simenv": "[S]",
     }
 
     def __init__(self, db: LibraryDatabase, parent=None):
@@ -221,17 +223,30 @@ class LibraryBrowserWidget(QWidget):
     def _ctx_new_cell(self, library: str):
         name, ok = QInputDialog.getText(self, "New Cell", "Cell name:")
         if ok and name:
-            self.db.create_cell(library, name)
-            self.db.save_view(library, name, "schematic", {
-                "type": "schematic", "name": name, "library": library,
-                "instances": [], "wires": [], "labels": [], "pins": []
-            })
-            self.db.save_view(library, name, "symbol", {
-                "type": "symbol", "name": name, "library": library,
-                "pins": [], "shapes": [], "parameters": [],
-                "label": {"text": name, "x": 0, "y": 0}
-            })
-            self.refresh()
+            try:
+                lib_info = self.db.get_library(library)
+                default_cell_path = str(Path(lib_info.path) / name) if lib_info else name
+                cell_path, ok_path = QInputDialog.getText(
+                    self,
+                    "New Cell Path",
+                    f"Path for {library}/{name}:",
+                    text=default_cell_path,
+                )
+                if not ok_path or not cell_path.strip():
+                    return
+                self.db.create_cell(library, name, cell_path.strip())
+                self.db.save_view(library, name, "schematic", {
+                    "type": "schematic", "name": name, "library": library,
+                    "instances": [], "wires": [], "labels": [], "pins": []
+                })
+                self.db.save_view(library, name, "symbol", {
+                    "type": "symbol", "name": name, "library": library,
+                    "pins": [], "shapes": [], "parameters": [],
+                    "label": {"text": name, "x": 0, "y": 0}
+                })
+                self.refresh()
+            except ValueError as exc:
+                QMessageBox.warning(self, "New Cell", str(exc))
 
     def _ctx_rename_library(self, old_name: str):
         new_name, ok = QInputDialog.getText(

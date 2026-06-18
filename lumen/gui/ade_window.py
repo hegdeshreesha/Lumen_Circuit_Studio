@@ -3,7 +3,11 @@ Lumen Circuit Studio - SimENV Window
 Tabbed simulation environment supporting GSPICE analyses.
 """
 import os
+import re
 import traceback
+import json
+import csv
+from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
@@ -14,14 +18,20 @@ from PyQt6.QtWidgets import (
     QDialog, QDialogButtonBox, QGridLayout, QScrollArea, QFrame,
     QFileDialog, QInputDialog
 )
-from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QAction, QFont, QColor
+from PyQt6.QtCore import Qt, QSize, QUrl, QObject, QThread, pyqtSignal
+from PyQt6.QtGui import QAction, QFont, QColor, QKeySequence, QDesktopServices
 
 from lumen.core.database import LibraryDatabase
 from lumen.core.netlist import NetlistGenerator, NetlistDirectives
 from lumen.core.simulator import SimulatorBridge, SIMULATOR_INFO, get_supported_analyses, get_simulator_label
+from lumen.core.simulator_runtime import SimulatorRuntimeManager
 from lumen.core.pdk_service import get_registry
 from lumen.gui.branding import apply_window_branding
+from lumen.gui.icons import editor_icon
+from lumen.gui.simulator_manager_window import (
+    SimulatorManagerWindow,
+    ensure_simulator_available,
+)
 
 
 # All GSPICE-supported analyses
@@ -150,6 +160,167 @@ class AnalysisSetupWidget(QWidget):
         return result
 
 
+class SimulationDumpSettingsDialog(QDialog):
+    """Dialog for choosing where SimENV run artifacts are written."""
+
+    def __init__(self, current_dir: str, default_dir: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Simulation Dump Settings")
+        self.setMinimumWidth(620)
+        self._default_dir = str(default_dir or "")
+
+        layout = QVBoxLayout(self)
+
+        title = QLabel("Simulation Dump Folder")
+        title.setStyleSheet("font-size:15px;font-weight:bold;color:#6b9ece;background:transparent;")
+        layout.addWidget(title)
+
+        description = QLabel(
+            "SimENV writes every simulator run into this folder. Each run gets its own "
+            "subfolder so input decks, logs, waveform files, and manifests stay together."
+        )
+        description.setWordWrap(True)
+        description.setStyleSheet("color:#9aa8b6;background:transparent;")
+        layout.addWidget(description)
+
+        form = QGridLayout()
+        form.addWidget(QLabel("Root folder:"), 0, 0)
+        self.path_edit = QLineEdit(str(current_dir or default_dir or ""))
+        self.path_edit.setMinimumWidth(420)
+        form.addWidget(self.path_edit, 0, 1)
+
+        browse_btn = QPushButton("Browse...")
+        browse_btn.clicked.connect(self._browse)
+        form.addWidget(browse_btn, 0, 2)
+
+        default_btn = QPushButton("Use Default")
+        default_btn.clicked.connect(self._use_default)
+        form.addWidget(default_btn, 1, 2)
+
+        self.preview_label = QLabel("")
+        self.preview_label.setWordWrap(True)
+        self.preview_label.setStyleSheet("color:#8c9aa8;background:transparent;")
+        form.addWidget(self.preview_label, 1, 1)
+        layout.addLayout(form)
+
+        artifact_box = QGroupBox("Files Written Per Run")
+        artifact_layout = QVBoxLayout(artifact_box)
+        artifacts = QLabel(
+            "input.sp\n"
+            "stdout.log / stderr.log\n"
+            "waveforms.raw when the simulator emits or Lumen can synthesize RAW\n"
+            "waveforms.csv and selected_waveforms.csv when waveform data exists\n"
+            "run_manifest.json with command, paths, warnings, errors, and signal list\n"
+            "latest_run.txt in the run-family folder"
+        )
+        artifacts.setStyleSheet("font-family:Consolas,monospace;color:#d7dde6;background:transparent;")
+        artifact_layout.addWidget(artifacts)
+        layout.addWidget(artifact_box)
+
+        self.error_label = QLabel("")
+        self.error_label.setWordWrap(True)
+        self.error_label.setStyleSheet("color:#cc8888;background:transparent;")
+        layout.addWidget(self.error_label)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self._accept_if_valid)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self.path_edit.textChanged.connect(self._update_preview)
+        self._update_preview()
+
+    def selected_path(self) -> str:
+        return str(Path(self.path_edit.text().strip()).expanduser().resolve())
+
+    def _browse(self):
+        chosen = QFileDialog.getExistingDirectory(
+            self,
+            "Select Simulation Dump Folder",
+            self.path_edit.text().strip() or self._default_dir,
+        )
+        if chosen:
+            self.path_edit.setText(chosen)
+
+    def _use_default(self):
+        self.path_edit.setText(self._default_dir)
+
+    def _update_preview(self):
+        text = self.path_edit.text().strip()
+        if not text:
+            self.preview_label.setText("")
+            return
+        try:
+            root = Path(text).expanduser().resolve()
+            self.preview_label.setText(
+                f"Example run folder: {root / 'simenv_<cell>' / 'YYYYMMDD_HHMMSS'}"
+            )
+        except OSError:
+            self.preview_label.setText("")
+
+    def _accept_if_valid(self):
+        raw = self.path_edit.text().strip()
+        if not raw:
+            self.error_label.setText("Choose a simulation dump folder.")
+            return
+        try:
+            path = Path(raw).expanduser().resolve()
+            path.mkdir(parents=True, exist_ok=True)
+            probe = path / ".lumen_write_test"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+        except Exception as exc:
+            self.error_label.setText(f"Folder is not writable: {exc}")
+            return
+        self.accept()
+
+
+class SimEnvSimulationWorker(QObject):
+    """Run simulator jobs away from the Qt UI thread."""
+
+    progress = pyqtSignal(str)
+    result_ready = pyqtSignal(str, object)
+    failed = pyqtSignal(str)
+    finished = pyqtSignal()
+
+    def __init__(self, simulator: str, exe_path: str, work_dir: str,
+                 jobs: list[tuple[str, str, str]], threads: int = 1,
+                 timeout: int = 0):
+        super().__init__()
+        self.simulator = simulator
+        self.exe_path = exe_path
+        self.work_dir = work_dir
+        self.jobs = list(jobs)
+        self.threads = max(1, min(16, int(threads or 1)))
+        self.timeout = int(timeout or 0)
+        self._bridge: SimulatorBridge | None = None
+
+    def run(self):
+        try:
+            self._bridge = SimulatorBridge(
+                self.simulator,
+                exe_path=self.exe_path,
+                work_dir=self.work_dir,
+            )
+            for run_name, netlist, sim_name in self.jobs:
+                self.progress.emit(f"Running {run_name}...")
+                result = self._bridge.simulate(
+                    netlist,
+                    sim_name=sim_name,
+                    threads=self.threads,
+                    timeout=self.timeout,
+                )
+                self.result_ready.emit(run_name, result)
+        except Exception:
+            self.failed.emit(traceback.format_exc())
+        finally:
+            self.finished.emit()
+
+    def cancel(self):
+        if self._bridge is not None:
+            self._bridge.cancel()
+
+
 class DesignVariablesWidget(QWidget):
     """Design variables table."""
     def __init__(self, parent=None):
@@ -200,8 +371,13 @@ class OutputsWidget(QWidget):
         "fft(V(out))", "deriv(V(out))", "integ(V(out))",
     ]
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, target_provider=None, visualize_hook=None,
+                 voltage_pick_hook=None, current_pick_hook=None):
         super().__init__(parent)
+        self._target_provider = target_provider
+        self._visualize_hook = visualize_hook
+        self._voltage_pick_hook = voltage_pick_hook
+        self._current_pick_hook = current_pick_hook
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
@@ -211,6 +387,16 @@ class OutputsWidget(QWidget):
         add_btn.setFixedWidth(60)
         add_btn.clicked.connect(self._add_row)
         hdr.addWidget(add_btn)
+
+        add_v_btn = QPushButton("+ V(net)")
+        add_v_btn.setFixedWidth(72)
+        add_v_btn.clicked.connect(self._on_add_voltage)
+        hdr.addWidget(add_v_btn)
+
+        add_i_btn = QPushButton("+ I(term)")
+        add_i_btn.setFixedWidth(78)
+        add_i_btn.clicked.connect(self._on_add_current)
+        hdr.addWidget(add_i_btn)
 
         # Expression helper
         expr_combo = QComboBox()
@@ -227,7 +413,18 @@ class OutputsWidget(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.table.verticalHeader().setVisible(False)
+        self.table.itemSelectionChanged.connect(self._on_selection_changed)
         layout.addWidget(self.table)
+
+        options_row = QHBoxLayout()
+        self.chk_save_all_nodes = QCheckBox("Save All Node Voltages")
+        self.chk_save_all_currents = QCheckBox("Save All Terminal Currents")
+        self.chk_save_all_nodes.setChecked(False)
+        self.chk_save_all_currents.setChecked(False)
+        options_row.addWidget(self.chk_save_all_nodes)
+        options_row.addWidget(self.chk_save_all_currents)
+        options_row.addStretch()
+        layout.addLayout(options_row)
 
         # Start empty. Outputs should come from real schematic nets/sources.
 
@@ -239,6 +436,55 @@ class OutputsWidget(QWidget):
     def _add_row(self):
         self._add_entry("sig", "V(node)")
 
+    def _available_targets(self) -> tuple[list[str], list[tuple[str, str]]]:
+        if callable(self._target_provider):
+            try:
+                data = self._target_provider() or {}
+                nets = sorted({str(n).strip() for n in data.get("nets", []) if str(n).strip()})
+                terms_raw = data.get("terminals", [])
+                terminals: list[tuple[str, str]] = []
+                for entry in terms_raw:
+                    if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                        inst = str(entry[0]).strip()
+                        pin = str(entry[1]).strip()
+                        if inst and pin:
+                            terminals.append((inst, pin))
+                terminals = sorted(set(terminals))
+                return nets, terminals
+            except Exception:
+                pass
+        return [], []
+
+    def _on_add_voltage(self):
+        if callable(self._voltage_pick_hook):
+            self._voltage_pick_hook()
+            return
+        nets, _ = self._available_targets()
+        if not nets:
+            QMessageBox.information(self, "Add V(net)", "No named nets found in this schematic.")
+            return
+        net, ok = QInputDialog.getItem(self, "Add Voltage Output", "Select net:", nets, 0, False)
+        if not ok or not net:
+            return
+        self._add_entry(net, f"V({net})")
+
+    def _on_add_current(self):
+        if callable(self._current_pick_hook):
+            self._current_pick_hook()
+            return
+        _nets, terminals = self._available_targets()
+        if not terminals:
+            QMessageBox.information(self, "Add I(term)", "No instance terminals found.")
+            return
+        choices = [f"{inst}.{pin}" for inst, pin in terminals]
+        pick, ok = QInputDialog.getItem(self, "Add Current Output", "Select terminal:", choices, 0, False)
+        if not ok or not pick:
+            return
+        inst, pin = pick.split(".", 1)
+        # Cadence-style terminal-current expression placeholder for post-processing.
+        expr = f"I({inst}.{pin})"
+        self._add_entry(f"{inst}.{pin}", expr)
+
     def _add_entry(self, sig: str, expr: str):
         r = self.table.rowCount()
         self.table.insertRow(r)
@@ -247,9 +493,56 @@ class OutputsWidget(QWidget):
         chk = QCheckBox()
         chk.setChecked(True)
         self.table.setCellWidget(r, 2, chk)
+        return r
+
+    def _on_selection_changed(self):
+        if not callable(self._visualize_hook):
+            return
+        rows = sorted({idx.row() for idx in self.table.selectedIndexes()})
+        if not rows:
+            self._visualize_hook({"nets": [], "terminals": []})
+            return
+
+        selected_nets: set[str] = set()
+        selected_terms: set[tuple[str, str]] = set()
+        for row in rows:
+            expr_item = self.table.item(row, 1)
+            if expr_item is None:
+                continue
+            expr = expr_item.text().strip()
+            if not expr:
+                continue
+            m_v = re.match(r"^\s*V\(\s*([^)]+)\s*\)\s*$", expr, re.IGNORECASE)
+            if m_v:
+                selected_nets.add(m_v.group(1).strip())
+                continue
+            m_term = re.match(r"^\s*I\(\s*([A-Za-z_]\w*)\s*[:.]\s*([A-Za-z_]\w*)\s*\)\s*$", expr, re.IGNORECASE)
+            if m_term:
+                selected_terms.add((m_term.group(1), m_term.group(2)))
+                continue
+            m_i = re.match(r"^\s*I\(\s*([^)]+)\s*\)\s*$", expr, re.IGNORECASE)
+            if m_i:
+                inst = m_i.group(1).strip()
+                if inst:
+                    sig_item = self.table.item(row, 0)
+                    sig = sig_item.text().strip() if sig_item else ""
+                    if "." in sig:
+                        i_name, i_pin = sig.split(".", 1)
+                        if i_name.strip() == inst and i_pin.strip():
+                            selected_terms.add((inst, i_pin.strip()))
+                continue
+
+        self._visualize_hook({
+            "nets": sorted(selected_nets),
+            "terminals": sorted(selected_terms),
+        })
 
     def get_save_lines(self) -> list[str]:
         lines = []
+        if self.chk_save_all_nodes.isChecked():
+            lines.append(".SAVE ALL")
+        if self.chk_save_all_currents.isChecked():
+            lines.append(".OPTIONS SAVECURRENTS")
         for r in range(self.table.rowCount()):
             expr_item = self.table.item(r, 1)
             chk = self.table.cellWidget(r, 2)
@@ -577,6 +870,13 @@ class ADEWindow(QMainWindow):
         self.cell = cell
         self.ciw = ciw
         self._waveform_viewers = []
+        self._last_sigview_waveforms: dict = {}
+        self._result_waveforms_by_row: dict[int, dict] = {}
+        self._sim_thread: QThread | None = None
+        self._sim_worker: SimEnvSimulationWorker | None = None
+        self._sim_jobs_total = 0
+        self._sim_jobs_done = 0
+        self._sim_merged_waveforms: dict = {}
         self._startup_warnings: list[str] = []
         self._pdk_registry = pdk_registry or self._create_pdk_registry()
 
@@ -587,10 +887,14 @@ class ADEWindow(QMainWindow):
 
         self._analysis_tabs: dict[str, AnalysisSetupWidget] = {}
         self._current_simulator = "GSPICE"
+        self._missing_sim_prompted: set[str] = set()
+        self._sim_dump_dir = self._default_sim_dump_dir()
+        self._sim_threads = 1
         self._build_ui()
         self._create_menus()
         self._create_toolbar()
         self._create_status_bar()
+        self._load_simenv_view()
         for warning in self._startup_warnings:
             self._log(warning)
 
@@ -602,6 +906,220 @@ class ADEWindow(QMainWindow):
         except Exception as exc:
             self._startup_warnings.append(f"PDK registry unavailable: {exc}")
             return None
+
+    def _default_sim_dump_dir(self) -> str:
+        workspace = Path(str(getattr(self.db, "workspace", "")) or ".")
+        return str((workspace / "runs" / "simenv").resolve())
+
+    def _resolved_sim_dump_dir(self) -> str:
+        raw = str(self._sim_dump_dir or "").strip()
+        if not raw:
+            raw = self._default_sim_dump_dir()
+            self._sim_dump_dir = raw
+        return str(Path(raw).expanduser().resolve())
+
+    def _build_bridge(self) -> SimulatorBridge:
+        dump_dir = self._resolved_sim_dump_dir()
+        os.makedirs(dump_dir, exist_ok=True)
+        runtime = SimulatorRuntimeManager(str(getattr(self.db, "workspace", "")))
+        runtime.apply_environment_overrides()
+        exe = runtime.get_active_executable(self._current_simulator)
+        return SimulatorBridge(self._current_simulator, exe_path=exe, work_dir=dump_dir)
+
+    def _sim_thread_count(self) -> int:
+        value = self._sim_threads
+        if hasattr(self, "thread_spin"):
+            value = self.thread_spin.value()
+        return max(1, min(16, int(value or 1)))
+
+    def _on_threads_changed(self, value: int):
+        self._sim_threads = self._sim_thread_count()
+        if hasattr(self, "thread_spin") and self.thread_spin.value() != self._sim_threads:
+            self.thread_spin.setValue(self._sim_threads)
+        self._log(f"GSPICE threads set to: {self._sim_threads}")
+        self._refresh_run_plan()
+        self._save_simenv_view_silent()
+
+    def _find_schematic_editor(self):
+        """Find an open schematic editor matching this SimENV target cell."""
+        parent = self.parent()
+        if parent is not None and hasattr(parent, "editor"):
+            editor = getattr(parent, "editor", None)
+            if (
+                editor is not None
+                and getattr(editor, "library", "") == self.library
+                and getattr(editor, "cell", "") == self.cell
+            ):
+                return editor, parent
+
+        if self.ciw and hasattr(self.ciw, "_editor_windows"):
+            for win in list(getattr(self.ciw, "_editor_windows", [])):
+                if not getattr(win, "isVisible", lambda: False)():
+                    continue
+                if getattr(win, "library", "") != self.library or getattr(win, "cell", "") != self.cell:
+                    continue
+                editor = getattr(win, "editor", None)
+                if editor is not None:
+                    return editor, win
+        return None, None
+
+    def _collect_output_targets(self) -> dict:
+        """Collect net and terminal targets for output/save convenience pickers."""
+        data = self.db.load_view(self.library, self.cell, "schematic") or {}
+        gen = NetlistGenerator(self.db)
+        nets: set[str] = set()
+        terminals: set[tuple[str, str]] = set()
+
+        try:
+            net_map = gen._build_net_map_connectivity(data)
+        except Exception:
+            net_map = gen._build_net_map(data)
+
+        for value in net_map.values():
+            text = str(value or "").strip()
+            if text and text not in ("?",):
+                nets.add(text)
+
+        for wire in data.get("wires", []):
+            name = str(wire.get("net", "")).strip()
+            if name:
+                nets.add(name)
+        for label in data.get("labels", []):
+            name = str(label.get("text", "")).strip()
+            if name:
+                nets.add(name)
+        for pin in data.get("pins", []):
+            name = str(pin.get("name", "")).strip()
+            if name:
+                nets.add(name)
+
+        for inst in data.get("instances", []):
+            iname = str(inst.get("name", "")).strip()
+            if not iname:
+                continue
+            lib = str(inst.get("library", "")).strip()
+            cell = str(inst.get("cell", "")).strip()
+            if not lib or not cell:
+                continue
+            pins = gen._pins_for_instance(lib, cell)
+            for pin in pins:
+                if isinstance(pin, dict):
+                    pname = str(pin.get("name", "")).strip()
+                else:
+                    pname = str(pin).strip()
+                if pname:
+                    terminals.add((iname, pname))
+
+        return {
+            "nets": sorted(nets),
+            "terminals": sorted(terminals),
+        }
+
+    def _visualize_output_targets(self, selection: dict):
+        """Highlight selected output nets and current terminals on the schematic."""
+        editor, editor_win = self._find_schematic_editor()
+        if editor is None:
+            return
+
+        nets = [str(x).strip() for x in (selection.get("nets", []) if isinstance(selection, dict) else []) if str(x).strip()]
+        terminals_raw = selection.get("terminals", []) if isinstance(selection, dict) else []
+        terminals: list[tuple[str, str]] = []
+        for entry in terminals_raw:
+            if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                inst = str(entry[0]).strip()
+                pin = str(entry[1]).strip()
+                if inst and pin:
+                    terminals.append((inst, pin))
+
+        editor.clear_probe_overlays()
+        if nets:
+            editor.highlight_nets(nets)
+        if terminals:
+            editor.mark_current_terminals(terminals)
+        editor.redraw()
+
+        if editor_win is not None:
+            editor_win.raise_()
+            editor_win.activateWindow()
+
+    def _ensure_schematic_editor_for_pick(self):
+        editor, editor_win = self._find_schematic_editor()
+        if editor is not None:
+            return editor, editor_win
+
+        if self.ciw and hasattr(self.ciw, "open_schematic_editor"):
+            self.ciw.open_schematic_editor(self.library, self.cell, "schematic")
+            editor, editor_win = self._find_schematic_editor()
+        return editor, editor_win
+
+    def _start_voltage_pick(self):
+        self._start_schematic_output_pick("voltage")
+
+    def _start_current_pick(self):
+        self._start_schematic_output_pick("current")
+
+    def _start_schematic_output_pick(self, kind: str):
+        editor, editor_win = self._ensure_schematic_editor_for_pick()
+        if editor is None:
+            QMessageBox.information(
+                self,
+                "Pick Output",
+                "Open the matching schematic view first, then pick the output again.",
+            )
+            return
+
+        try:
+            editor.output_pick_requested.disconnect(self._on_schematic_output_picked)
+        except (TypeError, RuntimeError):
+            pass
+        editor.output_pick_requested.connect(self._on_schematic_output_picked)
+        editor.begin_output_pick(kind)
+
+        if editor_win is not None:
+            editor_win.raise_()
+            editor_win.activateWindow()
+            if hasattr(editor_win, "statusBar"):
+                noun = "net for voltage" if kind == "voltage" else "terminal for current"
+                editor_win.statusBar().showMessage(f"Pick a {noun} output for SimENV", 7000)
+        self._log(f"Pick {'voltage net' if kind == 'voltage' else 'current terminal'} from schematic...")
+
+    def _on_schematic_output_picked(self, kind: str, payload: object):
+        if not isinstance(payload, dict):
+            return
+
+        if kind == "voltage":
+            net = str(payload.get("net", "")).strip()
+            if not net:
+                return
+            row = self.outputs_widget._add_entry(net, f"V({net})")
+            self.outputs_widget.table.selectRow(row)
+            self._visualize_output_targets({"nets": [net], "terminals": []})
+            self._log(f"Added voltage output: V({net})")
+
+        elif kind == "current":
+            inst = str(payload.get("instance", "")).strip()
+            pin = str(payload.get("pin", "")).strip()
+            if not inst or not pin:
+                return
+            signal = f"{inst}.{pin}"
+            row = self.outputs_widget._add_entry(signal, f"I({signal})")
+            self.outputs_widget.table.selectRow(row)
+            self._visualize_output_targets({"nets": [], "terminals": [(inst, pin)]})
+            self._log(f"Added current output: I({signal})")
+        else:
+            return
+
+        self._refresh_run_plan()
+        self._save_simenv_view_silent()
+
+    def _save_simenv_view_silent(self):
+        try:
+            data = self._collect_simenv_setup()
+            self.db.save_view(self.library, self.cell, "simenv", data)
+            self.session_badge.setText("Session: saved view")
+            self.statusBar().showMessage(f"Saved {self.library}/{self.cell}/simenv", 3000)
+        except Exception as exc:
+            self._log(f"Could not autosave SimENV view: {exc}")
 
     def _infer_pdk_name(self) -> str:
         """Infer the PDK from placed schematic instances or active registry state."""
@@ -817,6 +1335,33 @@ class ADEWindow(QMainWindow):
         title_box.addWidget(subtitle)
         layout.addLayout(title_box, stretch=1)
 
+        dump_btn = QPushButton("Dump Settings")
+        dump_btn.setIcon(editor_icon("open"))
+        dump_btn.setToolTip("Choose where SimENV writes input.sp, logs, RAW/CSV waveform files, and run manifests")
+        dump_btn.clicked.connect(self._on_set_sim_dump_dir)
+        dump_btn.setStyleSheet(
+            "QPushButton{color:#e8f2f7;background:#233746;border:1px solid #4b6a82;"
+            "border-radius:6px;padding:7px 10px;font-weight:bold;}"
+            "QPushButton:hover{background:#2e4658;}"
+        )
+        layout.addWidget(dump_btn)
+
+        thread_box = QHBoxLayout()
+        thread_label = QLabel("Threads")
+        thread_label.setStyleSheet("color:#d7e7ef;background:transparent;font-weight:bold;")
+        thread_box.addWidget(thread_label)
+        self.thread_spin = QSpinBox()
+        self.thread_spin.setRange(1, 16)
+        self.thread_spin.setValue(self._sim_threads)
+        self.thread_spin.setToolTip("GSPICE worker threads. Values are clamped to the simulator maximum of 16.")
+        self.thread_spin.valueChanged.connect(self._on_threads_changed)
+        self.thread_spin.setStyleSheet(
+            "QSpinBox{color:#f2f7fb;background:#1d303e;border:1px solid #4b6a82;"
+            "border-radius:6px;padding:5px;min-width:54px;}"
+        )
+        thread_box.addWidget(self.thread_spin)
+        layout.addLayout(thread_box)
+
         self.session_badge = QLabel("Session: interactive")
         self.session_badge.setStyleSheet(
             "color:#ffd166;background:#26384a;border:1px solid #4b6a82;"
@@ -832,7 +1377,12 @@ class ADEWindow(QMainWindow):
         self.var_widget = DesignVariablesWidget()
         data_tabs.addTab(self.var_widget, "Variables")
 
-        self.outputs_widget = OutputsWidget()
+        self.outputs_widget = OutputsWidget(
+            target_provider=self._collect_output_targets,
+            visualize_hook=self._visualize_output_targets,
+            voltage_pick_hook=self._start_voltage_pick,
+            current_pick_hook=self._start_current_pick,
+        )
         data_tabs.addTab(self.outputs_widget, "Outputs")
 
         self.measurement_widget = MeasurementSetupWidget()
@@ -863,8 +1413,8 @@ class ADEWindow(QMainWindow):
         sim_group = QGroupBox("Simulator")
         sim_form = QVBoxLayout(sim_group)
         self.sim_combo = QComboBox()
-        for key in SIMULATOR_INFO:
-            self.sim_combo.addItem(get_simulator_label(key), key)
+        self.sim_combo.addItem(get_simulator_label("GSPICE"), "GSPICE")
+        self.sim_combo.setEnabled(False)
         self.sim_combo.currentIndexChanged.connect(self._on_simulator_changed)
         sim_form.addWidget(self.sim_combo)
 
@@ -923,7 +1473,7 @@ class ADEWindow(QMainWindow):
         if hasattr(self, 'toolbar_sim_label'):
             self.toolbar_sim_label.setText(self._current_simulator)
         # Update status
-        bridge = SimulatorBridge(self._current_simulator)
+        bridge = self._build_bridge()
         avail = bridge.is_available()
         if avail:
             self.sim_status_label.setText("\u2713 Found")
@@ -931,6 +1481,21 @@ class ADEWindow(QMainWindow):
         else:
             self.sim_status_label.setText(f"\u2717 Not found: {bridge.exe_path}")
             self.sim_status_label.setStyleSheet("color:#cc8888;background:transparent;padding:2px;")
+            if self._current_simulator not in self._missing_sim_prompted:
+                self._missing_sim_prompted.add(self._current_simulator)
+                ready = ensure_simulator_available(
+                    self,
+                    str(getattr(self.db, "workspace", "")),
+                    self._current_simulator,
+                    logger=self._log,
+                )
+                if ready:
+                    bridge = self._build_bridge()
+                    if bridge.is_available():
+                        self.sim_status_label.setText("\u2713 Found")
+                        self.sim_status_label.setStyleSheet(
+                            "color:#8bc78b;background:transparent;padding:2px;"
+                        )
         self._refresh_run_plan()
 
     def _refresh_analysis_tree(self):
@@ -1084,6 +1649,8 @@ class ADEWindow(QMainWindow):
         session = add_parent("Session", f"{self.library}/{self.cell}")
         session.addChild(QTreeWidgetItem(["Environment", "SimENV"]))
         session.addChild(QTreeWidgetItem(["Simulator", get_simulator_label(self._current_simulator)]))
+        session.addChild(QTreeWidgetItem(["Threads", str(self._sim_thread_count())]))
+        session.addChild(QTreeWidgetItem(["Dump Folder", self._resolved_sim_dump_dir()]))
         session.addChild(QTreeWidgetItem(["PDK", self._selected_pdk_name() or "None selected"]))
 
         tests = add_parent("Tests", f"{len(self._analysis_tabs)} analysis setup(s)")
@@ -1144,6 +1711,7 @@ class ADEWindow(QMainWindow):
         self.results_table.setHorizontalHeaderLabels(["Run", "Analysis", "Status", "Time"])
         self.results_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.results_table.verticalHeader().setVisible(False)
+        self.results_table.itemDoubleClicked.connect(self._on_result_double_click)
         layout.addWidget(self.results_table)
 
         self.main_tabs.addTab(widget, "Results")
@@ -1159,6 +1727,24 @@ class ADEWindow(QMainWindow):
             name = item.data(0, Qt.ItemDataRole.UserRole)
             if name:
                 self._add_analysis(name)
+
+    def _selected_analysis_name(self) -> str:
+        item = self.analysis_tree.currentItem()
+        if item is None:
+            return ""
+        name = item.data(0, Qt.ItemDataRole.UserRole)
+        return str(name or "")
+
+    def _ensure_selected_analysis_for_run(self) -> bool:
+        """Treat a selected analysis tree item as the intended run test."""
+        if self._analysis_tabs:
+            return True
+        name = self._selected_analysis_name()
+        if name and name in ANALYSES:
+            self._add_analysis(name)
+            self._log(f"Using selected test for run: {name}")
+            return True
+        return False
 
     def _add_analysis(self, name: str):
         if name in self._analysis_tabs:
@@ -1189,15 +1775,34 @@ class ADEWindow(QMainWindow):
         act_netlist.triggered.connect(self._on_view_netlist)
         sim_menu.addAction(act_netlist)
 
+        act_sigview = QAction("Open SigView", self)
+        act_sigview.triggered.connect(self._on_open_waveform)
+        sim_menu.addAction(act_sigview)
+
         sim_menu.addSeparator()
 
-        act_save = QAction("Save SimENV Setup...", self)
+        act_save_view = QAction("Save", self)
+        act_save_view.setShortcut(QKeySequence("Ctrl+S"))
+        act_save_view.triggered.connect(self._on_save_view)
+        sim_menu.addAction(act_save_view)
+
+        act_save = QAction("Export SimENV Setup...", self)
         act_save.triggered.connect(self._on_save_setup)
         sim_menu.addAction(act_save)
 
-        act_load = QAction("Load SimENV Setup...", self)
+        act_load = QAction("Import SimENV Setup...", self)
         act_load.triggered.connect(self._on_load_setup)
         sim_menu.addAction(act_load)
+
+        act_dump = QAction("Simulation Dump Settings...", self)
+        act_dump.triggered.connect(self._on_set_sim_dump_dir)
+        sim_menu.addAction(act_dump)
+        act_open_dump = QAction("Open Dump Folder", self)
+        act_open_dump.triggered.connect(self._on_open_sim_dump_dir)
+        sim_menu.addAction(act_open_dump)
+        act_sim_mgr = QAction("Simulator Manager...", self)
+        act_sim_mgr.triggered.connect(self._on_open_simulator_manager)
+        sim_menu.addAction(act_sim_mgr)
 
         sim_menu.addSeparator()
         act_close = QAction("Close", self)
@@ -1208,17 +1813,34 @@ class ADEWindow(QMainWindow):
         tb = QToolBar("SimENV")
         tb.setIconSize(QSize(18, 18))
 
+        act_save = QAction("Save", self)
+        act_save.setIcon(editor_icon("save"))
+        act_save.setToolTip("Save SimENV view")
+        act_save.triggered.connect(self._on_save_view)
+        tb.addAction(act_save)
+
+        tb.addSeparator()
+
         act_run = QAction("\u25b6 Run Plan", self)
+        act_run.setIcon(editor_icon("run"))
         act_run.triggered.connect(self._on_run)
         tb.addAction(act_run)
 
         act_netlist = QAction("Netlist", self)
+        act_netlist.setIcon(editor_icon("netlist"))
         act_netlist.triggered.connect(self._on_view_netlist)
         tb.addAction(act_netlist)
 
-        act_wave = QAction("Waveform", self)
+        act_wave = QAction("SigView", self)
+        act_wave.setIcon(editor_icon("wave"))
         act_wave.triggered.connect(self._on_open_waveform)
         tb.addAction(act_wave)
+
+        act_dump = QAction("Dump Settings", self)
+        act_dump.setIcon(editor_icon("open"))
+        act_dump.setToolTip("Simulation dump settings")
+        act_dump.triggered.connect(self._on_set_sim_dump_dir)
+        tb.addAction(act_dump)
 
         tb.addSeparator()
         tb.addWidget(QLabel(" Sim: "))
@@ -1409,12 +2031,34 @@ class ADEWindow(QMainWindow):
             )
 
     def _on_run(self):
+        if self._sim_thread is not None and self._sim_thread.isRunning():
+            QMessageBox.information(self, "Simulation Running", "A simulation is already running in the background.")
+            return
+
         self._refresh_run_plan()
-        if not self._analysis_tabs:
+        self._last_sigview_waveforms = {}
+        self._sim_merged_waveforms = {}
+        if not self._ensure_selected_analysis_for_run():
             QMessageBox.warning(self, "No Test", "Add at least one SimENV test first.")
             return
 
         corner_mode = self.corner_mode_combo.currentText()
+        sim_label = get_simulator_label(self._current_simulator)
+        bridge = self._build_bridge()
+        if not bridge.is_available():
+            ready = ensure_simulator_available(
+                self,
+                str(getattr(self.db, "workspace", "")),
+                self._current_simulator,
+                logger=self._log,
+            )
+            if ready:
+                bridge = self._build_bridge()
+        if not bridge.is_available():
+            self._log(f"{sim_label} not found at: {bridge.exe_path}")
+            self._log("Netlist generated but simulation skipped.")
+            self.statusBar().showMessage(f"{self._current_simulator} not found")
+            return
 
         if corner_mode == "Single":
             try:
@@ -1430,19 +2074,11 @@ class ADEWindow(QMainWindow):
                 )
                 return
             self.log_view.setPlainText(netlist)
-            sim_label = get_simulator_label(self._current_simulator)
-            self._log(f"Starting {sim_label} simulation...")
-            self.statusBar().showMessage("Simulating...")
-
-            bridge = SimulatorBridge(self._current_simulator)
-            if not bridge.is_available():
-                self._log(f"{sim_label} not found at: {bridge.exe_path}")
-                self._log("Netlist generated but simulation skipped.")
-                self.statusBar().showMessage(f"{self._current_simulator} not found")
-                return
-
-            result = bridge.simulate(netlist, sim_name=f"simenv_{self.cell}")
-            self._handle_simulation_result(result, "Single")
+            self._log(f"Starting {sim_label} simulation in background...")
+            self._start_simulation_worker(
+                [( "Single", netlist, f"simenv_{self.cell}")],
+                bridge,
+            )
 
         elif corner_mode in ("All Corners", "Selected"):
             try:
@@ -1457,36 +2093,232 @@ class ADEWindow(QMainWindow):
                     f"Could not generate corner netlists for {self.library}/{self.cell}.\n\n{exc}",
                 )
                 return
-            sim_label = get_simulator_label(self._current_simulator)
-            self._log(f"Starting {sim_label} multi-corner simulation ({len(netlists)} corners)...")
-            self.statusBar().showMessage(f"Simulating {len(netlists)} corners...")
+            jobs = [
+                (corner_name, netlist, f"simenv_{self.cell}_{corner_name}")
+                for corner_name, netlist in netlists
+            ]
+            self._log(f"Starting {sim_label} multi-corner simulation ({len(jobs)} corners) in background...")
+            self._start_simulation_worker(jobs, bridge)
 
-            bridge = SimulatorBridge(self._current_simulator)
-            if not bridge.is_available():
-                self._log(f"{sim_label} not found at: {bridge.exe_path}")
-                self._log("Netlist generated but simulation skipped.")
-                self.statusBar().showMessage(f"{self._current_simulator} not found")
-                return
+    def _start_simulation_worker(self, jobs: list[tuple[str, str, str]], bridge: SimulatorBridge):
+        if not jobs:
+            return
+        self._sim_jobs_total = len(jobs)
+        self._sim_jobs_done = 0
+        self._sim_merged_waveforms = {}
+        self.statusBar().showMessage(f"Simulating in background... 0/{self._sim_jobs_total}")
 
-            all_waveforms = {}
-            for corner_name, netlist in netlists:
-                self._log(f"Running corner: {corner_name}")
-                result = bridge.simulate(
-                    netlist,
-                    sim_name=f"simenv_{self.cell}_{corner_name}"
-                )
-                self._handle_simulation_result(result, corner_name)
-                if result.success and result.waveforms:
-                    for sig, vals in result.waveforms.items():
-                        all_waveforms[f"{corner_name}.{sig}"] = vals
+        self._sim_thread = QThread(self)
+        self._sim_worker = SimEnvSimulationWorker(
+            self._current_simulator,
+            bridge.exe_path,
+            bridge.work_dir,
+            jobs,
+            threads=self._sim_thread_count(),
+        )
+        self._sim_worker.moveToThread(self._sim_thread)
 
-            if all_waveforms:
-                self._show_waveforms(all_waveforms)
+        self._sim_thread.started.connect(self._sim_worker.run)
+        self._sim_worker.progress.connect(self._on_simulation_progress)
+        self._sim_worker.result_ready.connect(self._on_simulation_result_ready)
+        self._sim_worker.failed.connect(self._on_simulation_worker_failed)
+        self._sim_worker.finished.connect(self._on_simulation_worker_finished)
+        self._sim_worker.finished.connect(self._sim_thread.quit)
+        self._sim_thread.finished.connect(self._sim_worker.deleteLater)
+        self._sim_thread.finished.connect(self._sim_thread.deleteLater)
+        self._sim_thread.finished.connect(self._clear_simulation_worker_refs)
+        self._sim_thread.start()
 
+    def _on_simulation_progress(self, message: str):
+        self._log(message)
+        self.statusBar().showMessage(
+            f"Simulating in background... {self._sim_jobs_done}/{self._sim_jobs_total}"
+        )
+
+    def _on_simulation_result_ready(self, run_name: str, result):
+        self._sim_jobs_done += 1
+        plot_waveforms = self._prepare_sigview_waveforms(result, run_name)
+        self._handle_simulation_result(result, run_name, plot_waveforms)
+        if result.success and plot_waveforms:
+            if self._sim_jobs_total == 1:
+                self._last_sigview_waveforms = dict(plot_waveforms)
+                signal_count = self._count_plottable_signals(self._last_sigview_waveforms)
+                self._log(f"SigView ready: {signal_count} waveform signal(s)")
+                if signal_count:
+                    self._show_waveforms(self._last_sigview_waveforms)
+            else:
+                self._merge_corner_waveforms(self._sim_merged_waveforms, run_name, plot_waveforms)
+        self.statusBar().showMessage(
+            f"Simulating in background... {self._sim_jobs_done}/{self._sim_jobs_total}"
+        )
+
+    def _on_simulation_worker_failed(self, details: str):
+        self._log("Background simulation worker failed.")
+        self.log_view.append(details)
+        self.statusBar().showMessage("Simulation worker failed", 5000)
+
+    def _on_simulation_worker_finished(self):
+        if self._sim_merged_waveforms:
+            self._last_sigview_waveforms = dict(self._sim_merged_waveforms)
+            self._show_waveforms(self._sim_merged_waveforms)
         self.main_tabs.setCurrentIndex(7)  # Switch to Results tab
+        self.statusBar().showMessage("Simulation finished", 5000)
+        self._log("Background simulation finished.")
 
-    def _handle_simulation_result(self, result, run_name: str):
+    def _clear_simulation_worker_refs(self):
+        self._sim_worker = None
+        self._sim_thread = None
+
+    def _prepare_sigview_waveforms(self, result, run_name: str) -> dict:
+        """Return the waveform subset that SimENV should plot in SigView."""
+        waveforms = getattr(result, "waveforms", {}) or {}
+        if not getattr(result, "success", False) or not waveforms:
+            return {}
+
+        if self.outputs_widget.chk_save_all_nodes.isChecked():
+            return dict(waveforms)
+
+        requested = self._selected_voltage_trace_names()
+        if not requested:
+            return {}
+
+        x_var = self._x_var_for_waveforms(waveforms)
+        filtered = {}
+        if x_var:
+            filtered[x_var] = waveforms.get(x_var, [])
+
+        available_by_key = {
+            self._trace_key(name): name
+            for name in waveforms.keys()
+            if name != x_var and not str(name).startswith("_")
+        }
+
+        missing = []
+        for trace_name in requested:
+            match = available_by_key.get(self._trace_key(trace_name))
+            if match:
+                filtered[match] = waveforms[match]
+            else:
+                missing.append(trace_name)
+
+        if missing:
+            self._log(
+                f"[{run_name}] Requested output(s) not found in simulator results: "
+                + ", ".join(missing[:6])
+            )
+
+        if self._count_plottable_signals(filtered):
+            self._write_selected_waveform_artifact(result, filtered)
+            return filtered
+        return {}
+
+    def _selected_voltage_trace_names(self) -> list[str]:
+        """Return checked SimENV output voltage traces in SigView naming form."""
+        requested: list[str] = []
+        table = self.outputs_widget.table
+        for row in range(table.rowCount()):
+            chk = table.cellWidget(row, 2)
+            if isinstance(chk, QCheckBox) and not chk.isChecked():
+                continue
+            expr_item = table.item(row, 1)
+            expr = expr_item.text().strip() if expr_item else ""
+            match = re.match(r"^\s*V\(\s*([^)]+)\s*\)\s*$", expr, re.IGNORECASE)
+            if not match:
+                continue
+            net = match.group(1).strip()
+            if not net:
+                continue
+            trace_name = f"V({net})"
+            if self._trace_key(trace_name) not in {self._trace_key(x) for x in requested}:
+                requested.append(trace_name)
+        return requested
+
+    @staticmethod
+    def _trace_key(name: str) -> str:
+        return re.sub(r"\s+", "", str(name or "")).lower()
+
+    def _x_var_for_waveforms(self, waveforms: dict) -> str:
+        for candidate in ("time", "frequency", "v-sweep", "sweep"):
+            if candidate in waveforms:
+                return candidate
+        keys = [k for k in waveforms.keys() if not str(k).startswith("_")]
+        return keys[0] if keys else ""
+
+    def _write_selected_waveform_artifact(self, result, waveforms: dict) -> None:
+        """Write the selected SimENV plot set and point run manifests to it."""
+        run_dir = str(getattr(result, "run_dir", "") or "")
+        if not run_dir:
+            artifacts = getattr(result, "artifacts", {}) or {}
+            manifest = artifacts.get("manifest", "")
+            if manifest:
+                run_dir = os.path.dirname(manifest)
+        if not run_dir:
+            return
+
+        selected_path = os.path.join(run_dir, "selected_waveforms.csv")
+        if not self._write_waveform_csv(selected_path, waveforms):
+            return
+
+        artifacts = getattr(result, "artifacts", None)
+        if isinstance(artifacts, dict):
+            if "csv" in artifacts and artifacts.get("csv") != selected_path:
+                artifacts.setdefault("all_csv", artifacts.get("csv"))
+            artifacts["selected_csv"] = selected_path
+            artifacts["waveforms"] = selected_path
+
+        self._update_run_manifest_for_selected_waveforms(result, waveforms)
+
+    def _write_waveform_csv(self, path: str, waveforms: dict) -> bool:
+        names = [str(k) for k in waveforms.keys() if not str(k).startswith("_")]
+        if not names:
+            return False
+        x_var = self._x_var_for_waveforms(waveforms)
+        if x_var in names:
+            names.remove(x_var)
+            names.insert(0, x_var)
+        n_points = max((len(waveforms.get(name, [])) for name in names), default=0)
+        if n_points <= 0:
+            return False
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", newline="", encoding="utf-8") as fh:
+                writer = csv.writer(fh)
+                writer.writerow(names)
+                for idx in range(n_points):
+                    row = []
+                    for name in names:
+                        values = waveforms.get(name, [])
+                        row.append(values[idx] if idx < len(values) else "")
+                    writer.writerow(row)
+            return True
+        except OSError:
+            return False
+
+    def _update_run_manifest_for_selected_waveforms(self, result, waveforms: dict) -> None:
+        artifacts = getattr(result, "artifacts", {}) or {}
+        manifest_path = artifacts.get("manifest", "")
+        if not manifest_path:
+            return
+        try:
+            data = {}
+            if os.path.isfile(manifest_path):
+                with open(manifest_path, "r", encoding="utf-8") as fh:
+                    data = json.load(fh)
+            if not isinstance(data, dict):
+                data = {}
+            data.setdefault("format", "lumen-sim-run")
+            data.setdefault("version", 1)
+            data["artifacts"] = artifacts
+            data["plot_signals"] = [k for k in waveforms.keys() if not str(k).startswith("_")]
+            data["plot_source"] = "simenv_outputs"
+            with open(manifest_path, "w", encoding="utf-8", newline="\n") as fh:
+                json.dump(data, fh, indent=2)
+        except (OSError, json.JSONDecodeError):
+            return
+
+    def _handle_simulation_result(self, result, run_name: str, plot_waveforms: dict | None = None):
         """Handle simulation result and update results table."""
+        plot_waveforms = plot_waveforms or {}
         r = self.results_table.rowCount()
         self.results_table.insertRow(r)
         analyses_str = ", ".join(self._analysis_tabs.keys())
@@ -1497,9 +2329,31 @@ class ADEWindow(QMainWindow):
         status_item.setForeground(QColor("#8bc78b") if result.success else QColor("#cc8888"))
         self.results_table.setItem(r, 2, status_item)
         self.results_table.setItem(r, 3, QTableWidgetItem("--"))
+        if result.success and plot_waveforms:
+            self._result_waveforms_by_row[r] = dict(plot_waveforms)
 
         if result.success:
             self._log(f"[{run_name}] Simulation completed successfully")
+            if plot_waveforms:
+                self._log(
+                    f"[{run_name}] Selected waveforms available for SigView: "
+                    f"{self._count_plottable_signals(plot_waveforms)} signal(s)"
+                )
+            elif result.waveforms:
+                self._log(
+                    f"[{run_name}] Simulator produced {self._count_plottable_signals(result.waveforms)} node signal(s), "
+                    "but no SimENV Outputs are selected for plotting."
+                )
+            if getattr(result, "netlist_path", ""):
+                self._log(f"[{run_name}] Input deck: {result.netlist_path}")
+                self._log(f"[{run_name}] Dump folder: {os.path.dirname(result.netlist_path)}")
+            if result.output_path:
+                self._log(f"[{run_name}] Output: {result.output_path}")
+            else:
+                self._log(f"[{run_name}] Output: no RAW file generated")
+            artifacts = getattr(result, "artifacts", {}) or {}
+            for kind, path in artifacts.items():
+                self._log(f"[{run_name}] {str(kind).upper()} data: {path}")
             if result.log:
                 self.log_view.append(f"\n{result.log}")
         else:
@@ -1512,17 +2366,102 @@ class ADEWindow(QMainWindow):
         self.statusBar().showMessage("Done" if result.success else "Failed", 5000)
 
     def _show_waveforms(self, waveforms):
-        from lumen.gui.waveform_viewer import WaveformViewerWindow
-        v = WaveformViewerWindow()
+        from lumen.gui.waveform_viewer import SigViewWindow
+        v = SigViewWindow()
         v.load_results(waveforms)
         v.show()
         self._waveform_viewers.append(v)
 
     def _on_open_waveform(self):
-        from lumen.gui.waveform_viewer import WaveformViewerWindow
-        v = WaveformViewerWindow()
+        if self._last_sigview_waveforms:
+            self._show_waveforms(self._last_sigview_waveforms)
+            self.statusBar().showMessage("Opened latest waveforms in SigView", 4000)
+            return
+
+        selected = self.results_table.currentRow() if hasattr(self, "results_table") else -1
+        if selected in self._result_waveforms_by_row:
+            self._show_waveforms(self._result_waveforms_by_row[selected])
+            self.statusBar().showMessage("Opened selected run in SigView", 4000)
+            return
+
+        from lumen.gui.waveform_viewer import SigViewWindow
+        v = SigViewWindow()
         v.show()
         self._waveform_viewers.append(v)
+        QMessageBox.information(
+            self,
+            "SigView",
+            "No simulation waveforms are loaded yet. Run a simulation first, or open a .raw/.csv file from SigView.",
+        )
+
+    def _on_result_double_click(self, item):
+        row = item.row()
+        waveforms = self._result_waveforms_by_row.get(row)
+        if not waveforms:
+            QMessageBox.information(self, "SigView", "This run does not have plottable waveform data.")
+            return
+        self._last_sigview_waveforms = dict(waveforms)
+        self._show_waveforms(waveforms)
+
+    def _count_plottable_signals(self, waveforms: dict) -> int:
+        if not waveforms:
+            return 0
+        x_var = ""
+        for candidate in ("time", "frequency", "v-sweep", "sweep"):
+            if candidate in waveforms:
+                x_var = candidate
+                break
+        if not x_var:
+            keys = [k for k in waveforms.keys() if not str(k).startswith("_")]
+            x_var = keys[0] if keys else ""
+        return len([k for k in waveforms.keys() if k != x_var and not str(k).startswith("_")])
+
+    def _merge_corner_waveforms(self, merged: dict, corner_name: str, waveforms: dict) -> None:
+        x_var = ""
+        for candidate in ("time", "frequency", "v-sweep", "sweep"):
+            if candidate in waveforms:
+                x_var = candidate
+                break
+        if not x_var:
+            keys = [k for k in waveforms.keys() if not str(k).startswith("_")]
+            x_var = keys[0] if keys else ""
+
+        if x_var and x_var not in merged:
+            merged[x_var] = waveforms.get(x_var, [])
+
+        for sig, vals in waveforms.items():
+            if sig == x_var or str(sig).startswith("_"):
+                continue
+            merged[f"{corner_name}.{sig}"] = vals
+
+    def _on_set_sim_dump_dir(self):
+        dlg = SimulationDumpSettingsDialog(
+            current_dir=self._resolved_sim_dump_dir(),
+            default_dir=self._default_sim_dump_dir(),
+            parent=self,
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._set_sim_dump_dir(dlg.selected_path())
+
+    def _set_sim_dump_dir(self, path: str):
+        self._sim_dump_dir = str(Path(path).expanduser().resolve())
+        os.makedirs(self._sim_dump_dir, exist_ok=True)
+        self._log(f"Simulation dump folder set to: {self._sim_dump_dir}")
+        self.statusBar().showMessage(f"Sim dump folder: {self._sim_dump_dir}", 5000)
+        self._refresh_run_plan()
+        self._save_simenv_view_silent()
+
+    def _on_open_sim_dump_dir(self):
+        folder = self._resolved_sim_dump_dir()
+        os.makedirs(folder, exist_ok=True)
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(folder)):
+            QMessageBox.warning(self, "Open Dump Folder", f"Could not open:\n{folder}")
+
+    def _on_open_simulator_manager(self):
+        win = SimulatorManagerWindow(str(getattr(self.db, "workspace", "")), ciw=self.ciw, parent=self)
+        win.show()
+        self._sim_manager_window = win
 
     def _log(self, msg):
         self.log_view.append(f"→ {msg}")
@@ -1538,63 +2477,319 @@ class ADEWindow(QMainWindow):
             if getattr(parent, "_simenv_tab", None) is self:
                 parent._simenv_tab = None
         event.accept()
+
+    def _table_text(self, table: QTableWidget, row: int, col: int, default: str = "") -> str:
+        item = table.item(row, col)
+        return item.text().strip() if item else default
+
+    def _set_table_text(self, table: QTableWidget, row: int, col: int, value) -> None:
+        table.setItem(row, col, QTableWidgetItem(str(value)))
+
+    def _collect_simenv_setup(self) -> dict:
+        """Collect the complete SimENV state for database save/export."""
+        setup = {
+            "type": "simenv",
+            "version": "1.1",
+            "library": self.library,
+            "cell": self.cell,
+            "view": "simenv",
+            "simulator": self._current_simulator,
+            "sim_dump_dir": self._resolved_sim_dump_dir(),
+            "threads": self._sim_thread_count(),
+            "pdk": self._selected_pdk_name(),
+            "corner_mode": self.corner_mode_combo.currentText() if hasattr(self, "corner_mode_combo") else "Single",
+            "analyses": {},
+            "variables": [],
+            "outputs": [],
+            "output_options": {
+                "save_all_nodes": self.outputs_widget.chk_save_all_nodes.isChecked(),
+                "save_all_currents": self.outputs_widget.chk_save_all_currents.isChecked(),
+            },
+            "measurements": [],
+            "corners": [],
+            "stimuli": [],
+            "convergence": {"nodesets": [], "ics": []},
+            "sweeps": [],
+        }
+
+        for name, widget in self._analysis_tabs.items():
+            setup["analyses"][name] = widget.get_values()
+
+        for r in range(self.var_widget.table.rowCount()):
+            name = self._table_text(self.var_widget.table, r, 0)
+            value = self._table_text(self.var_widget.table, r, 1)
+            desc = self._table_text(self.var_widget.table, r, 2)
+            if name:
+                setup["variables"].append({"name": name, "value": value, "description": desc})
+
+        for r in range(self.outputs_widget.table.rowCount()):
+            sig = self._table_text(self.outputs_widget.table, r, 0)
+            expr = self._table_text(self.outputs_widget.table, r, 1)
+            chk = self.outputs_widget.table.cellWidget(r, 2)
+            if sig or expr:
+                setup["outputs"].append({
+                    "signal": sig,
+                    "expression": expr,
+                    "plot": bool(chk.isChecked()) if isinstance(chk, QCheckBox) else True,
+                })
+
+        for r in range(self.measurement_widget.table.rowCount()):
+            type_widget = self.measurement_widget.table.cellWidget(r, 1)
+            setup["measurements"].append({
+                "name": self._table_text(self.measurement_widget.table, r, 0),
+                "type": type_widget.currentText() if isinstance(type_widget, QComboBox) else "AVG",
+                "expression": self._table_text(self.measurement_widget.table, r, 2),
+                "target": self._table_text(self.measurement_widget.table, r, 3),
+                "from": self._table_text(self.measurement_widget.table, r, 4),
+                "to": self._table_text(self.measurement_widget.table, r, 5),
+            })
+
+        for r in range(self.corner_table.rowCount()):
+            chk = self.corner_table.cellWidget(r, 4)
+            setup["corners"].append({
+                "name": self._table_text(self.corner_table, r, 0, "corner"),
+                "temp": self._table_text(self.corner_table, r, 1, "25"),
+                "vdd": self._table_text(self.corner_table, r, 2, "1.8"),
+                "process": self._table_text(self.corner_table, r, 3, "tt"),
+                "enabled": bool(chk.isChecked()) if isinstance(chk, QCheckBox) else True,
+            })
+
+        for r in range(self.stimulus_widget.table.rowCount()):
+            type_widget = self.stimulus_widget.table.cellWidget(r, 3)
+            setup["stimuli"].append({
+                "name": self._table_text(self.stimulus_widget.table, r, 0),
+                "plus": self._table_text(self.stimulus_widget.table, r, 1),
+                "minus": self._table_text(self.stimulus_widget.table, r, 2),
+                "type": type_widget.currentText() if isinstance(type_widget, QComboBox) else "DC",
+                "parameters": self._table_text(self.stimulus_widget.table, r, 4),
+            })
+
+        for table_name, table in (
+            ("nodesets", self.convergence_widget.nodeset_table),
+            ("ics", self.convergence_widget.ic_table),
+        ):
+            for r in range(table.rowCount()):
+                node = self._table_text(table, r, 0)
+                value = self._table_text(table, r, 1)
+                if node:
+                    setup["convergence"][table_name].append({"node": node, "value": value})
+
+        for r in range(self.sweep_widget.sweep_table.rowCount()):
+            chk = self.sweep_widget.sweep_table.cellWidget(r, 4)
+            var = self._table_text(self.sweep_widget.sweep_table, r, 0)
+            if var:
+                setup["sweeps"].append({
+                    "variable": var,
+                    "start": self._table_text(self.sweep_widget.sweep_table, r, 1),
+                    "stop": self._table_text(self.sweep_widget.sweep_table, r, 2),
+                    "step": self._table_text(self.sweep_widget.sweep_table, r, 3),
+                    "nested": bool(chk.isChecked()) if isinstance(chk, QCheckBox) else False,
+                })
+
+        return setup
+
+    def _apply_simenv_setup(self, setup: dict) -> None:
+        """Apply a saved/imported SimENV setup to the current window."""
+        if not isinstance(setup, dict):
+            return
+
+        sim = setup.get("simulator", "GSPICE")
+        idx = self.sim_combo.findData(sim)
+        if idx >= 0:
+            self.sim_combo.setCurrentIndex(idx)
+        self._current_simulator = self.sim_combo.currentData() or sim
+        self._sim_dump_dir = str(setup.get("sim_dump_dir") or self._default_sim_dump_dir())
+        try:
+            self._sim_threads = max(1, min(16, int(setup.get("threads", 1) or 1)))
+        except (TypeError, ValueError):
+            self._sim_threads = 1
+        if hasattr(self, "thread_spin"):
+            self.thread_spin.blockSignals(True)
+            self.thread_spin.setValue(self._sim_threads)
+            self.thread_spin.blockSignals(False)
+
+        if hasattr(self, "pdk_combo"):
+            pdk = setup.get("pdk", "")
+            idx = self.pdk_combo.findData(pdk)
+            if idx >= 0:
+                self.pdk_combo.setCurrentIndex(idx)
+
+        mode = setup.get("corner_mode", "Single")
+        idx = self.corner_mode_combo.findText(mode)
+        if idx >= 0:
+            self.corner_mode_combo.setCurrentIndex(idx)
+
+        self.var_widget.table.setRowCount(0)
+        variables = setup.get("variables", [])
+        if isinstance(variables, dict):
+            variables = [{"name": k, "value": v, "description": ""} for k, v in variables.items()]
+        for entry in variables if isinstance(variables, list) else []:
+            if not isinstance(entry, dict):
+                continue
+            self.var_widget._add_row()
+            r = self.var_widget.table.rowCount() - 1
+            self._set_table_text(self.var_widget.table, r, 0, entry.get("name", ""))
+            self._set_table_text(self.var_widget.table, r, 1, entry.get("value", ""))
+            self._set_table_text(self.var_widget.table, r, 2, entry.get("description", ""))
+
+        self.analysis_setup_tabs.clear()
+        self._analysis_tabs.clear()
+        for name, values in setup.get("analyses", {}).items():
+            if name not in ANALYSES:
+                continue
+            self._add_analysis(name)
+            widget = self._analysis_tabs.get(name)
+            if not widget or not isinstance(values, dict):
+                continue
+            for param_name, param_value in values.items():
+                w = widget._fields.get(param_name)
+                if isinstance(w, QCheckBox):
+                    w.setChecked(bool(param_value))
+                elif isinstance(w, QLineEdit):
+                    w.setText(str(param_value))
+
+        self.outputs_widget.table.setRowCount(0)
+        output_options = setup.get("output_options", {})
+        self.outputs_widget.chk_save_all_nodes.setChecked(bool(output_options.get("save_all_nodes", False)))
+        self.outputs_widget.chk_save_all_currents.setChecked(bool(output_options.get("save_all_currents", False)))
+        for output in setup.get("outputs", []):
+            if not isinstance(output, dict):
+                continue
+            self.outputs_widget._add_entry(output.get("signal", "sig"), output.get("expression", "V(node)"))
+            r = self.outputs_widget.table.rowCount() - 1
+            chk = self.outputs_widget.table.cellWidget(r, 2)
+            if isinstance(chk, QCheckBox):
+                chk.setChecked(bool(output.get("plot", True)))
+
+        self.measurement_widget.table.setRowCount(0)
+        for meas in setup.get("measurements", []):
+            if not isinstance(meas, dict):
+                continue
+            self.measurement_widget._add_row()
+            r = self.measurement_widget.table.rowCount() - 1
+            self._set_table_text(self.measurement_widget.table, r, 0, meas.get("name", f"meas_{r}"))
+            type_widget = self.measurement_widget.table.cellWidget(r, 1)
+            if isinstance(type_widget, QComboBox):
+                idx = type_widget.findText(meas.get("type", "AVG"))
+                if idx >= 0:
+                    type_widget.setCurrentIndex(idx)
+            self._set_table_text(self.measurement_widget.table, r, 2, meas.get("expression", "V(out)"))
+            self._set_table_text(self.measurement_widget.table, r, 3, meas.get("target", ""))
+            self._set_table_text(self.measurement_widget.table, r, 4, meas.get("from", ""))
+            self._set_table_text(self.measurement_widget.table, r, 5, meas.get("to", ""))
+
+        if "corners" in setup:
+            self.corner_table.setRowCount(0)
+            for corner in setup.get("corners", []):
+                if not isinstance(corner, dict):
+                    continue
+                self._add_corner(
+                    corner.get("name", "corner"),
+                    str(corner.get("temp", "25")),
+                    str(corner.get("vdd", "1.8")),
+                    corner.get("process", "tt"),
+                )
+                chk = self.corner_table.cellWidget(self.corner_table.rowCount() - 1, 4)
+                if isinstance(chk, QCheckBox):
+                    chk.setChecked(bool(corner.get("enabled", True)))
+
+        self.stimulus_widget.table.setRowCount(0)
+        for stim in setup.get("stimuli", []):
+            if not isinstance(stim, dict):
+                continue
+            self.stimulus_widget._add_row()
+            r = self.stimulus_widget.table.rowCount() - 1
+            self._set_table_text(self.stimulus_widget.table, r, 0, stim.get("name", "V1"))
+            self._set_table_text(self.stimulus_widget.table, r, 1, stim.get("plus", "net1"))
+            self._set_table_text(self.stimulus_widget.table, r, 2, stim.get("minus", "0"))
+            type_widget = self.stimulus_widget.table.cellWidget(r, 3)
+            if isinstance(type_widget, QComboBox):
+                idx = type_widget.findText(stim.get("type", "DC"))
+                if idx >= 0:
+                    type_widget.setCurrentIndex(idx)
+            self._set_table_text(self.stimulus_widget.table, r, 4, stim.get("parameters", "1.8"))
+
+        convergence = setup.get("convergence", {})
+        self.convergence_widget.nodeset_table.setRowCount(0)
+        self.convergence_widget.ic_table.setRowCount(0)
+        for table, entries in (
+            (self.convergence_widget.nodeset_table, convergence.get("nodesets", []) if isinstance(convergence, dict) else []),
+            (self.convergence_widget.ic_table, convergence.get("ics", []) if isinstance(convergence, dict) else []),
+        ):
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                self.convergence_widget._add_row(table)
+                r = table.rowCount() - 1
+                self._set_table_text(table, r, 0, entry.get("node", "node"))
+                self._set_table_text(table, r, 1, entry.get("value", "0"))
+
+        self.sweep_widget.sweep_table.setRowCount(0)
+        for sweep in setup.get("sweeps", []):
+            if not isinstance(sweep, dict):
+                continue
+            self.sweep_widget._add_sweep()
+            r = self.sweep_widget.sweep_table.rowCount() - 1
+            self._set_table_text(self.sweep_widget.sweep_table, r, 0, sweep.get("variable", "var"))
+            self._set_table_text(self.sweep_widget.sweep_table, r, 1, sweep.get("start", "0"))
+            self._set_table_text(self.sweep_widget.sweep_table, r, 2, sweep.get("stop", "1.8"))
+            self._set_table_text(self.sweep_widget.sweep_table, r, 3, sweep.get("step", "0.1"))
+            chk = self.sweep_widget.sweep_table.cellWidget(r, 4)
+            if isinstance(chk, QCheckBox):
+                chk.setChecked(bool(sweep.get("nested", False)))
+
+        if hasattr(self, "toolbar_sim_label"):
+            self.toolbar_sim_label.setText(self._current_simulator)
+        self._refresh_run_plan()
+
+    def _load_simenv_view(self) -> None:
+        data = self.db.load_view(self.library, self.cell, "simenv")
+        if not data:
+            return
+        try:
+            self._apply_simenv_setup(data)
+            self.session_badge.setText("Session: saved view")
+            self.statusBar().showMessage("Loaded saved SimENV view", 3000)
+        except Exception as exc:
+            self._log(f"Could not load saved SimENV view: {exc}")
+
+    def _on_save_view(self):
+        """Save SimENV as the cell's database view."""
+        try:
+            data = self._collect_simenv_setup()
+            self.db.save_view(self.library, self.cell, "simenv", data)
+            self.session_badge.setText("Session: saved view")
+            self.statusBar().showMessage(f"Saved {self.library}/{self.cell}/simenv", 3000)
+            self._log(f"Saved SimENV view: {self.library}/{self.cell}/simenv")
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Save SimENV Failed",
+                f"Could not save {self.library}/{self.cell}/simenv.\n\n{exc}",
+            )
+
     def _on_save_setup(self):
         """Save SimENV Setup as JSON template."""
-        import json
-        from pathlib import Path
 
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save SimENV Setup", "", "SimENV Setup (*.simenv.json);;Legacy Setup (*.ade.json)"
+            self, "Export SimENV Setup", "", "SimENV Setup (*.simenv.json);;Legacy Setup (*.ade.json)"
         )
         if not path:
             return
         if not path.endswith((".simenv.json", ".ade.json")):
             path += ".simenv.json"
 
-        setup = {
-            "version": "1.0",
-            "simulator": self._current_simulator,
-            "analyses": {},
-            "variables": self.var_widget.get_variables(),
-            "outputs": [],
-            "measurements": [],
-            "corners": self.get_corner_data(),
-            "corner_mode": self.corner_mode_combo.currentText(),
-        }
-
-        for name, widget in self._analysis_tabs.items():
-            setup["analyses"][name] = widget.get_values()
-
-        for r in range(self.outputs_widget.table.rowCount()):
-            sig_item = self.outputs_widget.table.item(r, 0)
-            expr_item = self.outputs_widget.table.item(r, 1)
-            if sig_item and expr_item:
-                setup["outputs"].append({
-                    "signal": sig_item.text(),
-                    "expression": expr_item.text()
-                })
-
-        for r in range(self.measurement_widget.table.rowCount()):
-            name_item = self.measurement_widget.table.item(r, 0)
-            type_widget = self.measurement_widget.table.cellWidget(r, 1)
-            expr_item = self.measurement_widget.table.item(r, 2)
-            if name_item and type_widget and expr_item:
-                setup["measurements"].append({
-                    "name": name_item.text(),
-                    "type": type_widget.currentText(),
-                    "expression": expr_item.text()
-                })
+        setup = self._collect_simenv_setup()
 
         with open(path, "w") as f:
             json.dump(setup, f, indent=2)
-        self._log(f"Saved SimENV setup to {path}")
+        self._log(f"Exported SimENV setup to {path}")
 
     def _on_load_setup(self):
         """Load SimENV Setup from JSON template."""
-        import json
 
         path, _ = QFileDialog.getOpenFileName(
-            self, "Load SimENV Setup", "", "SimENV Setup (*.simenv.json);;Legacy Setup (*.ade.json)"
+            self, "Import SimENV Setup", "", "SimENV Setup (*.simenv.json);;Legacy Setup (*.ade.json)"
         )
         if not path:
             return
@@ -1602,71 +2797,8 @@ class ADEWindow(QMainWindow):
         with open(path) as f:
             setup = json.load(f)
 
-        # Load simulator
-        sim = setup.get("simulator", "GSPICE")
-        idx = self.sim_combo.findData(sim)
-        if idx >= 0:
-            self.sim_combo.setCurrentIndex(idx)
-
-        # Load variables
-        self.var_widget.table.setRowCount(0)
-        for name, value in setup.get("variables", {}).items():
-            self.var_widget._add_row()
-            r = self.var_widget.table.rowCount() - 1
-            self.var_widget.table.setItem(r, 0, QTableWidgetItem(name))
-            self.var_widget.table.setItem(r, 1, QTableWidgetItem(value))
-
-        # Load analyses
-        for name, values in setup.get("analyses", {}).items():
-            self._add_analysis(name)
-            widget = self._analysis_tabs.get(name)
-            if widget:
-                for param_name, param_value in values.items():
-                    w = widget._fields.get(param_name)
-                    if isinstance(w, QCheckBox):
-                        w.setChecked(bool(param_value))
-                    elif isinstance(w, QLineEdit):
-                        w.setText(str(param_value))
-
-        # Load outputs
-        self.outputs_widget.table.setRowCount(0)
-        for output in setup.get("outputs", []):
-            self.outputs_widget._add_entry(
-                output.get("signal", "sig"),
-                output.get("expression", "V(node)"),
-            )
-
-        # Load measurements
-        self.measurement_widget.table.setRowCount(0)
-        for meas in setup.get("measurements", []):
-            self.measurement_widget._add_row()
-            r = self.measurement_widget.table.rowCount() - 1
-            self.measurement_widget.table.setItem(
-                r, 0, QTableWidgetItem(meas.get("name", f"meas_{r}")))
-            type_widget = self.measurement_widget.table.cellWidget(r, 1)
-            if isinstance(type_widget, QComboBox):
-                idx = type_widget.findText(meas.get("type", "AVG"))
-                if idx >= 0:
-                    type_widget.setCurrentIndex(idx)
-            self.measurement_widget.table.setItem(
-                r, 2, QTableWidgetItem(meas.get("expression", "V(out)")))
-
-        # Load corners and run mode
-        self.corner_table.setRowCount(0)
-        for corner in setup.get("corners", []):
-            self._add_corner(
-                corner.get("name", "corner"),
-                str(corner.get("temp", "25")),
-                str(corner.get("vdd", "1.8")),
-                corner.get("process", "tt"),
-            )
-        mode = setup.get("corner_mode", "Single")
-        idx = self.corner_mode_combo.findText(mode)
-        if idx >= 0:
-            self.corner_mode_combo.setCurrentIndex(idx)
-
-        self._log(f"Loaded SimENV setup from {path}")
-        self._refresh_run_plan()
+        self._apply_simenv_setup(setup)
+        self._log(f"Imported SimENV setup from {path}")
 
 
 

@@ -172,6 +172,99 @@ class NetlistQucsSupportTest(unittest.TestCase):
         self.assertIn(".END", netlist)
         self.assertIn("RBAD", netlist)
 
+    def test_string_coordinate_payloads_do_not_crash_netlisting(self):
+        self._save_symbol(
+            "rv",
+            "R",
+            [{"name": "PLUS", "x": "0", "y": "-10"}, {"name": "MINUS", "x": "0", "y": "10"}],
+            [{"name": "R", "default": "1k"}],
+        )
+        self.db.save_view("work", "top", "schematic", {
+            "type": "schematic",
+            "name": "top",
+            "library": "work",
+            "instances": [{
+                "name": "RSTR",
+                "library": "work",
+                "cell": "rv",
+                "x": "10",
+                "y": "10",
+                "params": {"R": "2k"},
+            }],
+            "wires": [{"x1": "0", "y1": "0", "x2": "10", "y2": "0"}],
+            "labels": [{"text": "VIN", "x": "0", "y": "0"}],
+            "pins": [{"name": "OUT", "x": "10", "y": "0"}],
+        })
+        gen = NetlistGenerator(self.db)
+        netlist = gen.generate("work", "top")
+        self.assertIn(".END", netlist)
+        self.assertIn("RSTR", netlist)
+
+    def test_string_coordinate_midwire_pin_split_does_not_crash_netlisting(self):
+        self._save_symbol(
+            "rv",
+            "R",
+            [{"name": "PLUS", "x": "0", "y": "-10"}, {"name": "MINUS", "x": "0", "y": "10"}],
+            [{"name": "R", "default": "1k"}],
+        )
+        self.db.save_view("work", "top", "schematic", {
+            "type": "schematic",
+            "name": "top",
+            "library": "work",
+            "instances": [{
+                "name": "RSTR",
+                "library": "work",
+                "cell": "rv",
+                "x": "10",
+                "y": "10",
+                "params": {"R": "2k"},
+            }],
+            "wires": [{"x1": "0", "y1": "0", "x2": "20", "y2": "0"}],
+            "labels": [{"text": "VIN", "x": "0", "y": "0"}],
+            "pins": [],
+        })
+        gen = NetlistGenerator(self.db)
+        netlist = gen.generate("work", "top")
+        self.assertIn(".END", netlist)
+        self.assertIn("RSTR", netlist)
+
+    def test_endpoint_to_midsegment_t_junction_shares_same_net(self):
+        self._save_symbol(
+            "rv",
+            "R",
+            [{"name": "PLUS", "x": 0, "y": 0}, {"name": "MINUS", "x": 0, "y": 10}],
+            [{"name": "R", "default": "1k"}],
+        )
+        self._save_symbol(
+            "vp",
+            "VPULSE",
+            [{"name": "PLUS", "x": 0, "y": 0}, {"name": "MINUS", "x": 0, "y": 10}],
+            [{"name": "dc", "default": "0"}],
+        )
+        self.db.save_view("work", "top", "schematic", {
+            "type": "schematic",
+            "name": "top",
+            "library": "work",
+            "instances": [
+                {"name": "R1", "library": "work", "cell": "rv", "x": 40, "y": -90, "params": {"R": "1k"}},
+                {"name": "R2", "library": "work", "cell": "rv", "x": 40, "y": 10, "params": {"R": "1k"}},
+                {"name": "V1", "library": "work", "cell": "vp", "x": -130, "y": -40, "params": {"dc": "0"}},
+            ],
+            "wires": [
+                {"x1": 10, "y1": -90, "x2": 10, "y2": 10},
+                {"x1": 10, "y1": -90, "x2": 40, "y2": -90},
+                {"x1": 10, "y1": 10, "x2": 40, "y2": 10},
+                {"x1": -130, "y1": -40, "x2": 10, "y2": -40},
+            ],
+            "labels": [],
+            "pins": [],
+        })
+        gen = NetlistGenerator(self.db)
+        net_map = gen._build_net_map_connectivity(
+            self.db.load_view("work", "top", "schematic"))
+        self.assertEqual(net_map["V1.PLUS"], net_map["R1.PLUS"])
+        self.assertEqual(net_map["V1.PLUS"], net_map["R2.PLUS"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -17,14 +17,17 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QAction, QKeySequence
+from pathlib import Path
 
 from lumen.core.database import LibraryDatabase
+from lumen.core.simulator_runtime import SimulatorRuntimeManager
 from lumen.gui.library_browser import LibraryBrowserWidget
 from lumen.gui.schematic_editor import SchematicEditor
 from lumen.gui.symbol_editor import SymbolEditor
 from lumen.gui.property_editor import PropertyEditorWidget
 from lumen.gui.branding import apply_window_branding, logo_label, logo_url
 from lumen.core.pdk_service import resolve_workspace
+from lumen.gui.simulator_manager_window import ensure_simulator_available
 
 
 class LumenMainWindow(QMainWindow):
@@ -375,7 +378,12 @@ class LumenMainWindow(QMainWindow):
             self.editor_tabs.setCurrentWidget(editor)
             self.log(f"Opened {library}/{cell}/{view}")
         else:
-            self.log(f"View type '{view}' not yet supported")
+            from lumen.gui.cellview_window import CellViewWindow
+            win = CellViewWindow(self.db, library, cell, view, parent=self)
+            win.show()
+            self._editor_windows = getattr(self, "_editor_windows", [])
+            self._editor_windows.append(win)
+            self.log(f"Opened {library}/{cell}/{view} in generic editor")
 
     # ── Slot Handlers ─────────────────────────────────────────
 
@@ -400,19 +408,32 @@ class LumenMainWindow(QMainWindow):
         if ok and lib:
             name, ok2 = QInputDialog.getText(self, "New Cell", "Cell name:")
             if ok2 and name:
-                self.db.create_cell(lib, name)
-                # Auto-create schematic view
-                self.db.save_view(lib, name, "schematic", {
-                    "type": "schematic", "name": name, "library": lib,
-                    "instances": [], "wires": [], "labels": [], "pins": []
-                })
-                self.db.save_view(lib, name, "symbol", {
-                    "type": "symbol", "name": name, "library": lib,
-                    "pins": [], "shapes": [], "parameters": [],
-                    "label": {"text": name, "x": 0, "y": 0}
-                })
-                self.lib_browser.refresh()
-                self.log(f"Created cell: {lib}/{name}")
+                try:
+                    lib_info = self.db.get_library(lib)
+                    default_cell_path = str(Path(lib_info.path) / name) if lib_info else name
+                    cell_path, ok3 = QInputDialog.getText(
+                        self,
+                        "New Cell Path",
+                        f"Path for {lib}/{name}:",
+                        text=default_cell_path,
+                    )
+                    if not ok3 or not cell_path.strip():
+                        return
+                    self.db.create_cell(lib, name, cell_path.strip())
+                    # Auto-create schematic view
+                    self.db.save_view(lib, name, "schematic", {
+                        "type": "schematic", "name": name, "library": lib,
+                        "instances": [], "wires": [], "labels": [], "pins": []
+                    })
+                    self.db.save_view(lib, name, "symbol", {
+                        "type": "symbol", "name": name, "library": lib,
+                        "pins": [], "shapes": [], "parameters": [],
+                        "label": {"text": name, "x": 0, "y": 0}
+                    })
+                    self.lib_browser.refresh()
+                    self.log(f"Created cell: {lib}/{name}")
+                except ValueError as exc:
+                    QMessageBox.warning(self, "New Cell", str(exc))
 
     def _on_new_schematic(self):
         """Create a new untitled schematic tab."""
@@ -474,7 +495,23 @@ class LumenMainWindow(QMainWindow):
                 target_lib, ok = QInputDialog.getItem(self, "Save As", "Library:", libs, 0, False)
                 if not ok or not target_lib:
                     return
-            editor.save_as(target_lib, cell, editor.view)
+            try:
+                cell_path = ""
+                if not self.db.cell_exists(target_lib, cell):
+                    lib_info = self.db.get_library(target_lib)
+                    default_cell_path = str(Path(lib_info.path) / cell) if lib_info else cell
+                    cell_path, ok_path = QInputDialog.getText(
+                        self,
+                        "New Cell Path",
+                        f"Path for {target_lib}/{cell}:",
+                        text=default_cell_path,
+                    )
+                    if not ok_path or not cell_path.strip():
+                        return
+                editor.save_as(target_lib, cell, editor.view, cell_path.strip())
+            except ValueError as exc:
+                QMessageBox.warning(self, "Save As", str(exc))
+                return
             self.log(f"Saved as {target_lib}/{cell}/{editor.view}")
             return
         if isinstance(editor, SymbolEditor):
@@ -485,7 +522,21 @@ class LumenMainWindow(QMainWindow):
             if not ok or not cell:
                 return
             if not self.db.cell_exists(lib, cell):
-                self.db.create_cell(lib, cell)
+                try:
+                    lib_info = self.db.get_library(lib)
+                    default_cell_path = str(Path(lib_info.path) / cell) if lib_info else cell
+                    cell_path, ok_path = QInputDialog.getText(
+                        self,
+                        "New Cell Path",
+                        f"Path for {lib}/{cell}:",
+                        text=default_cell_path,
+                    )
+                    if not ok_path or not cell_path.strip():
+                        return
+                    self.db.create_cell(lib, cell, cell_path.strip())
+                except ValueError as exc:
+                    QMessageBox.warning(self, "Save As", str(exc))
+                    return
             data["name"] = cell
             data["library"] = lib
             self.db.save_view(lib, cell, "symbol", data)
@@ -597,12 +648,30 @@ class LumenMainWindow(QMainWindow):
             return
         try:
             from lumen.core.netlist import NetlistGenerator
-            from lumen.core.simulator import SimulatorBridge
+            from lumen.core.simulator import SimulatorBridge, ensure_direct_run_analysis
             editor.save()
             gen = NetlistGenerator(self.db)
             gen.set_target_simulator("GSPICE")
             netlist = gen.generate(editor.library, editor.cell, editor.view)
-            bridge = SimulatorBridge()
+            netlist, quick_note = ensure_direct_run_analysis(netlist)
+            if quick_note:
+                self.log(quick_note)
+            workspace = str(getattr(self.db, "workspace", ""))
+            runtime = SimulatorRuntimeManager(workspace)
+            runtime.apply_environment_overrides()
+            bridge = SimulatorBridge("GSPICE", exe_path=runtime.get_active_executable("GSPICE"))
+            if not bridge.is_available():
+                ready = ensure_simulator_available(self, workspace, "GSPICE", logger=self.log)
+                if ready:
+                    runtime = SimulatorRuntimeManager(workspace)
+                    runtime.apply_environment_overrides()
+                    bridge = SimulatorBridge("GSPICE", exe_path=runtime.get_active_executable("GSPICE"))
+                else:
+                    self.log("GSPICE not configured — simulation cancelled")
+                    return
+            if not bridge.is_available():
+                self.log(f"GSPICE not found at: {bridge.exe_path}")
+                return
             result = bridge.simulate(netlist, sim_name=editor.cell)
         except Exception as exc:
             import traceback
@@ -649,7 +718,7 @@ class LumenMainWindow(QMainWindow):
             "<p>Powered by GSPICE Simulator Engine</p>"
             "<hr>"
             "<p>Features: Schematic Capture · Symbol Editor · "
-            "Library Manager · SimENV · Waveform Viewer · PDK Manager</p>"
+            "Library Manager · SimENV · SigView · PDK Manager</p>"
         )
 
     # ── Helpers ───────────────────────────────────────────────

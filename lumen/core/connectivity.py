@@ -15,6 +15,13 @@ from typing import Optional
 import math
 
 
+def _coerce_float(value: object, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 @dataclass
 class WireSegment:
     """A wire segment connecting two junctions."""
@@ -27,6 +34,12 @@ class WireSegment:
     y2: float
     layer: str = "schematic"
     net_name: Optional[str] = None
+
+    def __post_init__(self):
+        self.x1 = _coerce_float(self.x1)
+        self.y1 = _coerce_float(self.y1)
+        self.x2 = _coerce_float(self.x2)
+        self.y2 = _coerce_float(self.y2)
 
 
 @dataclass
@@ -41,6 +54,10 @@ class Junction:
     pin_name: Optional[str] = None
     pin_instance: Optional[str] = None
     pin_library: Optional[str] = None
+
+    def __post_init__(self):
+        self.x = _coerce_float(self.x)
+        self.y = _coerce_float(self.y)
 
 
 @dataclass
@@ -67,6 +84,7 @@ class ConnectivityEngine:
         self.nets: dict[str, Net] = {}
         self._next_junction_id = 0
         self._next_segment_id = 0
+        self._next_net_id = 0
         self._warnings: list[str] = []
 
     def _new_junction_id(self) -> str:
@@ -88,7 +106,20 @@ class ConnectivityEngine:
         self.nets.clear()
         self._next_junction_id = 0
         self._next_segment_id = 0
+        self._next_net_id = 0
         self._warnings.clear()
+
+    @staticmethod
+    def _as_float(value: object, default: float = 0.0) -> float:
+        """Best-effort numeric conversion for legacy schematic payloads."""
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @classmethod
+    def _as_coord(cls, value: object, default: float = 0.0) -> int:
+        return int(round(cls._as_float(value, default)))
 
     def build_from_schematic(self, schematic_data: dict) -> None:
         """
@@ -103,8 +134,8 @@ class ConnectivityEngine:
         wire_endpoints: dict[tuple[float, float], str] = {}
 
         for wire in schematic_data.get("wires", []):
-            x1, y1 = round(wire["x1"]), round(wire["y1"])
-            x2, y2 = round(wire["x2"]), round(wire["y2"])
+            x1, y1 = self._as_coord(wire.get("x1", 0)), self._as_coord(wire.get("y1", 0))
+            x2, y2 = self._as_coord(wire.get("x2", 0)), self._as_coord(wire.get("y2", 0))
 
             j1 = self._get_or_create_junction(x1, y1)
             j2 = self._get_or_create_junction(x2, y2)
@@ -128,19 +159,24 @@ class ConnectivityEngine:
             # Link to junctions
             self.junctions[j1].connected_segment_ids.append(seg.id)
             self.junctions[j2].connected_segment_ids.append(seg.id)
+            if net_name:
+                self.junctions[j1].net_name = str(net_name).strip()
+                self.junctions[j2].net_name = str(net_name).strip()
 
         # Step 2: Process labels - assign net names to junctions
         for label in schematic_data.get("labels", []):
-            x, y = round(label["x"]), round(label["y"])
-            label_text = label.get("text", "")
+            x, y = self._as_coord(label.get("x", 0)), self._as_coord(label.get("y", 0))
+            label_text = str(label.get("text", "")).strip()
+            if not label_text:
+                continue
 
-            jid = self._get_or_create_junction(x, y)
+            jid = self._get_or_create_wire_junction(x, y)
             self.junctions[jid].net_name = label_text
 
         for pin in schematic_data.get("pins", []):
-            x, y = round(pin["x"]), round(pin["y"])
-            jid = self._get_or_create_junction(x, y)
-            self.junctions[jid].net_name = pin.get("name", "")
+            x, y = self._as_coord(pin.get("x", 0)), self._as_coord(pin.get("y", 0))
+            jid = self._get_or_create_wire_junction(x, y)
+            self.junctions[jid].net_name = str(pin.get("name", "")).strip()
             self.junctions[jid].is_pin = True
             self.junctions[jid].pin_name = pin.get("name", "")
             self.junctions[jid].pin_instance = "__top__"
@@ -150,7 +186,7 @@ class ConnectivityEngine:
             inst_name = inst.get("name", "?")
             cell_name = inst.get("cell", "")
             lib_name = inst.get("library", "")
-            ix, iy = round(inst.get("x", 0)), round(inst.get("y", 0))
+            ix, iy = self._as_coord(inst.get("x", 0)), self._as_coord(inst.get("y", 0))
 
             # Create junction at each pin position
             # We need symbol data to know pin locations
@@ -160,17 +196,17 @@ class ConnectivityEngine:
         for inst in schematic_data.get("instances", []):
             cell_name = inst.get("cell", "")
             if cell_name == "gnd":
-                ix, iy = round(inst.get("x", 0)), round(inst.get("y", 0))
+                ix, iy = self._as_coord(inst.get("x", 0)), self._as_coord(inst.get("y", 0))
                 # GND pin is at offset (0, -10)
-                jid = self._get_or_create_junction(ix, iy - 10)
+                jid = self._get_or_create_wire_junction(ix, iy - 10)
                 self.junctions[jid].net_name = "0"
                 self.junctions[jid].is_pin = True
                 self.junctions[jid].pin_name = "gnd"
                 self.junctions[jid].pin_instance = inst.get("name", "gnd")
             elif cell_name == "vdd":
-                ix, iy = round(inst.get("x", 0)), round(inst.get("y", 0))
+                ix, iy = self._as_coord(inst.get("x", 0)), self._as_coord(inst.get("y", 0))
                 # VDD pin is at offset (0, +10)
-                jid = self._get_or_create_junction(ix, iy + 10)
+                jid = self._get_or_create_wire_junction(ix, iy + 10)
                 self.junctions[jid].net_name = "VDD"
                 self.junctions[jid].is_pin = True
                 self.junctions[jid].pin_name = "vdd"
@@ -195,22 +231,17 @@ class ConnectivityEngine:
         for pin in pin_data:
             px, py = self._pin_scene_position(x, y, pin, rotation, transform)
 
-            # Get or create junction at pin position
-            jid = self._get_or_create_junction(px, py)
+            # If a pin lands on the middle of a wire, split that wire so the
+            # pin participates in the same electrical net.
+            jid = self._get_or_create_wire_junction(px, py)
 
             # Mark as pin
             self.junctions[jid].is_pin = True
             self.junctions[jid].pin_name = pin.get("name", "?")
             self.junctions[jid].pin_instance = instance_name
             self.junctions[jid].pin_library = library_name
-
-            # Check if this pin connects to an existing wire junction
-            # If so, they should be the same junction
-            existing_junction = self._find_junction_at(px, py)
-            if existing_junction and existing_junction != jid:
-                # Merge the two junctions - this happens when a pin
-                # is placed directly on a wire
-                self._merge_junctions(jid, existing_junction)
+            if pin.get("net_name"):
+                self.junctions[jid].net_name = str(pin.get("net_name")).strip()
 
     @staticmethod
     def _pin_scene_position(x: float, y: float, pin: dict,
@@ -239,9 +270,9 @@ class ConnectivityEngine:
 
     def _get_or_create_junction(self, x: float, y: float) -> str:
         """Get junction ID at position, creating if necessary."""
-        pos = (round(x), round(y))
+        pos = (self._as_coord(x), self._as_coord(y))
         for jid, j in self.junctions.items():
-            if round(j.x) == pos[0] and round(j.y) == pos[1]:
+            if self._as_coord(j.x) == pos[0] and self._as_coord(j.y) == pos[1]:
                 return jid
 
         jid = self._new_junction_id()
@@ -250,10 +281,67 @@ class ConnectivityEngine:
 
     def _find_junction_at(self, x: float, y: float) -> Optional[str]:
         """Find junction at exact position."""
-        rx, ry = round(x), round(y)
+        rx, ry = self._as_coord(x), self._as_coord(y)
         for jid, j in self.junctions.items():
-            if round(j.x) == rx and round(j.y) == ry:
+            if self._as_coord(j.x) == rx and self._as_coord(j.y) == ry:
                 return jid
+        return None
+
+    def _get_or_create_wire_junction(self, x: float, y: float) -> str:
+        """Get a junction, splitting a segment if the point lies on a wire."""
+        existing = self._find_junction_at(x, y)
+        if existing:
+            return existing
+
+        rx, ry = self._as_coord(x), self._as_coord(y)
+        for sid, seg in list(self.segments.items()):
+            if self._point_on_segment(rx, ry, seg):
+                return self._split_segment_at(sid, rx, ry)
+        return self._get_or_create_junction(rx, ry)
+
+    def _point_on_segment(self, x: float, y: float, seg: WireSegment) -> bool:
+        """Return True when a point lies on a segment, excluding endpoints."""
+        tol = 1e-6
+        if (
+            (abs(x - seg.x1) < tol and abs(y - seg.y1) < tol)
+            or (abs(x - seg.x2) < tol and abs(y - seg.y2) < tol)
+        ):
+            return False
+        if not self._is_collinear(seg.x1, seg.y1, seg.x2, seg.y2, x, y):
+            return False
+        return (
+            min(seg.x1, seg.x2) - tol <= x <= max(seg.x1, seg.x2) + tol
+            and min(seg.y1, seg.y2) - tol <= y <= max(seg.y1, seg.y2) + tol
+        )
+
+    def _endpoint_junction_at(self, seg: WireSegment, x: float, y: float) -> Optional[str]:
+        tol = 1e-6
+        if abs(x - seg.x1) < tol and abs(y - seg.y1) < tol:
+            return seg.start_junction_id
+        if abs(x - seg.x2) < tol and abs(y - seg.y2) < tol:
+            return seg.end_junction_id
+        return None
+
+    def _point_on_segment_including_endpoints(self, x: float, y: float, seg: WireSegment) -> bool:
+        tol = 1e-6
+        if not self._is_collinear(seg.x1, seg.y1, seg.x2, seg.y2, x, y):
+            return False
+        return (
+            min(seg.x1, seg.x2) - tol <= x <= max(seg.x1, seg.x2) + tol
+            and min(seg.y1, seg.y2) - tol <= y <= max(seg.y1, seg.y2) + tol
+        )
+
+    def _ensure_segment_junction(self, segment_id: str, x: float, y: float) -> Optional[str]:
+        """Ensure a segment has a junction at x/y, splitting if needed."""
+        if segment_id not in self.segments:
+            return None
+        rx, ry = self._as_coord(x), self._as_coord(y)
+        seg = self.segments[segment_id]
+        endpoint = self._endpoint_junction_at(seg, rx, ry)
+        if endpoint:
+            return endpoint
+        if self._point_on_segment_including_endpoints(rx, ry, seg):
+            return self._split_segment_at(segment_id, rx, ry)
         return None
 
     def _merge_junctions(self, jid1: str, jid2: str) -> None:
@@ -326,13 +414,11 @@ class ConnectivityEngine:
                     intersection = self._segments_intersect(seg1, seg2)
                     if intersection:
                         ix, iy = intersection
-                        # Check if intersection is at existing junction
-                        j_at_ix = self._find_junction_at(ix, iy)
-                        if j_at_ix is None:
-                            # Need to split both segments
-                            self._split_segment_at(sid1, ix, iy)
-                            self._split_segment_at(sid2, ix, iy)
-                            changes.append(f"Split segments at ({ix},{iy})")
+                        jid1 = self._ensure_segment_junction(sid1, ix, iy)
+                        jid2 = self._ensure_segment_junction(sid2, ix, iy)
+                        if jid1 and jid2 and jid1 != jid2:
+                            self._merge_junctions(jid1, jid2)
+                            changes.append(f"Connected segments at ({ix},{iy})")
                             changed = True
 
         # Phase 2: Merge collinear segments
@@ -455,6 +541,7 @@ class ConnectivityEngine:
     def _split_segment_at(self, segment_id: str, x: float, y: float) -> str:
         """Split a segment at a given point, return new segment ID."""
         seg = self.segments[segment_id]
+        old_end_jid = seg.end_junction_id
 
         # Create new junction at split point
         jid = self._get_or_create_junction(x, y)
@@ -463,7 +550,7 @@ class ConnectivityEngine:
         new_seg = WireSegment(
             id=self._new_segment_id(),
             start_junction_id=jid,
-            end_junction_id=seg.end_junction_id,
+            end_junction_id=old_end_jid,
             x1=x, y1=y, x2=seg.x2, y2=seg.y2,
             net_name=seg.net_name
         )
@@ -475,10 +562,16 @@ class ConnectivityEngine:
 
         # Add to graphs
         self.segments[new_seg.id] = new_seg
-        self.junctions[jid].connected_segment_ids.append(new_seg.id)
-        self.junctions[seg.start_junction_id].connected_segment_ids.append(segment_id)
+        if segment_id in self.junctions[old_end_jid].connected_segment_ids:
+            self.junctions[old_end_jid].connected_segment_ids.remove(segment_id)
+        if segment_id not in self.junctions[jid].connected_segment_ids:
+            self.junctions[jid].connected_segment_ids.append(segment_id)
+        if new_seg.id not in self.junctions[jid].connected_segment_ids:
+            self.junctions[jid].connected_segment_ids.append(new_seg.id)
+        if new_seg.id not in self.junctions[old_end_jid].connected_segment_ids:
+            self.junctions[old_end_jid].connected_segment_ids.append(new_seg.id)
 
-        return new_seg.id
+        return jid
 
     def _can_merge(self, seg1_id: str, seg2_id: str) -> bool:
         """Check if two segments can be merged (collinear and connected)."""
@@ -496,6 +589,12 @@ class ConnectivityEngine:
 
         # Must be collinear
         j_shared = shared_junctions.pop()
+        shared = self.junctions.get(j_shared)
+        if shared:
+            if shared.is_pin or shared.net_name:
+                return False
+            if len(set(shared.connected_segment_ids)) != 2:
+                return False
 
         # Get the non-shared endpoints
         if seg1.start_junction_id == j_shared:
@@ -524,50 +623,56 @@ class ConnectivityEngine:
         seg1 = self.segments[seg1_id]
         seg2 = self.segments[seg2_id]
 
-        # Find shared junction
-        if seg1.start_junction_id in {seg2.start_junction_id, seg2.end_junction_id}:
-            shared_jid = seg1.start_junction_id
-        elif seg1.end_junction_id in {seg2.start_junction_id, seg2.end_junction_id}:
-            shared_jid = seg1.end_junction_id
-        else:
+        shared = {seg1.start_junction_id, seg1.end_junction_id} & {
+            seg2.start_junction_id,
+            seg2.end_junction_id,
+        }
+        if not shared:
+            return False
+        shared_jid = next(iter(shared))
+
+        def outer_endpoint(seg: WireSegment) -> tuple[str, float, float]:
+            if seg.start_junction_id == shared_jid:
+                return seg.end_junction_id, seg.x2, seg.y2
+            return seg.start_junction_id, seg.x1, seg.y1
+
+        start_jid, x1, y1 = outer_endpoint(seg1)
+        end_jid, x2, y2 = outer_endpoint(seg2)
+        if start_jid == end_jid:
             return False
 
-        # Determine new endpoints
-        if seg1.start_junction_id == shared_jid:
-            new_start = (seg1.x2, seg1.y2)
-        else:
-            new_start = (seg1.x1, seg1.y1)
+        old_refs = {
+            seg1.start_junction_id,
+            seg1.end_junction_id,
+            seg2.start_junction_id,
+            seg2.end_junction_id,
+        }
+        seg1.start_junction_id = start_jid
+        seg1.end_junction_id = end_jid
+        seg1.x1, seg1.y1 = x1, y1
+        seg1.x2, seg1.y2 = x2, y2
 
-        if seg2.start_junction_id == shared_jid:
-            new_end = (seg2.x2, seg2.y2)
-        else:
-            new_end = (seg2.x1, seg2.y1)
-
-        # Determine which is new start and which is new end
-        # (to keep direction consistent)
-        shared_j = self.junctions[shared_jid]
-        if abs(new_start[0] - shared_j.x) < 1e-6 and abs(new_start[1] - shared_j.y) < 1e-6:
-            final_start = shared_jid
-            final_end_jid = seg2.end_junction_id if seg2.start_junction_id == shared_jid else seg2.start_junction_id
-            final_end = (seg2.x2, seg2.y2) if seg2.end_junction_id == shared_jid else (seg2.x1, seg2.y1)
-        else:
-            final_end = shared_jid
-            final_start_jid = seg1.end_junction_id if seg1.start_junction_id == shared_jid else seg1.start_junction_id
-            final_start = (seg1.x2, seg1.y2) if seg1.end_junction_id == shared_jid else (seg1.x1, seg1.y1)
-            final_end_jid = shared_jid
-
-        # Update seg1 to span the merged length
-        seg1.start_junction_id = self._get_or_create_junction(final_start[0], final_start[1])
-        seg1.end_junction_id = self._get_or_create_junction(final_end[0], final_end[1])
-        seg1.x1, seg1.y1 = final_start[0], final_start[1]
-        seg1.x2, seg1.y2 = final_end[0], final_end[1]
-
-        # Remove seg2
-        for jid in [seg2.start_junction_id, seg2.end_junction_id]:
-            if jid in self.junctions and seg2.id in self.junctions[jid].connected_segment_ids:
-                self.junctions[jid].connected_segment_ids.remove(seg2.id)
+        for jid in old_refs:
+            junction = self.junctions.get(jid)
+            if not junction:
+                continue
+            junction.connected_segment_ids = [
+                sid for sid in junction.connected_segment_ids
+                if sid not in {seg1_id, seg2_id}
+            ]
+        for jid in (start_jid, end_jid):
+            if jid in self.junctions and seg1_id not in self.junctions[jid].connected_segment_ids:
+                self.junctions[jid].connected_segment_ids.append(seg1_id)
 
         del self.segments[seg2_id]
+        shared_j = self.junctions.get(shared_jid)
+        if (
+            shared_j is not None
+            and not shared_j.connected_segment_ids
+            and not shared_j.is_pin
+            and not shared_j.net_name
+        ):
+            del self.junctions[shared_jid]
 
         return True
 
@@ -580,26 +685,77 @@ class ConnectivityEngine:
         """
         net_map: dict[str, list[str]] = {}
 
-        # Propagate net names through connected graph
-        self._propagate_net_names()
+        for component in self._connected_components():
+            net_name = self._choose_component_net_name(component)
+            for jid in component:
+                self.junctions[jid].net_name = net_name
 
-        # Collect all pin connections by net
-        for jid, j in self.junctions.items():
-            if j.is_pin and j.net_name:
+            for jid in component:
+                j = self.junctions[jid]
+                if not j.is_pin:
+                    continue
                 key = f"{j.pin_instance}.{j.pin_name}"
-                if j.net_name not in net_map:
-                    net_map[j.net_name] = []
-                if key not in net_map[j.net_name]:
-                    net_map[j.net_name].append(key)
-
-        # Also include wire nets that have no pins (for completeness)
-        for jid, j in self.junctions.items():
-            if j.net_name and not j.is_pin:
-                # Check if this junction has any pin-connected siblings
-                # (they should all have same net via propagation)
-                pass
+                net_map.setdefault(net_name, [])
+                if key not in net_map[net_name]:
+                    net_map[net_name].append(key)
 
         return net_map
+
+    def _connected_components(self) -> list[list[str]]:
+        """Return wire-connected junction components in deterministic order."""
+        components: list[list[str]] = []
+        visited: set[str] = set()
+
+        def sort_key(jid: str) -> tuple[float, float, str]:
+            j = self.junctions[jid]
+            return (j.x, j.y, jid)
+
+        for start in sorted(self.junctions.keys(), key=sort_key):
+            if start in visited:
+                continue
+            queue = [start]
+            visited.add(start)
+            component: list[str] = []
+            while queue:
+                jid = queue.pop(0)
+                component.append(jid)
+                j = self.junctions[jid]
+                for seg_id in j.connected_segment_ids:
+                    seg = self.segments.get(seg_id)
+                    if not seg:
+                        continue
+                    for other_jid in (seg.start_junction_id, seg.end_junction_id):
+                        if other_jid not in visited:
+                            visited.add(other_jid)
+                            queue.append(other_jid)
+            components.append(sorted(component, key=sort_key))
+
+        return components
+
+    def _choose_component_net_name(self, component: list[str]) -> str:
+        """Choose the canonical net name for a connected component."""
+        names: list[str] = []
+        for jid in component:
+            name = str(self.junctions[jid].net_name or "").strip()
+            if name and name not in names:
+                names.append(name)
+
+        if names:
+            if "0" in names or any(n.upper() == "GND" for n in names):
+                chosen = "0"
+            else:
+                globals_first = [n for n in names if n.upper() in {"VDD", "VSS", "VCC", "VEE"}]
+                chosen = globals_first[0] if globals_first else names[0]
+
+            for name in names:
+                normalized = "0" if name.upper() == "GND" else name
+                if normalized != chosen:
+                    self._warnings.append(f"Net name conflict: {chosen} connected to {name}")
+            return chosen
+
+        name = f"net{self._next_net_id}"
+        self._next_net_id += 1
+        return name
 
     def _propagate_net_names(self) -> None:
         """Propagate net names from labeled junctions through connectivity."""
