@@ -114,6 +114,9 @@ def editor_icon(name: str) -> QIcon:
         path.lineTo(*pts[2])
         path.closeSubpath()
         p.drawPath(path)
+    elif name == "stop":
+        p.setBrush(ICON_COLOR)
+        p.drawRect(10, 10, 12, 12)
     elif name == "wave":
         path = QPainterPath()
         path.moveTo(4, 18)

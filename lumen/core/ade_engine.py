@@ -50,7 +50,7 @@ class AnalysisType(Enum):
 
 ANALYSIS_DEFAULTS = {
     AnalysisType.OP: {},
-    AnalysisType.TRAN: {"step": "1n", "stop": "10u", "start": "0", "uic": False},
+    AnalysisType.TRAN: {"step": "", "stop": "10u", "start": "0", "maxstep": "", "uic": False},
     AnalysisType.AC: {"sweep": "DEC", "points": "100", "fstart": "1", "fstop": "10G"},
     AnalysisType.DC: {"source": "V1", "start": "0", "stop": "1.8", "step": "10m"},
     AnalysisType.NOISE: {"output": "V(out)", "source": "V1", "points": "50",
@@ -78,10 +78,14 @@ class AnalysisSetup:
 
         if self.analysis_type == AnalysisType.TRAN:
             parts = [cmd]
-            parts.append(params.get("step", "1n"))
-            parts.append(params.get("stop", "10u"))
-            if params.get("start", "0") != "0":
-                parts.append(params["start"])
+            parts.append(str(params.get("step", "") or "20p"))
+            parts.append(str(params.get("stop", "") or "10u"))
+            start = str(params.get("start", "") or "0")
+            maxstep = str(params.get("maxstep", "") or "20p")
+            if start != "0" or maxstep:
+                parts.append(start)
+            if maxstep:
+                parts.append(maxstep)
             if params.get("uic", False):
                 parts.append("UIC")
             return " ".join(parts)
@@ -202,7 +206,16 @@ class SimulationState:
     ics: list[str] = field(default_factory=list)
 
     # SPICE options
-    options: dict[str, str] = field(default_factory=dict)
+    options: dict[str, str] = field(default_factory=lambda: {
+        "ACCURACY": "HIGH",
+        "ADAPTIVE": "1",
+        "RELTOL": "3e-4",
+        "VNTOL": "300n",
+        "ABSTOL": "100f",
+        "TRTOL": "1e-3",
+        "TRABSTOL": "300n",
+        "ITL4": "80",
+    })
 
     # Measurements
     measures: list[str] = field(default_factory=list)

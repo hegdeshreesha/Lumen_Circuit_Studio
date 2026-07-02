@@ -13,12 +13,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from bisect import bisect_left
+import ast
 import csv
 import json
 import math
+import re
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QPointF, QRectF, QSize, pyqtSignal
+from PyQt6.QtCore import Qt, QPoint, QPointF, QRectF, QSize, pyqtSignal
 from PyQt6.QtGui import (
     QAction,
     QPainter,
@@ -26,6 +28,7 @@ from PyQt6.QtGui import (
     QColor,
     QFont,
     QPainterPath,
+    QKeySequence,
     QWheelEvent,
 )
 from PyQt6.QtWidgets import (
@@ -49,11 +52,266 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem,
     QHeaderView,
     QComboBox,
+    QMenu,
+    QDialog,
+    QFormLayout,
+    QDialogButtonBox,
 )
 
 from lumen.gui.branding import apply_window_branding
 from lumen.gui.icons import editor_icon
 from lumen.core.simulator import SimulatorBridge
+
+
+class WaveVector:
+    """Numeric waveform vector used by SigView's safe calculator."""
+
+    def __init__(self, x_data: list[float], y_data: list[float], label: str = ""):
+        self.x_data = list(x_data or [])
+        self.y_data = list(y_data or [])
+        self.label = label
+
+    def _binary(self, other, op, label: str) -> "WaveVector":
+        if isinstance(other, WaveVector):
+            n = min(len(self.x_data), len(self.y_data), len(other.y_data))
+            return WaveVector(self.x_data[:n], [op(a, b) for a, b in zip(self.y_data[:n], other.y_data[:n])], label)
+        try:
+            value = float(other)
+        except (TypeError, ValueError):
+            return NotImplemented
+        return WaveVector(self.x_data[:len(self.y_data)], [op(a, value) for a in self.y_data], label)
+
+    def _rbinary(self, other, op, label: str) -> "WaveVector":
+        try:
+            value = float(other)
+        except (TypeError, ValueError):
+            return NotImplemented
+        return WaveVector(self.x_data[:len(self.y_data)], [op(value, a) for a in self.y_data], label)
+
+    def __add__(self, other):
+        return self._binary(other, lambda a, b: a + b, f"({self.label}+{_label_for(other)})")
+
+    def __radd__(self, other):
+        return self.__add__(other)
+
+    def __sub__(self, other):
+        return self._binary(other, lambda a, b: a - b, f"({self.label}-{_label_for(other)})")
+
+    def __rsub__(self, other):
+        return self._rbinary(other, lambda a, b: a - b, f"({_label_for(other)}-{self.label})")
+
+    def __mul__(self, other):
+        return self._binary(other, lambda a, b: a * b, f"({self.label}*{_label_for(other)})")
+
+    def __rmul__(self, other):
+        return self.__mul__(other)
+
+    def __truediv__(self, other):
+        return self._binary(other, lambda a, b: a / b if b else math.nan, f"({self.label}/{_label_for(other)})")
+
+    def __rtruediv__(self, other):
+        return self._rbinary(other, lambda a, b: a / b if b else math.nan, f"({_label_for(other)}/{self.label})")
+
+    def __pow__(self, other):
+        return self._binary(other, lambda a, b: math.pow(a, b), f"pow({self.label},{_label_for(other)})")
+
+    def __neg__(self):
+        return WaveVector(self.x_data[:len(self.y_data)], [-a for a in self.y_data], f"-{self.label}")
+
+    def __abs__(self):
+        return WaveVector(self.x_data[:len(self.y_data)], [abs(a) for a in self.y_data], f"abs({self.label})")
+
+
+def _label_for(value) -> str:
+    return value.label if isinstance(value, WaveVector) else str(value)
+
+
+def _vector_unary(value, fn, label: str):
+    if isinstance(value, WaveVector):
+        return WaveVector(value.x_data[:len(value.y_data)], [fn(v) for v in value.y_data], f"{label}({value.label})")
+    return fn(float(value))
+
+
+def _vector_stat(value, fn) -> float:
+    vals = value.y_data if isinstance(value, WaveVector) else [float(value)]
+    finite = [v for v in vals if isinstance(v, (int, float)) and math.isfinite(v)]
+    return fn(finite) if finite else math.nan
+
+
+def _vector_deriv(value):
+    if not isinstance(value, WaveVector):
+        return 0.0
+    n = min(len(value.x_data), len(value.y_data))
+    y_out: list[float] = []
+    for i in range(n):
+        if i == 0:
+            dx = value.x_data[1] - value.x_data[0] if n > 1 else 1.0
+            dy = value.y_data[1] - value.y_data[0] if n > 1 else 0.0
+        elif i == n - 1:
+            dx = value.x_data[i] - value.x_data[i - 1]
+            dy = value.y_data[i] - value.y_data[i - 1]
+        else:
+            dx = value.x_data[i + 1] - value.x_data[i - 1]
+            dy = value.y_data[i + 1] - value.y_data[i - 1]
+        y_out.append(dy / dx if dx else math.nan)
+    return WaveVector(value.x_data[:n], y_out, f"deriv({value.label})")
+
+
+def _vector_integ(value):
+    if not isinstance(value, WaveVector):
+        return float(value)
+    n = min(len(value.x_data), len(value.y_data))
+    if n <= 0:
+        return WaveVector([], [], f"integ({value.label})")
+    acc = 0.0
+    y_out = [0.0]
+    for i in range(1, n):
+        dx = value.x_data[i] - value.x_data[i - 1]
+        acc += 0.5 * (value.y_data[i] + value.y_data[i - 1]) * dx
+        y_out.append(acc)
+    return WaveVector(value.x_data[:n], y_out, f"integ({value.label})")
+
+
+def _vector_clip(value, lo, hi):
+    lo_f = float(lo)
+    hi_f = float(hi)
+    return _vector_unary(value, lambda v: min(max(v, lo_f), hi_f), "clip")
+
+
+def _vector_phase(value):
+    return _vector_unary(value, lambda v: 0.0 if v >= 0 else 180.0, "phase")
+
+
+def _vector_freq(value) -> float:
+    if not isinstance(value, WaveVector):
+        return math.nan
+    n = min(len(value.x_data), len(value.y_data))
+    if n < 3:
+        return math.nan
+    finite_y = [v for v in value.y_data[:n] if isinstance(v, (int, float)) and math.isfinite(v)]
+    if not finite_y:
+        return math.nan
+    threshold = 0.5 * (min(finite_y) + max(finite_y))
+    crossings: list[float] = []
+    for i in range(1, n):
+        y0 = value.y_data[i - 1] - threshold
+        y1 = value.y_data[i] - threshold
+        if y0 < 0 <= y1:
+            x0 = value.x_data[i - 1]
+            x1 = value.x_data[i]
+            denom = value.y_data[i] - value.y_data[i - 1]
+            frac = (threshold - value.y_data[i - 1]) / denom if denom else 0.0
+            crossings.append(x0 + frac * (x1 - x0))
+    if len(crossings) < 2:
+        return math.nan
+    periods = [b - a for a, b in zip(crossings, crossings[1:]) if b > a]
+    avg_period = sum(periods) / len(periods) if periods else math.nan
+    return 1.0 / avg_period if avg_period and math.isfinite(avg_period) else math.nan
+
+
+class SigViewCalculatorEngine:
+    """Safe expression evaluator for Cadence-style waveform calculations."""
+
+    _ALLOWED_AST_NODES = (
+        ast.Expression,
+        ast.BinOp,
+        ast.UnaryOp,
+        ast.Call,
+        ast.Name,
+        ast.Load,
+        ast.Constant,
+        ast.Add,
+        ast.Sub,
+        ast.Mult,
+        ast.Div,
+        ast.Pow,
+        ast.USub,
+        ast.UAdd,
+    )
+
+    def __init__(self, traces: dict[str, TraceRecord]):
+        self._traces = traces
+
+    def evaluate(self, expression: str):
+        expr = self._preprocess(expression)
+        tree = ast.parse(expr, mode="eval")
+        for node in ast.walk(tree):
+            if not isinstance(node, self._ALLOWED_AST_NODES):
+                raise ValueError(f"Unsupported calculator syntax: {type(node).__name__}")
+            if isinstance(node, ast.Call) and not isinstance(node.func, ast.Name):
+                raise ValueError("Only built-in SigView calculator functions are supported.")
+        env = self._environment()
+        try:
+            return eval(compile(tree, "<sigview-calculator>", "eval"), {"__builtins__": {}}, env)
+        except NameError as exc:
+            raise ValueError(f"Unknown signal or function in expression: {exc}") from exc
+
+    def _preprocess(self, expression: str) -> str:
+        expr = (expression or "").strip()
+        if not expr:
+            raise ValueError("Enter a calculator expression.")
+
+        def repl(match: re.Match) -> str:
+            fn = match.group(1)
+            body = match.group(2).strip()
+            if body.startswith(("'", '"')):
+                return match.group(0)
+            return f'{fn}("{body}")'
+
+        return re.sub(r"\b([VI])\(\s*([^)'\"()]+?)\s*\)", repl, expr)
+
+    def _environment(self) -> dict:
+        def trace_by_name(name: str, kind: str = "") -> WaveVector:
+            text = str(name).strip()
+            candidates = [text]
+            if kind:
+                candidates.insert(0, f"{kind}({text})")
+            for candidate in candidates:
+                if candidate in self._traces:
+                    t = self._traces[candidate]
+                    return WaveVector(t.x_data, t.y_data, t.name)
+            lower_map = {k.lower(): k for k in self._traces}
+            for candidate in candidates:
+                hit = lower_map.get(candidate.lower())
+                if hit:
+                    t = self._traces[hit]
+                    return WaveVector(t.x_data, t.y_data, t.name)
+            raise ValueError(f"Signal not found: {name}")
+
+        return {
+            "V": lambda name: trace_by_name(name, "V"),
+            "I": lambda name: trace_by_name(name, "I"),
+            "sig": lambda name: trace_by_name(name),
+            "abs": abs,
+            "mag": abs,
+            "sqrt": lambda v: _vector_unary(v, math.sqrt, "sqrt"),
+            "ln": lambda v: _vector_unary(v, math.log, "ln"),
+            "log": lambda v: _vector_unary(v, math.log10, "log10"),
+            "log10": lambda v: _vector_unary(v, math.log10, "log10"),
+            "exp": lambda v: _vector_unary(v, math.exp, "exp"),
+            "sin": lambda v: _vector_unary(v, math.sin, "sin"),
+            "cos": lambda v: _vector_unary(v, math.cos, "cos"),
+            "tan": lambda v: _vector_unary(v, math.tan, "tan"),
+            "db20": lambda v: _vector_unary(v, lambda x: 20.0 * math.log10(abs(x)) if x else math.nan, "dB20"),
+            "dB20": lambda v: _vector_unary(v, lambda x: 20.0 * math.log10(abs(x)) if x else math.nan, "dB20"),
+            "db10": lambda v: _vector_unary(v, lambda x: 10.0 * math.log10(abs(x)) if x else math.nan, "dB10"),
+            "phase": _vector_phase,
+            "deriv": _vector_deriv,
+            "ddt": _vector_deriv,
+            "integ": _vector_integ,
+            "idt": _vector_integ,
+            "clip": _vector_clip,
+            "avg": lambda v: _vector_stat(v, lambda vals: sum(vals) / len(vals)),
+            "mean": lambda v: _vector_stat(v, lambda vals: sum(vals) / len(vals)),
+            "rms": lambda v: _vector_stat(v, lambda vals: math.sqrt(sum(x * x for x in vals) / len(vals))),
+            "min": lambda v: _vector_stat(v, min),
+            "max": lambda v: _vector_stat(v, max),
+            "pkpk": lambda v: _vector_stat(v, lambda vals: max(vals) - min(vals)),
+            "freq": _vector_freq,
+            "period": lambda v: (1.0 / _vector_freq(v)) if _vector_freq(v) else math.nan,
+            "pi": math.pi,
+            "e": math.e,
+        }
 
 
 @dataclass
@@ -78,6 +336,7 @@ class WaveformCanvas(QWidget):
 
     hover_text_changed = pyqtSignal(str)
     cursor_text_changed = pyqtSignal(str)
+    signal_context_requested = pyqtSignal(str, QPoint)
 
     TRACE_COLORS = [
         QColor("#56b6c2"),
@@ -123,6 +382,10 @@ class WaveformCanvas(QWidget):
         self._pan_start = QPointF()
         self._pan_x_start = 0.0
         self._pan_y_start = 0.0
+        self._right_press_pos: QPointF | None = None
+        self._right_current_pos: QPointF | None = None
+        self._right_press_trace = ""
+        self._right_drag_active = False
 
     # ----- Trace management -----
 
@@ -245,6 +508,59 @@ class WaveformCanvas(QWidget):
         self.y_max += margin
         self.update()
 
+    def zoom_in(self):
+        self.zoom_by(0.78)
+
+    def zoom_out(self):
+        self.zoom_by(1.0 / 0.78)
+
+    def zoom_by(self, factor: float, center: QPointF | None = None, x_axis: bool = True, y_axis: bool = True):
+        if not self.traces or factor <= 0:
+            return
+        if center is None:
+            plot = self._plot_rect()
+            center = plot.center()
+        cx, cy = self._screen_to_data(center.x(), center.y())
+        self._zoom_about(cx, cy, factor, x_axis=x_axis, y_axis=y_axis)
+
+    def _zoom_about(self, cx: float, cy: float, factor: float, x_axis: bool = True, y_axis: bool = True):
+        self._auto_range = False
+        if x_axis:
+            self.x_min = cx + (self.x_min - cx) * factor
+            self.x_max = cx + (self.x_max - cx) * factor
+        if y_axis and not self.stacked_mode:
+            self.y_min = cy + (self.y_min - cy) * factor
+            self.y_max = cy + (self.y_max - cy) * factor
+        self._normalize_ranges()
+        self.update()
+        self._emit_cursor_text()
+
+    def zoom_to_screen_rect(self, rect: QRectF):
+        plot = self._plot_rect()
+        clipped = rect.normalized().intersected(plot)
+        if clipped.width() < 8 or clipped.height() < 8:
+            return
+        x0, y0 = self._screen_to_data(clipped.left(), clipped.bottom())
+        x1, y1 = self._screen_to_data(clipped.right(), clipped.top())
+        self._auto_range = False
+        if x1 > x0:
+            self.x_min = x0
+            self.x_max = x1
+        if not self.stacked_mode and y1 > y0:
+            self.y_min = y0
+            self.y_max = y1
+        self._normalize_ranges()
+        self.update()
+        self._emit_cursor_text()
+
+    def _normalize_ranges(self):
+        if self.x_max == self.x_min:
+            self.x_min -= 0.5
+            self.x_max += 0.5
+        if self.y_max == self.y_min:
+            self.y_min -= 0.5
+            self.y_max += 0.5
+
     def _compute_auto_range(self):
         x_vals: list[float] = []
         y_vals: list[float] = []
@@ -316,6 +632,53 @@ class WaveformCanvas(QWidget):
             return None
         return self._interpolate_value(trace.x_data, trace.y_data, x)
 
+    def nearest_trace_name_at(self, sx: float, sy: float, tolerance_px: float = 18.0) -> str:
+        if self.stacked_mode:
+            return self._nearest_stacked_trace_name_at(sx, sy, tolerance_px)
+        x, _ = self._screen_to_data(sx, sy)
+        best_name = ""
+        best_dist = float("inf")
+        plot = self._plot_rect()
+        for trace in self.traces:
+            if not trace.visible:
+                continue
+            y = self._interpolate_value(trace.x_data, trace.y_data, x)
+            if y is None:
+                continue
+            p = self._data_to_screen(x, y, plot, self.y_min, self.y_max)
+            dist = abs(p.y() - sy)
+            if dist < best_dist:
+                best_name = trace.name
+                best_dist = dist
+        return best_name if best_dist <= tolerance_px else ""
+
+    def _nearest_stacked_trace_name_at(self, sx: float, sy: float, tolerance_px: float) -> str:
+        visible = [t for t in self.traces if t.visible and t.x_data and t.y_data]
+        if not visible:
+            return ""
+        plot = self._plot_rect()
+        if not plot.contains(QPointF(sx, sy)):
+            return ""
+        lane_h = plot.height() / max(len(visible), 1)
+        lane_idx = int((sy - plot.top()) / (lane_h or 1.0))
+        if lane_idx < 0 or lane_idx >= len(visible):
+            return ""
+        trace = visible[lane_idx]
+        top = plot.top() + lane_idx * lane_h
+        lane = QRectF(plot.left(), top, plot.width(), lane_h)
+        x, _ = self._screen_to_data(sx, sy)
+        y = self._interpolate_value(trace.x_data, trace.y_data, x)
+        if y is None:
+            return trace.name
+        finite_y = [v for v in trace.y_data if isinstance(v, (int, float)) and math.isfinite(v)]
+        if not finite_y:
+            return trace.name
+        y0 = min(finite_y)
+        y1 = max(finite_y)
+        margin = (y1 - y0) * 0.08 or 0.1
+        p = self._data_to_screen(x, y, lane, y0 - margin, y1 + margin)
+        return trace.name if abs(p.y() - sy) <= tolerance_px else trace.name
+
     def _interpolate_value(self, x_data: list[float], y_data: list[float], x: float) -> float | None:
         if not x_data or not y_data:
             return None
@@ -385,6 +748,7 @@ class WaveformCanvas(QWidget):
         self._draw_cursors(painter, plot)
         self._draw_markers(painter, plot)
         self._draw_axes_text(painter, plot)
+        self._draw_zoom_box(painter)
         painter.end()
 
     def _paint_overlay(self, painter: QPainter, plot: QRectF, traces: list[TraceRecord]):
@@ -530,6 +894,19 @@ class WaveformCanvas(QWidget):
         painter.setFont(QFont("Consolas", 10))
         painter.drawText(plot.toRect(), Qt.AlignmentFlag.AlignCenter, "No visible waveforms")
 
+    def _draw_zoom_box(self, painter: QPainter):
+        if not self._right_drag_active or self._right_press_pos is None or self._right_current_pos is None:
+            return
+        rect = QRectF(self._right_press_pos, self._right_current_pos).normalized().intersected(self._plot_rect())
+        if rect.width() < 3 or rect.height() < 3:
+            return
+        fill = QColor("#3aa6d0")
+        fill.setAlpha(38)
+        border = QColor("#6ed7ff")
+        painter.fillRect(rect, fill)
+        painter.setPen(QPen(border, 1, Qt.PenStyle.DashLine))
+        painter.drawRect(rect)
+
     @staticmethod
     def _nice_ticks(vmin: float, vmax: float, target_count: int) -> list[float]:
         if vmax <= vmin:
@@ -581,24 +958,27 @@ class WaveformCanvas(QWidget):
     def wheelEvent(self, event: QWheelEvent):
         if not self.traces:
             return
-        self._auto_range = False
 
         factor = 0.86 if event.angleDelta().y() > 0 else 1.0 / 0.86
-        mx, my = self._screen_to_data(event.position().x(), event.position().y())
-        shift_zoom_y_only = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
-
-        if not shift_zoom_y_only:
-            self.x_min = mx + (self.x_min - mx) * factor
-            self.x_max = mx + (self.x_max - mx) * factor
-
-        if not self.stacked_mode:
-            self.y_min = my + (self.y_min - my) * factor
-            self.y_max = my + (self.y_max - my) * factor
-
-        self.update()
-        self._emit_cursor_text()
+        modifiers = event.modifiers()
+        y_only = bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
+        x_only = bool(modifiers & Qt.KeyboardModifier.ControlModifier)
+        self.zoom_by(
+            factor,
+            center=event.position(),
+            x_axis=not y_only,
+            y_axis=not x_only,
+        )
+        event.accept()
 
     def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.RightButton:
+            self._right_press_pos = event.position()
+            self._right_current_pos = event.position()
+            self._right_press_trace = self.nearest_trace_name_at(event.position().x(), event.position().y())
+            self._right_drag_active = False
+            return
+
         if event.button() == Qt.MouseButton.MiddleButton:
             self._panning = True
             self._pan_start = event.position()
@@ -624,6 +1004,15 @@ class WaveformCanvas(QWidget):
         self._hover_y = y
         self.hover_text_changed.emit(f"x={self._format_value(x)} y={self._format_value(y)}")
 
+        if event.buttons() & Qt.MouseButton.RightButton and self._right_press_pos is not None:
+            self._right_current_pos = event.position()
+            distance = (self._right_current_pos - self._right_press_pos).manhattanLength()
+            if distance > 6 and self._plot_rect().contains(self._right_press_pos):
+                self._right_drag_active = True
+            if self._right_drag_active:
+                self.update()
+            return
+
         if self._panning:
             dx_px = sx - self._pan_start.x()
             dy_px = sy - self._pan_start.y()
@@ -638,6 +1027,22 @@ class WaveformCanvas(QWidget):
             self.update()
 
     def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.RightButton:
+            was_drag = self._right_drag_active
+            press = self._right_press_pos
+            current = self._right_current_pos or event.position()
+            trace_name = self._right_press_trace
+            self._right_press_pos = None
+            self._right_current_pos = None
+            self._right_press_trace = ""
+            self._right_drag_active = False
+            if was_drag and press is not None:
+                self.zoom_to_screen_rect(QRectF(press, current))
+            elif trace_name:
+                self.signal_context_requested.emit(trace_name, event.globalPosition().toPoint())
+            self.update()
+            return
+
         if event.button() == Qt.MouseButton.MiddleButton:
             self._panning = False
             self.setCursor(Qt.CursorShape.ArrowCursor)
@@ -704,6 +1109,8 @@ class WaveformViewerWindow(QMainWindow):
 
         self.signal_list = QListWidget()
         self.signal_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.signal_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.signal_list.customContextMenuRequested.connect(self._on_signal_list_context_menu)
         self.signal_list.itemChanged.connect(self._on_signal_toggled)
         self.signal_list.currentItemChanged.connect(self._on_current_signal_changed)
         self.signal_list.itemDoubleClicked.connect(self._on_signal_isolate)
@@ -718,8 +1125,8 @@ class WaveformViewerWindow(QMainWindow):
         measure_tab = QWidget()
         measure_layout = QVBoxLayout(measure_tab)
         measure_layout.setContentsMargins(0, 0, 0, 0)
-        self.measure_table = QTableWidget(0, 7)
-        self.measure_table.setHorizontalHeaderLabels(["Signal", "A", "B", "dY", "Min", "Max", "Avg"])
+        self.measure_table = QTableWidget(0, 10)
+        self.measure_table.setHorizontalHeaderLabels(["Signal", "A", "B", "dY", "Min", "Max", "Avg", "RMS", "PkPk", "Freq"])
         self.measure_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.measure_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.measure_table.verticalHeader().setVisible(False)
@@ -749,22 +1156,46 @@ class WaveformViewerWindow(QMainWindow):
         expr_layout = QVBoxLayout(expr_tab)
         expr_layout.setContentsMargins(0, 0, 0, 0)
         self.expr_combo = QComboBox()
-        self.expr_combo.addItems(["Scale selected", "Offset selected", "Abs selected", "Derivative selected", "A - B", "A + B", "A / B"])
+        self.expr_combo.addItems([
+            "V(out)",
+            "V(out)-V(in)",
+            "db20(V(out)/V(in))",
+            "deriv(V(out))",
+            "integ(V(out))",
+            "rms(V(out))",
+            "pkpk(V(out))",
+            "freq(V(out))",
+        ])
+        self.expr_combo.currentTextChanged.connect(self._on_calculator_preset)
         expr_layout.addWidget(self.expr_combo)
+        self.calc_expr = QLineEdit()
+        self.calc_expr.setPlaceholderText("Calculator expression, e.g. V(out)-V(in), db20(V(out)), deriv(V(out))")
+        self.calc_expr.setText(self.expr_combo.currentText())
+        expr_layout.addWidget(self.calc_expr)
+        self.calc_name = QLineEdit()
+        self.calc_name.setPlaceholderText("Optional result trace name")
+        expr_layout.addWidget(self.calc_name)
         self.expr_value = QLineEdit()
-        self.expr_value.setPlaceholderText("Scale/offset value or new trace name")
+        self.expr_value.setPlaceholderText("Legacy quick value for selected traces")
         expr_layout.addWidget(self.expr_value)
-        self.expr_button = QPushButton("Create Trace")
+        self.calc_button = QPushButton("Create Calculator Trace")
+        self.calc_button.clicked.connect(self._on_create_calculator_trace)
+        expr_layout.addWidget(self.calc_button)
+        self.quick_combo = QComboBox()
+        self.quick_combo.addItems(["Scale selected", "Offset selected", "Abs selected", "Derivative selected", "A - B", "A + B", "A / B"])
+        expr_layout.addWidget(self.quick_combo)
+        self.expr_button = QPushButton("Create Quick Trace")
         self.expr_button.clicked.connect(self._on_create_expression_trace)
         expr_layout.addWidget(self.expr_button)
         expr_layout.addStretch()
-        self.side_tabs.addTab(expr_tab, "Expressions")
+        self.side_tabs.addTab(expr_tab, "Calculator")
 
         splitter.addWidget(left)
 
         self.canvas = WaveformCanvas()
         self.canvas.hover_text_changed.connect(self._on_hover_text)
         self.canvas.cursor_text_changed.connect(self._on_cursor_text)
+        self.canvas.signal_context_requested.connect(self._on_canvas_signal_context_menu)
         splitter.addWidget(self.canvas)
         splitter.setSizes([280, 980])
 
@@ -779,6 +1210,16 @@ class WaveformViewerWindow(QMainWindow):
         act_open_run.triggered.connect(self._on_open_run_folder)
         file_menu.addAction(act_open_run)
 
+        file_menu.addSeparator()
+        act_save_session = QAction("Save SigView Session...", self)
+        act_save_session.triggered.connect(self._on_save_session)
+        file_menu.addAction(act_save_session)
+
+        act_load_session = QAction("Load SigView Session...", self)
+        act_load_session.triggered.connect(self._on_load_session)
+        file_menu.addAction(act_load_session)
+
+        file_menu.addSeparator()
         act_export = QAction("Export Visible CSV...", self)
         act_export.triggered.connect(self._on_export_visible_csv)
         file_menu.addAction(act_export)
@@ -794,6 +1235,15 @@ class WaveformViewerWindow(QMainWindow):
         file_menu.addAction(act_close)
 
         view_menu = self.menuBar().addMenu("&View")
+        act_zoom_in = QAction("Zoom In", self)
+        act_zoom_in.setShortcut(QKeySequence("Ctrl+="))
+        act_zoom_in.triggered.connect(self.canvas.zoom_in)
+        view_menu.addAction(act_zoom_in)
+        act_zoom_out = QAction("Zoom Out", self)
+        act_zoom_out.setShortcut(QKeySequence("Ctrl+-"))
+        act_zoom_out.triggered.connect(self.canvas.zoom_out)
+        view_menu.addAction(act_zoom_out)
+        view_menu.addSeparator()
         for text, slot in (
             ("Fit All", self.canvas.fit_all),
             ("Fit X", self.canvas.fit_x),
@@ -821,6 +1271,16 @@ class WaveformViewerWindow(QMainWindow):
         act_clear_markers.triggered.connect(self._on_clear_markers)
         marker_menu.addAction(act_clear_markers)
 
+        calc_menu = self.menuBar().addMenu("&Calculator")
+        act_calc = QAction("Create Calculator Trace", self)
+        act_calc.setShortcut("Ctrl+Return")
+        act_calc.triggered.connect(self._on_create_calculator_trace)
+        calc_menu.addAction(act_calc)
+        for expr in ("V(out)-V(in)", "db20(V(out))", "deriv(V(out))", "integ(V(out))", "rms(V(out))", "freq(V(out))"):
+            action = QAction(expr, self)
+            action.triggered.connect(lambda _checked=False, text=expr: self._set_calculator_expression(text))
+            calc_menu.addAction(action)
+
     def _create_toolbar(self):
         tb = QToolBar("SigView")
         tb.setIconSize(QSize(18, 18))
@@ -832,6 +1292,18 @@ class WaveformViewerWindow(QMainWindow):
         tb.addAction(act_open)
 
         tb.addSeparator()
+
+        act_zoom_in = QAction("Zoom In", self)
+        act_zoom_in.setIcon(editor_icon("zoom_in"))
+        act_zoom_in.setShortcut(QKeySequence("Ctrl+="))
+        act_zoom_in.triggered.connect(self.canvas.zoom_in)
+        tb.addAction(act_zoom_in)
+
+        act_zoom_out = QAction("Zoom Out", self)
+        act_zoom_out.setIcon(editor_icon("zoom_out"))
+        act_zoom_out.setShortcut(QKeySequence("Ctrl+-"))
+        act_zoom_out.triggered.connect(self.canvas.zoom_out)
+        tb.addAction(act_zoom_out)
 
         act_fit = QAction("Fit All", self)
         act_fit.setIcon(editor_icon("zoom_fit"))
@@ -884,6 +1356,10 @@ class WaveformViewerWindow(QMainWindow):
         act_marker = QAction("Marker", self)
         act_marker.triggered.connect(self._on_add_marker)
         tb.addAction(act_marker)
+
+        act_calc = QAction("Calculator", self)
+        act_calc.triggered.connect(lambda: self.side_tabs.setCurrentWidget(self.calc_expr.parentWidget()))
+        tb.addAction(act_calc)
 
         act_image = QAction("Image", self)
         act_image.triggered.connect(self._on_save_plot_image)
@@ -945,6 +1421,11 @@ class WaveformViewerWindow(QMainWindow):
         self._refresh_measurements()
         self._refresh_marker_table()
 
+    def show_calculator(self):
+        if hasattr(self, "calc_expr"):
+            self.side_tabs.setCurrentWidget(self.calc_expr.parentWidget())
+            self.calc_expr.setFocus()
+
     def _detect_x_var(self, waveforms: dict, x_var: str) -> str:
         if x_var and x_var in waveforms:
             return x_var
@@ -974,7 +1455,7 @@ class WaveformViewerWindow(QMainWindow):
             self,
             "Open Waveform",
             str(Path.home()),
-            "Waveforms (*.raw *.csv *.json);;Run manifests (*.json);;Raw files (*.raw);;CSV files (*.csv);;All files (*)",
+            "Waveforms (*.raw *.json);;Run manifests (*.json);;Raw files (*.raw);;All files (*)",
         )
         if not path:
             return
@@ -1011,8 +1492,6 @@ class WaveformViewerWindow(QMainWindow):
         suffix = p.suffix.lower()
         if suffix == ".json":
             return self._load_waveform_manifest(str(p))
-        if suffix == ".csv":
-            return self._parse_csv_waveform(path)
         bridge = SimulatorBridge("GSPICE")
         return bridge._parse_raw(path)
 
@@ -1021,13 +1500,10 @@ class WaveformViewerWindow(QMainWindow):
         manifest = root / "run_manifest.json"
         if manifest.exists():
             return self._load_waveform_manifest(str(manifest))
-        for name in ("waveforms.csv", "waveforms.raw"):
+        for name in ("selected_waveforms.raw", "waveforms.raw"):
             candidate = root / name
             if candidate.exists():
                 return self._load_waveform_file(str(candidate))
-        csvs = sorted(root.glob("*.csv"), key=lambda p: p.stat().st_mtime, reverse=True)
-        if csvs:
-            return self._parse_csv_waveform(str(csvs[0]))
         raws = sorted(root.glob("*.raw"), key=lambda p: p.stat().st_mtime, reverse=True)
         if raws:
             bridge = SimulatorBridge("GSPICE")
@@ -1041,7 +1517,7 @@ class WaveformViewerWindow(QMainWindow):
         artifacts = manifest.get("artifacts", {}) if isinstance(manifest, dict) else {}
         candidates = [
             artifacts.get("waveforms", ""),
-            artifacts.get("csv", ""),
+            artifacts.get("selected_raw", ""),
             artifacts.get("raw", ""),
             manifest.get("output_path", "") if isinstance(manifest, dict) else "",
         ]
@@ -1053,7 +1529,7 @@ class WaveformViewerWindow(QMainWindow):
                 p = manifest_path.parent / p
             if p.exists() and p != manifest_path:
                 return self._load_waveform_file(str(p))
-        for name in ("waveforms.csv", "waveforms.raw"):
+        for name in ("selected_waveforms.raw", "waveforms.raw"):
             candidate = manifest_path.parent / name
             if candidate.exists():
                 return self._load_waveform_file(str(candidate))
@@ -1130,6 +1606,168 @@ class WaveformViewerWindow(QMainWindow):
         self.canvas.fit_all()
         self._refresh_measurements()
 
+    def _on_signal_list_context_menu(self, pos):
+        item = self.signal_list.itemAt(pos)
+        if not item:
+            return
+        if not item.isSelected():
+            self.signal_list.clearSelection()
+            item.setSelected(True)
+            self.signal_list.setCurrentItem(item)
+        names = [i.text() for i in self.signal_list.selectedItems()]
+        if not names:
+            names = [item.text()]
+        self._show_signal_context_menu(names, self.signal_list.viewport().mapToGlobal(pos))
+
+    def _on_canvas_signal_context_menu(self, name: str, global_pos: QPoint):
+        if name not in self.canvas._trace_by_name:
+            return
+        for i in range(self.signal_list.count()):
+            item = self.signal_list.item(i)
+            if item and item.text() == name:
+                self.signal_list.setCurrentItem(item)
+                break
+        self._show_signal_context_menu([name], global_pos)
+
+    def _show_signal_context_menu(self, names: list[str], global_pos: QPoint):
+        names = [n for n in names if n in self.canvas._trace_by_name]
+        if not names:
+            return
+        primary = names[0]
+        menu = QMenu(self)
+        title = QAction(primary if len(names) == 1 else f"{len(names)} signals", self)
+        title.setEnabled(False)
+        menu.addAction(title)
+        menu.addSeparator()
+
+        act_plot = QAction("Plot", self)
+        act_plot.triggered.connect(lambda: self._set_signal_visibility(names, True, fit=True))
+        menu.addAction(act_plot)
+
+        act_unplot = QAction("Unplot", self)
+        act_unplot.triggered.connect(lambda: self._set_signal_visibility(names, False, fit=False))
+        menu.addAction(act_unplot)
+
+        act_isolate = QAction("Plot Only This", self)
+        act_isolate.triggered.connect(lambda: self._isolate_signals(names))
+        menu.addAction(act_isolate)
+
+        menu.addSeparator()
+        calc_menu = menu.addMenu("Send To Calculator")
+        calc_expr = self._calculator_expression_for_signal(primary)
+        for label, expr in (
+            ("Signal", calc_expr),
+            ("dB20", f"db20({calc_expr})"),
+            ("Derivative", f"deriv({calc_expr})"),
+            ("Integral", f"integ({calc_expr})"),
+            ("RMS", f"rms({calc_expr})"),
+            ("Peak-to-Peak", f"pkpk({calc_expr})"),
+            ("Frequency", f"freq({calc_expr})"),
+        ):
+            action = QAction(label, self)
+            action.triggered.connect(lambda _checked=False, text=expr: self._set_calculator_expression(text))
+            calc_menu.addAction(action)
+
+        create_menu = menu.addMenu("Create Derived Trace")
+        for label, expr in (
+            ("Abs", f"abs({calc_expr})"),
+            ("dB20", f"db20({calc_expr})"),
+            ("Derivative", f"deriv({calc_expr})"),
+            ("Integral", f"integ({calc_expr})"),
+        ):
+            action = QAction(label, self)
+            action.triggered.connect(lambda _checked=False, text=expr: self._create_calculator_trace_from_expression(text))
+            create_menu.addAction(action)
+
+        menu.addSeparator()
+        act_marker = QAction("Add Marker at Active Cursor", self)
+        act_marker.triggered.connect(self._on_add_marker)
+        menu.addAction(act_marker)
+
+        act_main_form = QAction("Main Form...", self)
+        act_main_form.triggered.connect(lambda: self._open_signal_main_form(primary))
+        menu.addAction(act_main_form)
+
+        menu.exec(global_pos)
+
+    def _set_signal_visibility(self, names: list[str], visible: bool, fit: bool):
+        for name in names:
+            trace = self.canvas._trace_by_name.get(name)
+            if trace:
+                trace.visible = visible
+        self._rebuild_signal_list()
+        if fit:
+            self.canvas.fit_all()
+        else:
+            self.canvas.update()
+        self._refresh_measurements()
+
+    def _isolate_signals(self, names: list[str]):
+        selected = set(names)
+        for trace in self.canvas.traces:
+            trace.visible = trace.name in selected
+        self._rebuild_signal_list()
+        self.canvas.fit_all()
+        self._refresh_measurements()
+
+    def _calculator_expression_for_signal(self, name: str) -> str:
+        if re.match(r"^[A-Za-z]\(.*\)$", name):
+            return name
+        escaped = name.replace("\\", "\\\\").replace('"', '\\"')
+        return f'sig("{escaped}")'
+
+    def _create_calculator_trace_from_expression(self, expression: str):
+        self.calc_expr.setText(expression)
+        self._on_create_calculator_trace()
+
+    def _open_signal_main_form(self, name: str):
+        trace = self.canvas._trace_by_name.get(name)
+        if not trace:
+            return
+        metrics = self._trace_metrics(trace)
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"SigView Main Form - {name}")
+        dialog.setMinimumWidth(460)
+        layout = QVBoxLayout(dialog)
+        form = QFormLayout()
+        form.addRow("Signal:", QLabel(trace.name))
+        form.addRow("Source:", QLabel(trace.source or "result"))
+        form.addRow("Visible:", QLabel("Yes" if trace.visible else "No"))
+        form.addRow("Color:", QLabel(trace.color.name()))
+        form.addRow("Points:", QLabel(str(min(len(trace.x_data), len(trace.y_data)))))
+        if trace.x_data:
+            form.addRow("X Range:", QLabel(f"{self.canvas._format_value(min(trace.x_data))} to {self.canvas._format_value(max(trace.x_data))}"))
+        for key, label in (
+            ("min", "Minimum:"),
+            ("max", "Maximum:"),
+            ("avg", "Average:"),
+            ("rms", "RMS:"),
+            ("pkpk", "Peak-to-Peak:"),
+            ("freq", "Frequency:"),
+        ):
+            form.addRow(label, QLabel(self._format_metric(metrics.get(key)) or "-"))
+        layout.addLayout(form)
+
+        buttons = QHBoxLayout()
+        plot_btn = QPushButton("Plot")
+        hide_btn = QPushButton("Unplot")
+        isolate_btn = QPushButton("Plot Only")
+        calc_btn = QPushButton("Send To Calculator")
+        plot_btn.clicked.connect(lambda: self._set_signal_visibility([name], True, fit=True))
+        hide_btn.clicked.connect(lambda: self._set_signal_visibility([name], False, fit=False))
+        isolate_btn.clicked.connect(lambda: self._isolate_signals([name]))
+        calc_btn.clicked.connect(lambda: self._set_calculator_expression(self._calculator_expression_for_signal(name)))
+        buttons.addWidget(plot_btn)
+        buttons.addWidget(hide_btn)
+        buttons.addWidget(isolate_btn)
+        buttons.addWidget(calc_btn)
+        layout.addLayout(buttons)
+
+        close_buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        close_buttons.rejected.connect(dialog.reject)
+        layout.addWidget(close_buttons)
+        dialog.exec()
+
     # ----- Toolbar / cursor actions -----
 
     def _set_cursor_mode(self, mode: str):
@@ -1192,9 +1830,78 @@ class WaveformViewerWindow(QMainWindow):
             self.marker_table.setItem(r, 0, name_item)
             self.marker_table.setItem(r, 1, QTableWidgetItem(self.canvas._format_value(marker.x)))
 
+    def _on_calculator_preset(self, text: str):
+        if text:
+            self.calc_expr.setText(text)
+
+    def _set_calculator_expression(self, text: str):
+        self.calc_expr.setText(text)
+        self.side_tabs.setCurrentWidget(self.calc_expr.parentWidget())
+        self.calc_expr.setFocus()
+
+    def _on_create_calculator_trace(self):
+        expression = self.calc_expr.text().strip()
+        if not expression:
+            QMessageBox.information(self, "Calculator", "Enter a SigView calculator expression.")
+            return
+        try:
+            result = SigViewCalculatorEngine(self.canvas._trace_by_name).evaluate(expression)
+            name, x_data, y_data = self._calculator_result_to_trace(expression, result)
+        except Exception as exc:
+            QMessageBox.warning(self, "Calculator", str(exc))
+            return
+        custom_name = self.calc_name.text().strip()
+        if custom_name:
+            name = custom_name
+        name = self._unique_trace_name(name)
+        self.canvas.add_trace(name, x_data, y_data, source="calculator")
+        self._last_waveforms[name] = list(y_data)
+        self._rebuild_signal_list()
+        self.canvas.fit_all()
+        self._refresh_measurements()
+        self.statusBar().showMessage(f"Created calculator trace: {name}", 4000)
+
+    def _calculator_result_to_trace(self, expression: str, result) -> tuple[str, list[float], list[float]]:
+        if isinstance(result, WaveVector):
+            n = min(len(result.x_data), len(result.y_data))
+            if n < 1:
+                raise ValueError("Calculator expression produced an empty waveform.")
+            return result.label or expression, list(result.x_data[:n]), list(result.y_data[:n])
+        try:
+            value = float(result)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Calculator expression did not produce numeric data.") from exc
+        x_data = self._reference_x_data()
+        if not x_data:
+            x_data = [0.0, 1.0]
+        return expression, list(x_data), [value for _ in x_data]
+
+    def _reference_x_data(self) -> list[float]:
+        current = self.signal_list.currentItem()
+        if current:
+            trace = self.canvas._trace_by_name.get(current.text())
+            if trace and trace.x_data:
+                return list(trace.x_data)
+        for trace in self.canvas.traces:
+            if trace.visible and trace.x_data:
+                return list(trace.x_data)
+        for trace in self.canvas.traces:
+            if trace.x_data:
+                return list(trace.x_data)
+        return []
+
+    def _unique_trace_name(self, base: str) -> str:
+        clean = str(base or "calc").strip() or "calc"
+        candidate = clean
+        idx = 2
+        while candidate in self.canvas._trace_by_name:
+            candidate = f"{clean}_{idx}"
+            idx += 1
+        return candidate
+
     def _on_create_expression_trace(self):
         current = self.signal_list.currentItem()
-        mode = self.expr_combo.currentText()
+        mode = self.quick_combo.currentText()
         new_name_hint = self.expr_value.text().strip()
 
         selected = [item.text() for item in self.signal_list.selectedItems()]
@@ -1276,6 +1983,112 @@ class WaveformViewerWindow(QMainWindow):
             y = [a / b if b else math.nan for a, b in zip(y0, y1)]
             label = f"{t0.name}/{t1.name}"
         return unique_name(value_text or label), list(t0.x_data[:n]), y
+
+    # ----- Session persistence -----
+
+    def _on_save_session(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save SigView Session",
+            str(Path.home() / "sigview_session.json"),
+            "SigView sessions (*.json)",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".json"):
+            path += ".json"
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(self._session_state(), fh, indent=2)
+        except Exception as exc:
+            QMessageBox.critical(self, "Save Session", f"Failed to save SigView session:\n{exc}")
+            return
+        self.statusBar().showMessage(f"Saved SigView session: {path}", 4000)
+
+    def _on_load_session(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Load SigView Session",
+            str(Path.home()),
+            "SigView sessions (*.json);;All files (*)",
+        )
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                state = json.load(fh)
+            self._restore_session_state(state)
+        except Exception as exc:
+            QMessageBox.critical(self, "Load Session", f"Failed to load SigView session:\n{exc}")
+            return
+        self.statusBar().showMessage(f"Loaded SigView session: {path}", 4000)
+
+    def _session_state(self) -> dict:
+        traces = []
+        for trace in self.canvas.traces:
+            traces.append({
+                "name": trace.name,
+                "visible": trace.visible,
+                "source": trace.source,
+                "color": trace.color.name(),
+            })
+        return {
+            "type": "lumen.sigview.session",
+            "version": 1,
+            "x_var": self._x_var,
+            "waveforms": self._last_waveforms,
+            "traces": traces,
+            "markers": [{"name": m.name, "x": m.x, "color": m.color.name()} for m in self.canvas.markers],
+            "cursors": {"a": self.canvas.cursor_a_x, "b": self.canvas.cursor_b_x, "active": self.canvas.active_cursor},
+            "view": {
+                "grid": self.canvas.show_grid,
+                "stacked": self.canvas.stacked_mode,
+                "x_min": self.canvas.x_min,
+                "x_max": self.canvas.x_max,
+                "y_min": self.canvas.y_min,
+                "y_max": self.canvas.y_max,
+            },
+        }
+
+    def _restore_session_state(self, state: dict):
+        if not isinstance(state, dict) or state.get("type") != "lumen.sigview.session":
+            raise ValueError("This is not a SigView session file.")
+        waveforms = state.get("waveforms", {})
+        self.load_results(waveforms, state.get("x_var", ""))
+        trace_state = {entry.get("name"): entry for entry in state.get("traces", []) if isinstance(entry, dict)}
+        for trace in self.canvas.traces:
+            entry = trace_state.get(trace.name, {})
+            trace.visible = bool(entry.get("visible", trace.visible))
+            color = entry.get("color")
+            if color:
+                trace.color = QColor(color)
+        self.canvas.clear_markers()
+        for entry in state.get("markers", []):
+            if not isinstance(entry, dict):
+                continue
+            try:
+                self.canvas.add_marker(entry.get("name", f"M{len(self.canvas.markers) + 1}"), float(entry.get("x", 0.0)), QColor(entry.get("color", "#ffd166")))
+            except (TypeError, ValueError):
+                continue
+        cursors = state.get("cursors", {})
+        self.canvas.cursor_a_x = cursors.get("a") if isinstance(cursors, dict) else None
+        self.canvas.cursor_b_x = cursors.get("b") if isinstance(cursors, dict) else None
+        self.canvas.set_active_cursor(cursors.get("active", "A") if isinstance(cursors, dict) else "A")
+        view = state.get("view", {})
+        if isinstance(view, dict):
+            self._on_toggle_grid(bool(view.get("grid", True)))
+            self._on_toggle_stacked(bool(view.get("stacked", False)))
+            for attr in ("x_min", "x_max", "y_min", "y_max"):
+                if attr in view:
+                    try:
+                        setattr(self.canvas, attr, float(view[attr]))
+                    except (TypeError, ValueError):
+                        pass
+            self.canvas._auto_range = False
+        self._rebuild_signal_list()
+        self._refresh_marker_table()
+        self._refresh_measurements()
+        self.canvas.update()
 
     # ----- Export -----
 
@@ -1379,6 +2192,14 @@ class WaveformViewerWindow(QMainWindow):
             lines.append(f"dX: {self.canvas._format_value(bx - ax)}")
             if a is not None and b is not None:
                 lines.append(f"dY: {self.canvas._format_value(b - a)}")
+        trace = self.canvas._trace_by_name.get(name)
+        if trace:
+            metrics = self._trace_metrics(trace)
+            for key in ("min", "max", "avg", "rms", "pkpk", "freq"):
+                value = metrics.get(key)
+                if value is not None and math.isfinite(value):
+                    label = key.upper() if key != "pkpk" else "PkPk"
+                    lines.append(f"{label}: {self.canvas._format_value(value)}")
 
         self.measure_label.setText("\n".join(lines))
 
@@ -1396,18 +2217,45 @@ class WaveformViewerWindow(QMainWindow):
 
             a = self.canvas.get_cursor_value(trace.name, "A")
             b = self.canvas.get_cursor_value(trace.name, "B")
-            finite = [v for v in trace.y_data if isinstance(v, (int, float)) and math.isfinite(v)]
-            avg = sum(finite) / len(finite) if finite else None
+            metrics = self._trace_metrics(trace)
             values = [
                 self.canvas._format_value(a) if a is not None and ax is not None else "",
                 self.canvas._format_value(b) if b is not None and bx is not None else "",
                 self.canvas._format_value(b - a) if a is not None and b is not None else "",
-                self.canvas._format_value(min(finite)) if finite else "",
-                self.canvas._format_value(max(finite)) if finite else "",
-                self.canvas._format_value(avg) if avg is not None else "",
+                self._format_metric(metrics.get("min")),
+                self._format_metric(metrics.get("max")),
+                self._format_metric(metrics.get("avg")),
+                self._format_metric(metrics.get("rms")),
+                self._format_metric(metrics.get("pkpk")),
+                self._format_metric(metrics.get("freq")),
             ]
             for col, text in enumerate(values, start=1):
                 self.measure_table.setItem(r, col, QTableWidgetItem(text))
+
+    def _format_metric(self, value) -> str:
+        if value is None:
+            return ""
+        try:
+            if not math.isfinite(float(value)):
+                return ""
+        except (TypeError, ValueError):
+            return ""
+        return self.canvas._format_value(float(value))
+
+    def _trace_metrics(self, trace: TraceRecord) -> dict[str, float | None]:
+        finite = [v for v in trace.y_data if isinstance(v, (int, float)) and math.isfinite(v)]
+        if not finite:
+            return {"min": None, "max": None, "avg": None, "rms": None, "pkpk": None, "freq": None}
+        avg = sum(finite) / len(finite)
+        rms = math.sqrt(sum(v * v for v in finite) / len(finite))
+        return {
+            "min": min(finite),
+            "max": max(finite),
+            "avg": avg,
+            "rms": rms,
+            "pkpk": max(finite) - min(finite),
+            "freq": _vector_freq(WaveVector(trace.x_data, trace.y_data, trace.name)),
+        }
 
 
 # Preferred user-facing alias.

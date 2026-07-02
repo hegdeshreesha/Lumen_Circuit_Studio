@@ -54,7 +54,7 @@ SIMULATOR_INFO = {
             r"C:\EDA\GSPICE\build\gspice.exe",
             "gspice",
         ],
-        "default_timeout": 300,
+        "default_timeout": 0,
     },
     "Ngspice": {
         "label": "Ngspice (Open Source)",
@@ -274,7 +274,8 @@ class SimulatorBridge:
 
     def simulate(self, netlist: str, sim_name: str = "sim",
                  threads: int = 1, callback=None,
-                 timeout: int = 0, use_cache: bool = False) -> SimulationResult:
+                 timeout: int = 0, use_cache: bool = False,
+                 progress_callback=None) -> SimulationResult:
         result = SimulationResult(simulator=self.simulator)
         start_time = time.time()
 
@@ -289,6 +290,7 @@ class SimulatorBridge:
         manifest_path = os.path.join(run_dir, "run_manifest.json")
 
         sim_netlist, compatibility_notes = self._prepare_netlist_for_simulator(netlist)
+        transient_stop = self._extract_transient_stop_seconds(sim_netlist)
         has_ac_analysis = bool(re.search(r"(?im)^\s*\.AC\b", sim_netlist))
         has_dynamic_sources = bool(re.search(r"(?im)^\s*[VI]\S*\s+\S+\s+\S+.*\b(PULSE|SIN|PWL|EXP|SFFM)\(", sim_netlist))
         node_aliases = self._extract_gspice_node_aliases(sim_netlist) if self.simulator == "GSPICE" else {}
@@ -347,13 +349,121 @@ class SimulatorBridge:
 
         try:
             def _run_command(run_cmd: list[str]) -> tuple[str, str, int]:
+                env = self._build_process_env()
+                launched_at = time.time()
+                stdout_lines: list[str] = []
+                stderr_lines: list[str] = []
+                progress_state = {"last_emit": 0.0, "last_percent": -1.0}
+
+                def emit_progress(message: str) -> None:
+                    if progress_callback and message:
+                        try:
+                            progress_callback(message)
+                        except Exception:
+                            pass
+
+                def maybe_progress(kind: str, raw_line: str) -> None:
+                    line = str(raw_line or "").strip()
+                    if not line:
+                        return
+                    lower = line.lower()
+                    now = time.time()
+                    if (
+                        lower.startswith("gspice core:")
+                        or lower.startswith("threads:")
+                        or lower.startswith("waveform output:")
+                        or lower.startswith("transient breakpoints:")
+                        or lower.startswith("calculating ")
+                        or lower.startswith("starting ")
+                        or lower.startswith("transient controls:")
+                        or lower.startswith("transient summary:")
+                        or lower.startswith("newton summary:")
+                        or lower.startswith("accuracy summary:")
+                        or "simulation completed" in lower
+                    ):
+                        emit_progress(f"{self.simulator}: {line}")
+                        return
+                    if kind == "stderr":
+                        emit_progress(f"{self.simulator} stderr: {line}")
+                        return
+                    prog = re.search(
+                        r"(?i)transient\s+progress:\s*([0-9.]+)%\s+t=([-+0-9.eE]+)",
+                        line,
+                    )
+                    if prog and transient_stop > 0.0:
+                        percent = max(0.0, min(100.0, float(prog.group(1))))
+                        sim_time = float(prog.group(2))
+                        elapsed = self._format_elapsed(now - launched_at)
+                        emit_progress(
+                            f"{self.simulator}: transient {percent:5.1f}% "
+                            f"(t={self._format_spice_time(sim_time)} / {self._format_spice_time(transient_stop)}, elapsed {elapsed})"
+                        )
+                        return
+                    match = re.match(r"^\s*([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)\s*\|", line)
+                    if not match or transient_stop <= 0.0:
+                        return
+                    try:
+                        sim_time = float(match.group(1))
+                    except ValueError:
+                        return
+                    percent = max(0.0, min(100.0, 100.0 * sim_time / transient_stop))
+                    if percent - progress_state["last_percent"] < 1.0 and now - progress_state["last_emit"] < 1.0:
+                        return
+                    progress_state["last_percent"] = percent
+                    progress_state["last_emit"] = now
+                    elapsed = self._format_elapsed(now - launched_at)
+                    emit_progress(
+                        f"{self.simulator}: transient {percent:5.1f}% "
+                        f"(t={self._format_spice_time(sim_time)} / {self._format_spice_time(transient_stop)}, elapsed {elapsed})"
+                    )
+
+                def read_stream(stream, collector: list[str], kind: str) -> None:
+                    try:
+                        for line in iter(stream.readline, ""):
+                            collector.append(line)
+                            maybe_progress(kind, line)
+                    finally:
+                        try:
+                            stream.close()
+                        except Exception:
+                            pass
+
                 self._process = subprocess.Popen(
                     run_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                    cwd=self.work_dir, text=True
+                    cwd=self.work_dir, text=True, env=env, bufsize=1
                 )
-                out, err = self._process.communicate(timeout=timeout)
+                emit_progress(f"{self.simulator}: launched process {self._process.pid}")
+                out_thread = threading.Thread(
+                    target=read_stream,
+                    args=(self._process.stdout, stdout_lines, "stdout"),
+                    daemon=True,
+                )
+                err_thread = threading.Thread(
+                    target=read_stream,
+                    args=(self._process.stderr, stderr_lines, "stderr"),
+                    daemon=True,
+                )
+                out_thread.start()
+                err_thread.start()
+                deadline = time.time() + timeout if timeout and timeout > 0 else None
+                while self._process.poll() is None:
+                    if self._cancelled:
+                        self._process.terminate()
+                        try:
+                            self._process.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            self._process.kill()
+                            self._process.wait(timeout=5)
+                        break
+                    if deadline is not None and time.time() > deadline:
+                        self._process.kill()
+                        raise subprocess.TimeoutExpired(run_cmd, timeout)
+                    time.sleep(0.2)
+                out_thread.join(timeout=2)
+                err_thread.join(timeout=2)
                 code = int(self._process.returncode or 0)
-                return out, err, code
+                emit_progress(f"{self.simulator}: process exited with code {code}")
+                return "".join(stdout_lines), "".join(stderr_lines), code
 
             stdout, stderr, return_code = _run_command(cmd)
             self._write_text_artifact(stdout_path, stdout)
@@ -509,7 +619,10 @@ class SimulatorBridge:
                         )
 
                 if self.simulator == "GSPICE":
-                    result.waveforms = self._parse_gspice_stdout(stdout, node_aliases)
+                    if result.output_path and os.path.isfile(result.output_path):
+                        result.waveforms = self._parse_raw(result.output_path)
+                    else:
+                        result.waveforms = self._parse_gspice_stdout(stdout, node_aliases)
                     if not result.output_path and result.waveforms:
                         if self._write_ascii_raw_fallback(output_path, result.waveforms):
                             result.output_path = output_path
@@ -523,12 +636,6 @@ class SimulatorBridge:
                             )
                 elif result.output_path and os.path.isfile(result.output_path):
                     result.waveforms = self._parse_raw(result.output_path)
-                if result.waveforms:
-                    csv_path = os.path.join(run_dir, "waveforms.csv")
-                    if self._write_waveform_csv(csv_path, result.waveforms):
-                        result.artifacts["csv"] = csv_path
-                        result.artifacts["waveforms"] = csv_path
-                        result.log += f"Waveform CSV: {csv_path}\n"
                 if result.output_path and os.path.isfile(result.output_path):
                     result.artifacts["raw"] = result.output_path
                     result.artifacts.setdefault("waveforms", result.output_path)
@@ -553,6 +660,28 @@ class SimulatorBridge:
         if callback:
             callback(result)
         return result
+
+    @staticmethod
+    def _format_elapsed(seconds: float) -> str:
+        seconds = max(0, int(seconds))
+        mins, secs = divmod(seconds, 60)
+        hours, mins = divmod(mins, 60)
+        if hours:
+            return f"{hours:d}:{mins:02d}:{secs:02d}"
+        return f"{mins:02d}:{secs:02d}"
+
+    def _extract_transient_stop_seconds(self, netlist: str) -> float:
+        for raw in str(netlist or "").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("*"):
+                continue
+            if not re.match(r"(?i)^\.TRAN\b", line):
+                continue
+            body = re.split(r"[;$]", line, maxsplit=1)[0]
+            tokens = body.split()
+            if len(tokens) >= 3:
+                return self._parse_spice_number(tokens[2])
+        return 0.0
 
     def _create_run_dir(self, base_dir: str, safe_sim_name: str, started_at: float) -> str:
         """Create a stable per-run artifact directory."""
@@ -830,55 +959,6 @@ class SimulatorBridge:
         except Exception:
             return False
 
-    def _write_waveform_csv(self, path: str, waveforms: dict) -> bool:
-        """Write parsed waveform vectors to a SigView-loadable CSV artifact."""
-        if not path or not isinstance(waveforms, dict):
-            return False
-
-        names = [str(k) for k in waveforms.keys() if not str(k).startswith("_")]
-        if not names:
-            return False
-
-        x_name = ""
-        for candidate in ("time", "frequency", "v-sweep", "sweep"):
-            if candidate in waveforms:
-                x_name = candidate
-                break
-        if x_name and x_name in names:
-            names.remove(x_name)
-            names.insert(0, x_name)
-
-        series: list[list] = []
-        for name in names:
-            vals = waveforms.get(name, [])
-            if isinstance(vals, list):
-                series.append(vals)
-            else:
-                series.append([])
-
-        n_points = max((len(vals) for vals in series), default=0)
-        if n_points <= 0:
-            return False
-
-        try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "w", encoding="utf-8", newline="\n") as f:
-                f.write(",".join(names) + "\n")
-                for row in range(n_points):
-                    values = []
-                    for vals in series:
-                        if row < len(vals):
-                            try:
-                                values.append(f"{float(vals[row]):.16g}")
-                            except (TypeError, ValueError):
-                                values.append("")
-                        else:
-                            values.append("")
-                    f.write(",".join(values) + "\n")
-            return True
-        except Exception:
-            return False
-
     def _resolve_output_file_path(self, requested_output: str, netlist_path: str,
                                   safe_sim_name: str, started_at: float) -> str:
         """Find the actual output file path produced by the simulator run."""
@@ -933,67 +1013,148 @@ class SimulatorBridge:
     def _prepare_netlist_for_simulator(self, netlist: str) -> tuple[str, list[str]]:
         """Apply small compatibility rewrites before launching a simulator.
 
-        GSPICE currently parses primitive devices directly, but not full
-        Cadence/ngspice PDK wrapper syntax. Keep the ADE-visible netlist
-        standard, then write a GSPICE-friendly deck for execution.
+        Modern GSPICE parses standard SPICE model libraries, subcircuits,
+        dynamic sources, and OpenVAF/OSDI model cards. Keep the deck faithful
+        so PDK wrappers such as IHP sg13_lv_nmos/pmos can reach the PSP OSDI
+        model instead of being downgraded to simplified primitive MOS devices.
         """
         if self.simulator != "GSPICE":
             return netlist, []
-
-        lines: list[str] = []
-        stripped_model_directives = 0
-        stripped_saves = 0
-        converted_sources = 0
-        converted_pdk_mos = 0
-
-        for raw_line in netlist.splitlines():
-            stripped = raw_line.strip()
-            if not stripped or stripped.startswith(("*", "$")):
-                lines.append(raw_line)
-                continue
-
-            tokens = stripped.split()
-            head = tokens[0]
-            upper_head = head.upper()
-
-            if upper_head in (".LIB", ".INCLUDE", ".INC"):
-                stripped_model_directives += 1
-                lines.append(f"* GSPICE compatibility: skipped {stripped}")
-                continue
-
-            if upper_head == ".SAVE":
-                stripped_saves += 1
-                lines.append(f"* GSPICE compatibility: skipped {stripped}")
-                continue
-
-            if upper_head[0] == "X":
-                converted = self._convert_gspice_pdk_mos(tokens)
-                if converted:
-                    lines.append(converted)
-                    converted_pdk_mos += 1
-                else:
-                    lines.append(f"* GSPICE compatibility: unsupported subckt skipped: {stripped}")
-                continue
-
-            if upper_head[0] in ("V", "I") and len(tokens) >= 5 and tokens[3].upper() == "DC":
-                lines.append(" ".join(tokens[:3] + [tokens[4]] + tokens[5:]))
-                converted_sources += 1
-                continue
-
-            lines.append(raw_line)
-
         notes = []
-        if stripped_model_directives or stripped_saves or converted_sources or converted_pdk_mos:
-            notes.append("[GSPICE compatibility] Rewrote standard SPICE deck for current GSPICE parser.")
-        if converted_pdk_mos:
-            notes.append(f"[GSPICE compatibility] Converted {converted_pdk_mos} PDK MOS subckt instance(s) to primitive M devices.")
-        if stripped_model_directives:
-            notes.append(f"[GSPICE compatibility] Skipped {stripped_model_directives} .LIB/.INCLUDE directive(s); current GSPICE does not parse model libraries yet.")
-        if stripped_saves:
-            notes.append(f"[GSPICE compatibility] Skipped {stripped_saves} .SAVE directive(s); current GSPICE reports all node values it solves.")
-        if converted_sources:
-            notes.append(f"[GSPICE compatibility] Converted {converted_sources} DC source line(s) to GSPICE's simple source syntax.")
-        return "\n".join(lines) + ("\n" if netlist.endswith("\n") else ""), notes
+        osdi_dir = self._default_gspice_osdi_dir()
+        if osdi_dir and not os.environ.get("GSPICE_OSDI_DIR"):
+            notes.append(f"[GSPICE OSDI] Using PSP/OSDI search folder: {osdi_dir}")
+        netlist, tran_note = self._ensure_gspice_transient_maxstep(netlist)
+        if tran_note:
+            notes.append(tran_note)
+        return netlist, notes
+
+    def _ensure_gspice_transient_maxstep(self, netlist: str) -> tuple[str, str]:
+        if not re.search(r"(?im)^\s*\.TRAN\b", netlist):
+            return netlist, ""
+        if not re.search(r"(?im)^\s*[VI]\S*\s+\S+\s+\S+.*\b(PULSE|SIN|PWL|EXP|SFFM)\(", netlist):
+            return netlist, ""
+
+        suggested = self._infer_transient_maxstep(netlist)
+        changed = False
+
+        def repl(match: re.Match) -> str:
+            nonlocal changed
+            raw = match.group(0)
+            suffix = ""
+            if raw.endswith("\r"):
+                raw = raw[:-1]
+                suffix = "\r"
+            comment = ""
+            body = raw
+            for marker in (";", "$"):
+                idx = body.find(marker)
+                if idx >= 0:
+                    comment = body[idx:]
+                    body = body[:idx].rstrip()
+                    break
+            tokens = body.split()
+            if len(tokens) < 3:
+                return match.group(0)
+            upper = [t.upper() for t in tokens]
+            if "UIC" in upper:
+                uic_idx = upper.index("UIC")
+                numeric = tokens[1:uic_idx]
+                tail = tokens[uic_idx:]
+            else:
+                numeric = tokens[1:]
+                tail = []
+            if len(numeric) >= 4:
+                return match.group(0)
+            if len(numeric) == 2:
+                numeric.append("0")
+            if len(numeric) == 3:
+                numeric.append(suggested)
+                changed = True
+                rebuilt = " ".join([tokens[0], *numeric, *tail])
+                return rebuilt + (f" {comment}" if comment else "") + suffix
+            return match.group(0)
+
+        updated = re.sub(r"(?im)^\s*\.TRAN[^\n]*", repl, netlist)
+        if not changed:
+            return netlist, ""
+        return updated, f"[GSPICE transient] Added maxstep={suggested} so fast loaded edges are resolved."
+
+    def _infer_transient_maxstep(self, netlist: str) -> str:
+        edge_seconds: list[float] = []
+        for match in re.finditer(r"(?is)\bPULSE\s*\(([^)]*)\)", netlist):
+            parts = re.split(r"[\s,]+", match.group(1).strip())
+            if len(parts) >= 5:
+                for token in (parts[3], parts[4]):
+                    value = self._parse_spice_number(token)
+                    if value and value > 0:
+                        edge_seconds.append(value)
+        if edge_seconds:
+            step = min(edge_seconds) / 50.0
+            if step > 0:
+                return self._format_spice_time(step)
+        return "20p"
+
+    @staticmethod
+    def _parse_spice_number(text: str) -> float:
+        token = str(text or "").strip().strip("'\"")
+        if not token:
+            return 0.0
+        multipliers = {
+            "t": 1e12,
+            "g": 1e9,
+            "meg": 1e6,
+            "k": 1e3,
+            "m": 1e-3,
+            "u": 1e-6,
+            "n": 1e-9,
+            "p": 1e-12,
+            "f": 1e-15,
+            "a": 1e-18,
+        }
+        m = re.fullmatch(r"([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)([a-zA-Z]+)?", token)
+        if not m:
+            return 0.0
+        base = float(m.group(1))
+        suffix = (m.group(2) or "").lower()
+        if suffix in multipliers:
+            return base * multipliers[suffix]
+        return base
+
+    @staticmethod
+    def _format_spice_time(seconds: float) -> str:
+        units = [("n", 1e-9), ("p", 1e-12), ("f", 1e-15)]
+        for suffix, scale in units:
+            value = seconds / scale
+            if 0.1 <= value < 1000:
+                return f"{value:g}{suffix}"
+        return f"{seconds:.6g}"
+
+    def _build_process_env(self) -> dict[str, str]:
+        env = os.environ.copy()
+        if self.simulator == "GSPICE":
+            # Enable PSP/OSDI charge equations so transient runs include
+            # device capacitance instead of only quasi-static operating points.
+            env["GSPICE_ENABLE_OSDI_TRAN"] = "1"
+            if not env.get("GSPICE_OSDI_DIR"):
+                osdi_dir = self._default_gspice_osdi_dir()
+                if osdi_dir:
+                    env["GSPICE_OSDI_DIR"] = osdi_dir
+        return env
+
+    def _default_gspice_osdi_dir(self) -> str:
+        candidates: list[str] = []
+        exe = os.path.abspath(self.exe_path) if self.exe_path else ""
+        if exe:
+            # Common developer layout: C:\EDA\GSPICE\build\Release\gspice.exe
+            root = os.path.dirname(os.path.dirname(os.path.dirname(exe)))
+            candidates.append(os.path.join(root, "osdi"))
+            candidates.append(os.path.join(os.path.dirname(exe), "osdi"))
+        candidates.append(r"C:\EDA\GSPICE\osdi")
+        for path in candidates:
+            if path and os.path.isdir(path):
+                return path
+        return ""
 
     def _convert_gspice_pdk_mos(self, tokens: list[str]) -> str:
         """Convert known PDK MOS subckt instances to GSPICE primitive MOS lines."""
@@ -1116,7 +1277,7 @@ class SimulatorBridge:
 
     def _build_command(self, netlist_path, output_path, threads):
         if self.simulator == "GSPICE":
-            return [self.exe_path, "--threads", str(max(1, int(threads or 1))), netlist_path]
+            return [self.exe_path, "--threads", str(max(1, int(threads or 1))), "-o", output_path, netlist_path]
         elif self.simulator == "Ngspice":
             return [self.exe_path, "-b", "-r", output_path, netlist_path]
         elif self.simulator == "Xyce":
@@ -1195,6 +1356,7 @@ class SimulatorBridge:
         """Parse GSPICE's stdout table output into simple waveform arrays."""
         node_aliases = node_aliases or {}
         waveforms: dict[str, list[float]] = {}
+        table_signal_names: list[str] = []
         for line in output.splitlines():
             if "Node " in line and "=" in line:
                 for node, value in re.findall(r"Node\s+(\d+)=([-+0-9.eE]+)V", line):
@@ -1204,6 +1366,14 @@ class SimulatorBridge:
             if "|" not in line:
                 continue
             left, right = line.split("|", 1)
+            if left.strip().lower() in {"time", "freq", "frequency"}:
+                table_signal_names = []
+                for token in right.split():
+                    name = token.strip()
+                    if not name:
+                        continue
+                    table_signal_names.append(name if name.upper().startswith("V(") else f"V({name})")
+                continue
             try:
                 t = float(left.strip())
             except ValueError:
@@ -1218,7 +1388,11 @@ class SimulatorBridge:
                 continue
             waveforms.setdefault("time", []).append(t)
             for idx, value in enumerate(values):
-                waveforms.setdefault(self._waveform_name_for_node(idx, node_aliases), []).append(value)
+                if idx < len(table_signal_names):
+                    signal_name = table_signal_names[idx]
+                else:
+                    signal_name = self._waveform_name_for_node(idx, node_aliases)
+                waveforms.setdefault(signal_name, []).append(value)
         return waveforms
 
     def _parse_raw(self, filepath: str) -> dict:

@@ -6,7 +6,6 @@ import os
 import re
 import traceback
 import json
-import csv
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
@@ -16,8 +15,9 @@ from PyQt6.QtWidgets import (
     QCheckBox, QSpinBox, QDoubleSpinBox, QTextEdit, QSplitter,
     QStatusBar, QToolBar, QMessageBox, QTreeWidget, QTreeWidgetItem,
     QDialog, QDialogButtonBox, QGridLayout, QScrollArea, QFrame,
-    QFileDialog, QInputDialog
+    QFileDialog, QInputDialog, QProgressBar
 )
+from PyQt6.QtWidgets import QAbstractItemView, QMenu
 from PyQt6.QtCore import Qt, QSize, QUrl, QObject, QThread, pyqtSignal
 from PyQt6.QtGui import QAction, QFont, QColor, QKeySequence, QDesktopServices
 
@@ -38,8 +38,9 @@ from lumen.gui.simulator_manager_window import (
 ANALYSES = {
     "DC Operating Point": {"cmd": ".OP", "category": "Standard", "params": []},
     "Transient": {"cmd": ".TRAN", "category": "Standard", "params": [
-        ("Step", "1n", "Time step"), ("Stop", "10u", "Stop time"),
-        ("Start", "0", "Start time"), ("UIC", False, "Use initial conditions")]},
+        ("Step", "", "Auto from accuracy preset when blank"), ("Stop", "10u", "Stop time"),
+        ("Start", "0", "Start time"), ("MaxStep", "", "Auto from accuracy preset when blank"),
+        ("UIC", False, "Use initial conditions")]},
     "AC Small-Signal": {"cmd": ".AC", "category": "Standard", "params": [
         ("Sweep", "DEC", "DEC/OCT/LIN"), ("Points", "100", "Points per decade"),
         ("Fstart", "1", "Start freq (Hz)"), ("Fstop", "10G", "Stop freq (Hz)")]},
@@ -209,7 +210,7 @@ class SimulationDumpSettingsDialog(QDialog):
             "input.sp\n"
             "stdout.log / stderr.log\n"
             "waveforms.raw when the simulator emits or Lumen can synthesize RAW\n"
-            "waveforms.csv and selected_waveforms.csv when waveform data exists\n"
+            "selected_waveforms.raw when SimENV Outputs are selected\n"
             "run_manifest.json with command, paths, warnings, errors, and signal list\n"
             "latest_run.txt in the run-family folder"
         )
@@ -275,6 +276,125 @@ class SimulationDumpSettingsDialog(QDialog):
         self.accept()
 
 
+class SimulationMonitorWindow(QDialog):
+    """Live simulator progress window."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Simulation Monitor")
+        self.setMinimumSize(720, 420)
+        layout = QVBoxLayout(self)
+
+        self.title_label = QLabel("Simulation running")
+        self.title_label.setStyleSheet("font-size:15px;font-weight:bold;color:#6b9ece;background:transparent;")
+        layout.addWidget(self.title_label)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 1000)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setFormat("Starting...")
+        layout.addWidget(self.progress_bar)
+
+        summary_frame = QFrame()
+        summary_frame.setStyleSheet(
+            "QFrame{background:#141b21;border:1px solid #2f3c46;border-radius:4px;}"
+            "QLabel{background:transparent;color:#d7dde6;}"
+        )
+        summary_grid = QGridLayout(summary_frame)
+        summary_grid.setContentsMargins(8, 6, 8, 6)
+        self.summary_labels: dict[str, QLabel] = {}
+        for idx, (key, label) in enumerate((
+            ("method", "Method"),
+            ("steps", "Steps"),
+            ("rejected", "Rejected"),
+            ("newton", "Newton Avg"),
+            ("dt", "Step Range"),
+            ("points", "Points"),
+        )):
+            name_label = QLabel(label)
+            name_label.setStyleSheet("color:#8fa9b8;background:transparent;font-size:10px;")
+            value_label = QLabel("--")
+            value_label.setStyleSheet("color:#f2f7fb;background:transparent;font-weight:bold;")
+            self.summary_labels[key] = value_label
+            row = idx // 3
+            col = (idx % 3) * 2
+            summary_grid.addWidget(name_label, row, col)
+            summary_grid.addWidget(value_label, row, col + 1)
+        layout.addWidget(summary_frame)
+
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setFont(QFont("Consolas", 9))
+        self.log_text.setStyleSheet(
+            "QTextEdit{background:#101418;color:#d7dde6;border:1px solid #34424d;border-radius:4px;}"
+        )
+        layout.addWidget(self.log_text, stretch=1)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        self.close_btn = QPushButton("Hide")
+        self.close_btn.clicked.connect(self.hide)
+        buttons.addWidget(self.close_btn)
+        layout.addLayout(buttons)
+
+    def reset_for_run(self, title: str):
+        self.title_label.setText(title)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("Starting...")
+        self.log_text.clear()
+        for label in self.summary_labels.values():
+            label.setText("--")
+
+    def append_message(self, message: str):
+        text = str(message or "").strip()
+        if not text:
+            return
+        self.log_text.append(text)
+        match = re.search(r"(\d+(?:\.\d+)?)%", text)
+        if match:
+            pct = max(0.0, min(100.0, float(match.group(1))))
+            self.progress_bar.setValue(int(pct * 10))
+            self.progress_bar.setFormat(f"{pct:.1f}%")
+        elif "completed" in text.lower() or "finished" in text.lower():
+            self.progress_bar.setValue(1000)
+            self.progress_bar.setFormat("Complete")
+        elif "failed" in text.lower() or "timed out" in text.lower():
+            self.progress_bar.setFormat("Failed")
+        self._update_summary_from_message(text)
+        self.log_text.ensureCursorVisible()
+
+    def _update_summary_from_message(self, text: str):
+        if not hasattr(self, "summary_labels"):
+            return
+        body = text.split(":", 1)[1].strip() if text.startswith("GSPICE:") else text
+        lower = body.lower()
+        if lower.startswith("transient controls:"):
+            method_match = re.search(r"method=(.+)$", body)
+            if method_match:
+                self.summary_labels["method"].setText(method_match.group(1).strip())
+        elif lower.startswith("transient summary:"):
+            values = dict(re.findall(r"([a-zA-Z_]+)=([^\s]+)", body))
+            accepted = values.get("accepted", "--")
+            rejected = values.get("rejected", "--")
+            points = values.get("output_points", "--")
+            min_step = values.get("min_step", "--")
+            max_step = values.get("max_step", "--")
+            self.summary_labels["steps"].setText(str(accepted))
+            self.summary_labels["rejected"].setText(str(rejected))
+            self.summary_labels["points"].setText(str(points))
+            self.summary_labels["dt"].setText(f"{min_step} .. {max_step}")
+        elif lower.startswith("newton summary:"):
+            values = dict(re.findall(r"([a-zA-Z_]+)=([^\s]+)", body))
+            avg = values.get("average_iterations", "--")
+            max_iter = values.get("max_iterations", "--")
+            self.summary_labels["newton"].setText(f"{avg} / max {max_iter}")
+        elif lower.startswith("accuracy summary:"):
+            method_match = re.search(r"method=(.*?)\s+reltol=", body)
+            if method_match:
+                self.summary_labels["method"].setText(method_match.group(1).strip())
+
+
 class SimEnvSimulationWorker(QObject):
     """Run simulator jobs away from the Qt UI thread."""
 
@@ -294,6 +414,7 @@ class SimEnvSimulationWorker(QObject):
         self.threads = max(1, min(16, int(threads or 1)))
         self.timeout = int(timeout or 0)
         self._bridge: SimulatorBridge | None = None
+        self._cancelled = False
 
     def run(self):
         try:
@@ -303,20 +424,26 @@ class SimEnvSimulationWorker(QObject):
                 work_dir=self.work_dir,
             )
             for run_name, netlist, sim_name in self.jobs:
+                if self._cancelled:
+                    break
                 self.progress.emit(f"Running {run_name}...")
                 result = self._bridge.simulate(
                     netlist,
                     sim_name=sim_name,
                     threads=self.threads,
                     timeout=self.timeout,
+                    progress_callback=self.progress.emit,
                 )
                 self.result_ready.emit(run_name, result)
+                if self._cancelled:
+                    break
         except Exception:
             self.failed.emit(traceback.format_exc())
         finally:
             self.finished.emit()
 
     def cancel(self):
+        self._cancelled = True
         if self._bridge is not None:
             self._bridge.cancel()
 
@@ -877,6 +1004,8 @@ class ADEWindow(QMainWindow):
         self._sim_jobs_total = 0
         self._sim_jobs_done = 0
         self._sim_merged_waveforms: dict = {}
+        self._sim_cancel_requested = False
+        self._sim_log_window: SimulationMonitorWindow | None = None
         self._startup_warnings: list[str] = []
         self._pdk_registry = pdk_registry or self._create_pdk_registry()
 
@@ -890,6 +1019,8 @@ class ADEWindow(QMainWindow):
         self._missing_sim_prompted: set[str] = set()
         self._sim_dump_dir = self._default_sim_dump_dir()
         self._sim_threads = 1
+        self._sim_accuracy = "High"
+        self._sim_method = "Auto"
         self._build_ui()
         self._create_menus()
         self._create_toolbar()
@@ -937,6 +1068,87 @@ class ADEWindow(QMainWindow):
         if hasattr(self, "thread_spin") and self.thread_spin.value() != self._sim_threads:
             self.thread_spin.setValue(self._sim_threads)
         self._log(f"GSPICE threads set to: {self._sim_threads}")
+        self._refresh_run_plan()
+        self._save_simenv_view_silent()
+
+    def _accuracy_presets(self) -> dict:
+        return {
+            "Low": {
+                "RELTOL": "5e-3", "VNTOL": "10u", "ABSTOL": "1p",
+                "TRTOL": "2e-2", "TRABSTOL": "10u", "ITL4": "40",
+            },
+            "Medium": {
+                "RELTOL": "1e-3", "VNTOL": "1u", "ABSTOL": "1p",
+                "TRTOL": "5e-3", "TRABSTOL": "1u", "ITL4": "60",
+            },
+            "High": {
+                "RELTOL": "3e-4", "VNTOL": "300n", "ABSTOL": "100f",
+                "TRTOL": "1e-3", "TRABSTOL": "300n", "ITL4": "80",
+            },
+            "Very High": {
+                "RELTOL": "1e-4", "VNTOL": "100n", "ABSTOL": "10f",
+                "TRTOL": "3e-4", "TRABSTOL": "100n", "ITL4": "120",
+            },
+        }
+
+    def _accuracy_options_line(self) -> str:
+        preset = self._accuracy_presets().get(self._sim_accuracy, self._accuracy_presets()["High"])
+        accuracy = self._sim_accuracy.replace(" ", "").upper()
+        method = self._sim_method_token()
+        parts = [f"ACCURACY={accuracy}", f"METHOD={method}", "ADAPTIVE=1", *[f"{key}={value}" for key, value in preset.items()]]
+        return ".OPTIONS " + " ".join(parts)
+
+    def _sim_method_token(self) -> str:
+        return {
+            "Auto": "AUTO",
+            "Backward Euler": "BE",
+            "Trapezoidal": "TRAP",
+            "Gear2": "GEAR2",
+        }.get(str(self._sim_method or "Auto"), "AUTO")
+
+    def _accuracy_transient_defaults(self) -> dict:
+        return {
+            "Low": {"step": "200p", "maxstep": "200p"},
+            "Medium": {"step": "100p", "maxstep": "100p"},
+            "High": {"step": "20p", "maxstep": "20p"},
+            "Very High": {"step": "5p", "maxstep": "5p"},
+        }.get(self._sim_accuracy, {"step": "20p", "maxstep": "20p"})
+
+    def _analysis_spice_line(self, name: str, widget: AnalysisSetupWidget) -> str:
+        """Build an analysis line, resolving blank transient fields from accuracy."""
+        if name != "Transient":
+            return widget.get_spice_line()
+
+        def auto_value(value) -> str:
+            text = str(value or "").strip()
+            return "" if text.lower() in {"auto", "default"} else text
+
+        values = widget.get_values()
+        defaults = self._accuracy_transient_defaults()
+        step = auto_value(values.get("Step", "")) or defaults["step"]
+        stop = auto_value(values.get("Stop", "")) or "10u"
+        start = auto_value(values.get("Start", ""))
+        maxstep = auto_value(values.get("MaxStep", "")) or defaults["maxstep"]
+
+        parts = [ANALYSES[name]["cmd"], step, stop]
+        if start or maxstep:
+            parts.append(start or "0")
+        if maxstep:
+            parts.append(maxstep)
+        if bool(values.get("UIC", False)):
+            parts.append("UIC")
+        return " ".join(parts)
+
+    def _on_accuracy_changed(self, text: str):
+        self._sim_accuracy = text if text in self._accuracy_presets() else "High"
+        self._log(f"GSPICE accuracy set to: {self._sim_accuracy}")
+        self._refresh_run_plan()
+        self._save_simenv_view_silent()
+
+    def _on_method_changed(self, text: str):
+        allowed = {"Auto", "Backward Euler", "Trapezoidal", "Gear2"}
+        self._sim_method = text if text in allowed else "Auto"
+        self._log(f"GSPICE transient method set to: {self._sim_method}")
         self._refresh_run_plan()
         self._save_simenv_view_silent()
 
@@ -1337,7 +1549,7 @@ class ADEWindow(QMainWindow):
 
         dump_btn = QPushButton("Dump Settings")
         dump_btn.setIcon(editor_icon("open"))
-        dump_btn.setToolTip("Choose where SimENV writes input.sp, logs, RAW/CSV waveform files, and run manifests")
+        dump_btn.setToolTip("Choose where SimENV writes input.sp, logs, RAW waveform files, and run manifests")
         dump_btn.clicked.connect(self._on_set_sim_dump_dir)
         dump_btn.setStyleSheet(
             "QPushButton{color:#e8f2f7;background:#233746;border:1px solid #4b6a82;"
@@ -1361,6 +1573,38 @@ class ADEWindow(QMainWindow):
         )
         thread_box.addWidget(self.thread_spin)
         layout.addLayout(thread_box)
+
+        accuracy_box = QHBoxLayout()
+        accuracy_label = QLabel("Accuracy")
+        accuracy_label.setStyleSheet("color:#d7e7ef;background:transparent;font-weight:bold;")
+        accuracy_box.addWidget(accuracy_label)
+        self.accuracy_combo = QComboBox()
+        self.accuracy_combo.addItems(["Low", "Medium", "High", "Very High"])
+        self.accuracy_combo.setCurrentText(self._sim_accuracy)
+        self.accuracy_combo.setToolTip("Simulation accuracy preset. Higher settings reduce transient timestep error and tighten solver tolerances.")
+        self.accuracy_combo.currentTextChanged.connect(self._on_accuracy_changed)
+        self.accuracy_combo.setStyleSheet(
+            "QComboBox{color:#f2f7fb;background:#1d303e;border:1px solid #4b6a82;"
+            "border-radius:6px;padding:5px;min-width:96px;}"
+        )
+        accuracy_box.addWidget(self.accuracy_combo)
+        layout.addLayout(accuracy_box)
+
+        method_box = QHBoxLayout()
+        method_label = QLabel("Method")
+        method_label.setStyleSheet("color:#d7e7ef;background:transparent;font-weight:bold;")
+        method_box.addWidget(method_label)
+        self.method_combo = QComboBox()
+        self.method_combo.addItems(["Auto", "Backward Euler", "Trapezoidal", "Gear2"])
+        self.method_combo.setCurrentText(self._sim_method)
+        self.method_combo.setToolTip("Transient integration method. Trapezoidal and Gear2 are recorded in the deck; current GSPICE device stamps solve with Backward Euler until those methods are completed.")
+        self.method_combo.currentTextChanged.connect(self._on_method_changed)
+        self.method_combo.setStyleSheet(
+            "QComboBox{color:#f2f7fb;background:#1d303e;border:1px solid #4b6a82;"
+            "border-radius:6px;padding:5px;min-width:128px;}"
+        )
+        method_box.addWidget(self.method_combo)
+        layout.addLayout(method_box)
 
         self.session_badge = QLabel("Session: interactive")
         self.session_badge.setStyleSheet(
@@ -1650,12 +1894,14 @@ class ADEWindow(QMainWindow):
         session.addChild(QTreeWidgetItem(["Environment", "SimENV"]))
         session.addChild(QTreeWidgetItem(["Simulator", get_simulator_label(self._current_simulator)]))
         session.addChild(QTreeWidgetItem(["Threads", str(self._sim_thread_count())]))
+        session.addChild(QTreeWidgetItem(["Accuracy", self._sim_accuracy]))
+        session.addChild(QTreeWidgetItem(["Method", self._sim_method]))
         session.addChild(QTreeWidgetItem(["Dump Folder", self._resolved_sim_dump_dir()]))
         session.addChild(QTreeWidgetItem(["PDK", self._selected_pdk_name() or "None selected"]))
 
         tests = add_parent("Tests", f"{len(self._analysis_tabs)} analysis setup(s)")
         for name, widget in self._analysis_tabs.items():
-            tests.addChild(QTreeWidgetItem([name, widget.get_spice_line()]))
+            tests.addChild(QTreeWidgetItem([name, self._analysis_spice_line(name, widget)]))
 
         variables = self.var_widget.get_variables() if hasattr(self, "var_widget") else {}
         var_parent = add_parent("Variables", f"{len(variables)} variable(s)")
@@ -1707,10 +1953,13 @@ class ADEWindow(QMainWindow):
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(8, 8, 8, 8)
 
-        self.results_table = QTableWidget(0, 4)
-        self.results_table.setHorizontalHeaderLabels(["Run", "Analysis", "Status", "Time"])
+        self.results_table = QTableWidget(0, 5)
+        self.results_table.setHorizontalHeaderLabels(["Run", "Analysis", "Status", "Waveforms", "Time"])
         self.results_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.results_table.verticalHeader().setVisible(False)
+        self.results_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.results_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.results_table.customContextMenuRequested.connect(self._on_results_context_menu)
         self.results_table.itemDoubleClicked.connect(self._on_result_double_click)
         layout.addWidget(self.results_table)
 
@@ -1779,6 +2028,10 @@ class ADEWindow(QMainWindow):
         act_sigview.triggered.connect(self._on_open_waveform)
         sim_menu.addAction(act_sigview)
 
+        act_calc = QAction("Open SigView Calculator", self)
+        act_calc.triggered.connect(self._on_open_waveform_calculator)
+        sim_menu.addAction(act_calc)
+
         sim_menu.addSeparator()
 
         act_save_view = QAction("Save", self)
@@ -1826,6 +2079,13 @@ class ADEWindow(QMainWindow):
         act_run.triggered.connect(self._on_run)
         tb.addAction(act_run)
 
+        self.act_stop_sim = QAction("Stop", self)
+        self.act_stop_sim.setIcon(editor_icon("stop"))
+        self.act_stop_sim.setToolTip("Stop the running simulation")
+        self.act_stop_sim.setEnabled(False)
+        self.act_stop_sim.triggered.connect(self._on_stop_simulation)
+        tb.addAction(self.act_stop_sim)
+
         act_netlist = QAction("Netlist", self)
         act_netlist.setIcon(editor_icon("netlist"))
         act_netlist.triggered.connect(self._on_view_netlist)
@@ -1835,6 +2095,12 @@ class ADEWindow(QMainWindow):
         act_wave.setIcon(editor_icon("wave"))
         act_wave.triggered.connect(self._on_open_waveform)
         tb.addAction(act_wave)
+
+        act_calc = QAction("Calculator", self)
+        act_calc.setIcon(editor_icon("wave"))
+        act_calc.setToolTip("Open latest waveforms in SigView calculator")
+        act_calc.triggered.connect(self._on_open_waveform_calculator)
+        tb.addAction(act_calc)
 
         act_dump = QAction("Dump Settings", self)
         act_dump.setIcon(editor_icon("open"))
@@ -1902,11 +2168,15 @@ class ADEWindow(QMainWindow):
             lines.append("* Stimulus")
             lines.extend(stimulus_lines)
 
+        lines.append("")
+        lines.append(f"* Accuracy: {self._sim_accuracy}")
+        lines.append(self._accuracy_options_line())
+
         # Analyses
         for name, widget in self._analysis_tabs.items():
             lines.append("")
             lines.append(f"* Analysis: {name}")
-            lines.append(widget.get_spice_line())
+            lines.append(self._analysis_spice_line(name, widget))
 
         # Parametric sweeps
         sweep_lines = self.sweep_widget.get_sweep_lines()
@@ -1980,10 +2250,14 @@ class ADEWindow(QMainWindow):
                 lines.append("* Stimulus")
                 lines.extend(stimulus_lines)
 
+            lines.append("")
+            lines.append(f"* Accuracy: {self._sim_accuracy}")
+            lines.append(self._accuracy_options_line())
+
             for name, widget in self._analysis_tabs.items():
                 lines.append("")
                 lines.append(f"* Analysis: {name}")
-                lines.append(widget.get_spice_line())
+                lines.append(self._analysis_spice_line(name, widget))
 
             # Parametric sweeps
             sweep_lines = self.sweep_widget.get_sweep_lines()
@@ -2032,7 +2306,7 @@ class ADEWindow(QMainWindow):
 
     def _on_run(self):
         if self._sim_thread is not None and self._sim_thread.isRunning():
-            QMessageBox.information(self, "Simulation Running", "A simulation is already running in the background.")
+            QMessageBox.information(self, "Simulation Running", "A simulation is already running in the background. Use Stop to cancel it.")
             return
 
         self._refresh_run_plan()
@@ -2100,12 +2374,28 @@ class ADEWindow(QMainWindow):
             self._log(f"Starting {sim_label} multi-corner simulation ({len(jobs)} corners) in background...")
             self._start_simulation_worker(jobs, bridge)
 
+    def _on_stop_simulation(self):
+        if self._sim_thread is None or not self._sim_thread.isRunning():
+            self.statusBar().showMessage("No simulation is running", 3000)
+            return
+        self._sim_cancel_requested = True
+        if hasattr(self, "act_stop_sim"):
+            self.act_stop_sim.setEnabled(False)
+        self._log("Stop requested. Terminating active simulation...")
+        self.statusBar().showMessage("Stopping simulation...")
+        if self._sim_worker is not None:
+            self._sim_worker.cancel()
+
     def _start_simulation_worker(self, jobs: list[tuple[str, str, str]], bridge: SimulatorBridge):
         if not jobs:
             return
         self._sim_jobs_total = len(jobs)
         self._sim_jobs_done = 0
         self._sim_merged_waveforms = {}
+        self._sim_cancel_requested = False
+        self._show_simulation_monitor(f"{get_simulator_label(self._current_simulator)} - {len(jobs)} run(s)")
+        if hasattr(self, "act_stop_sim"):
+            self.act_stop_sim.setEnabled(True)
         self.statusBar().showMessage(f"Simulating in background... 0/{self._sim_jobs_total}")
 
         self._sim_thread = QThread(self)
@@ -2131,9 +2421,14 @@ class ADEWindow(QMainWindow):
 
     def _on_simulation_progress(self, message: str):
         self._log(message)
-        self.statusBar().showMessage(
-            f"Simulating in background... {self._sim_jobs_done}/{self._sim_jobs_total}"
-        )
+        if self._sim_log_window is not None:
+            self._sim_log_window.append_message(message)
+        if "%" in str(message):
+            self.statusBar().showMessage(str(message))
+        else:
+            self.statusBar().showMessage(
+                f"Simulating in background... {self._sim_jobs_done}/{self._sim_jobs_total}"
+            )
 
     def _on_simulation_result_ready(self, run_name: str, result):
         self._sim_jobs_done += 1
@@ -2155,19 +2450,40 @@ class ADEWindow(QMainWindow):
     def _on_simulation_worker_failed(self, details: str):
         self._log("Background simulation worker failed.")
         self.log_view.append(details)
+        if self._sim_log_window is not None:
+            self._sim_log_window.append_message("Simulation worker failed.")
+            self._sim_log_window.append_message(details)
         self.statusBar().showMessage("Simulation worker failed", 5000)
 
     def _on_simulation_worker_finished(self):
         if self._sim_merged_waveforms:
             self._last_sigview_waveforms = dict(self._sim_merged_waveforms)
             self._show_waveforms(self._sim_merged_waveforms)
-        self.main_tabs.setCurrentIndex(7)  # Switch to Results tab
-        self.statusBar().showMessage("Simulation finished", 5000)
-        self._log("Background simulation finished.")
+        if self._sim_cancel_requested:
+            self.statusBar().showMessage("Simulation stopped", 5000)
+            self._log("Background simulation stopped.")
+            if self._sim_log_window is not None:
+                self._sim_log_window.append_message("Simulation stopped.")
+        else:
+            self.main_tabs.setCurrentIndex(7)  # Switch to Results tab
+            self.statusBar().showMessage("Simulation finished", 5000)
+            self._log("Background simulation finished.")
+            if self._sim_log_window is not None:
+                self._sim_log_window.append_message("Simulation finished.")
 
     def _clear_simulation_worker_refs(self):
+        if hasattr(self, "act_stop_sim"):
+            self.act_stop_sim.setEnabled(False)
         self._sim_worker = None
         self._sim_thread = None
+
+    def _show_simulation_monitor(self, title: str):
+        if self._sim_log_window is None:
+            self._sim_log_window = SimulationMonitorWindow(self)
+        self._sim_log_window.reset_for_run(title)
+        self._sim_log_window.show()
+        self._sim_log_window.raise_()
+        self._sim_log_window.activateWindow()
 
     def _prepare_sigview_waveforms(self, result, run_name: str) -> dict:
         """Return the waveform subset that SimENV should plot in SigView."""
@@ -2255,20 +2571,20 @@ class ADEWindow(QMainWindow):
         if not run_dir:
             return
 
-        selected_path = os.path.join(run_dir, "selected_waveforms.csv")
-        if not self._write_waveform_csv(selected_path, waveforms):
+        selected_path = os.path.join(run_dir, "selected_waveforms.raw")
+        if not self._write_waveform_raw(selected_path, waveforms):
             return
 
         artifacts = getattr(result, "artifacts", None)
         if isinstance(artifacts, dict):
-            if "csv" in artifacts and artifacts.get("csv") != selected_path:
-                artifacts.setdefault("all_csv", artifacts.get("csv"))
-            artifacts["selected_csv"] = selected_path
+            if "raw" in artifacts and artifacts.get("raw") != selected_path:
+                artifacts.setdefault("all_raw", artifacts.get("raw"))
+            artifacts["selected_raw"] = selected_path
             artifacts["waveforms"] = selected_path
 
         self._update_run_manifest_for_selected_waveforms(result, waveforms)
 
-    def _write_waveform_csv(self, path: str, waveforms: dict) -> bool:
+    def _write_waveform_raw(self, path: str, waveforms: dict) -> bool:
         names = [str(k) for k in waveforms.keys() if not str(k).startswith("_")]
         if not names:
             return False
@@ -2277,19 +2593,33 @@ class ADEWindow(QMainWindow):
             names.remove(x_var)
             names.insert(0, x_var)
         n_points = max((len(waveforms.get(name, [])) for name in names), default=0)
-        if n_points <= 0:
+        if n_points <= 1:
             return False
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "w", newline="", encoding="utf-8") as fh:
-                writer = csv.writer(fh)
-                writer.writerow(names)
+            with open(path, "w", newline="\n", encoding="utf-8") as fh:
+                fh.write("Title: Lumen selected waveform RAW\n")
+                fh.write("Plotname: Transient Analysis\n")
+                fh.write("Flags: real\n")
+                fh.write(f"No. Variables: {len(names)}\n")
+                fh.write(f"No. Points: {n_points}\n")
+                fh.write("Variables:\n")
+                for idx, name in enumerate(names):
+                    unit = "time" if idx == 0 else "voltage"
+                    fh.write(f"{idx}\t{name}\t{unit}\n")
+                fh.write("Values:\n")
                 for idx in range(n_points):
                     row = []
                     for name in names:
                         values = waveforms.get(name, [])
-                        row.append(values[idx] if idx < len(values) else "")
-                    writer.writerow(row)
+                        if idx >= len(values):
+                            row.append("0")
+                            continue
+                        try:
+                            row.append(f"{float(values[idx]):.16g}")
+                        except (TypeError, ValueError):
+                            row.append("0")
+                    fh.write(" ".join(row) + "\n")
             return True
         except OSError:
             return False
@@ -2328,9 +2658,19 @@ class ADEWindow(QMainWindow):
         status_item = QTableWidgetItem(status)
         status_item.setForeground(QColor("#8bc78b") if result.success else QColor("#cc8888"))
         self.results_table.setItem(r, 2, status_item)
-        self.results_table.setItem(r, 3, QTableWidgetItem("--"))
-        if result.success and plot_waveforms:
-            self._result_waveforms_by_row[r] = dict(plot_waveforms)
+        stored_waveforms = dict(plot_waveforms or (getattr(result, "waveforms", {}) or {})) if result.success else {}
+        signal_count = self._count_plottable_signals(stored_waveforms)
+        selected_count = self._count_plottable_signals(plot_waveforms)
+        if signal_count:
+            wf_label = f"{signal_count} signal(s)"
+            if selected_count and selected_count != signal_count:
+                wf_label = f"{selected_count} selected / {signal_count} total"
+        else:
+            wf_label = "None"
+        self.results_table.setItem(r, 3, QTableWidgetItem(wf_label))
+        self.results_table.setItem(r, 4, QTableWidgetItem("--"))
+        if stored_waveforms:
+            self._result_waveforms_by_row[r] = stored_waveforms
 
         if result.success:
             self._log(f"[{run_name}] Simulation completed successfully")
@@ -2365,10 +2705,120 @@ class ADEWindow(QMainWindow):
 
         self.statusBar().showMessage("Done" if result.success else "Failed", 5000)
 
-    def _show_waveforms(self, waveforms):
+    def _on_results_context_menu(self, pos):
+        row = self.results_table.rowAt(pos.y())
+        if row < 0:
+            return
+        self.results_table.selectRow(row)
+        waveforms = self._result_waveforms_by_row.get(row, {})
+        run_item = self.results_table.item(row, 0)
+        status_item = self.results_table.item(row, 2)
+        run_name = run_item.text() if run_item else f"Run {row + 1}"
+        status = status_item.text() if status_item else ""
+
+        menu = QMenu(self)
+        title = QAction(run_name, self)
+        title.setEnabled(False)
+        menu.addAction(title)
+        menu.addSeparator()
+
+        act_plot = QAction("Plot", self)
+        act_plot.setEnabled(bool(waveforms))
+        act_plot.triggered.connect(lambda: self._plot_result_row(row))
+        menu.addAction(act_plot)
+
+        act_calc = QAction("Plot In SigView Calculator", self)
+        act_calc.setEnabled(bool(waveforms))
+        act_calc.triggered.connect(lambda: self._plot_result_row(row, calculator=True))
+        menu.addAction(act_calc)
+
+        signal_menu = menu.addMenu("Plot Signal")
+        signal_names = self._plottable_signal_names(waveforms)
+        signal_menu.setEnabled(bool(signal_names))
+        for signal in signal_names[:80]:
+            action = QAction(signal, self)
+            action.triggered.connect(lambda _checked=False, sig=signal: self._plot_result_row(row, signals=[sig]))
+            signal_menu.addAction(action)
+        if len(signal_names) > 80:
+            more = QAction(f"... {len(signal_names) - 80} more signal(s)", self)
+            more.setEnabled(False)
+            signal_menu.addAction(more)
+
+        menu.addSeparator()
+        act_details = QAction("Main Form...", self)
+        act_details.triggered.connect(lambda: self._show_result_main_form(row))
+        menu.addAction(act_details)
+
+        act_dump = QAction("Open Dump Folder", self)
+        act_dump.triggered.connect(self._on_open_sim_dump_dir)
+        menu.addAction(act_dump)
+
+        if not waveforms:
+            disabled = QAction("No plottable waveforms for this run", self)
+            disabled.setEnabled(False)
+            menu.addSeparator()
+            menu.addAction(disabled)
+
+        self.statusBar().showMessage(f"Results row: {run_name} {status}".strip(), 3000)
+        menu.exec(self.results_table.viewport().mapToGlobal(pos))
+
+    def _plottable_signal_names(self, waveforms: dict) -> list[str]:
+        if not waveforms:
+            return []
+        x_var = self._x_var_for_waveforms(waveforms)
+        return sorted([
+            str(name)
+            for name in waveforms.keys()
+            if str(name) != x_var and not str(name).startswith("_")
+        ], key=lambda s: s.lower())
+
+    def _plot_result_row(self, row: int, calculator: bool = False, signals: list[str] | None = None):
+        waveforms = self._result_waveforms_by_row.get(row, {})
+        if not waveforms:
+            self.main_tabs.setCurrentWidget(self.results_table.parentWidget())
+            self.statusBar().showMessage("Selected run has no plottable waveform data", 5000)
+            return
+        plot_waveforms = self._waveforms_for_signals(waveforms, signals or [])
+        self._last_sigview_waveforms = dict(plot_waveforms)
+        self._show_waveforms(plot_waveforms, calculator=calculator)
+
+    def _waveforms_for_signals(self, waveforms: dict, signals: list[str]) -> dict:
+        if not signals:
+            return dict(waveforms)
+        x_var = self._x_var_for_waveforms(waveforms)
+        selected = {}
+        if x_var and x_var in waveforms:
+            selected[x_var] = waveforms[x_var]
+        for signal in signals:
+            if signal in waveforms:
+                selected[signal] = waveforms[signal]
+        return selected
+
+    def _show_result_main_form(self, row: int):
+        run = self.results_table.item(row, 0).text() if self.results_table.item(row, 0) else f"Run {row + 1}"
+        analysis = self.results_table.item(row, 1).text() if self.results_table.item(row, 1) else ""
+        status = self.results_table.item(row, 2).text() if self.results_table.item(row, 2) else ""
+        waveforms = self._result_waveforms_by_row.get(row, {})
+        signals = self._plottable_signal_names(waveforms)
+        QMessageBox.information(
+            self,
+            "Results Main Form",
+            "\n".join([
+                f"Run: {run}",
+                f"Analysis: {analysis}",
+                f"Status: {status}",
+                f"Waveforms: {len(signals)} signal(s)",
+                "",
+                "Right-click this row and choose Plot, Plot In SigView Calculator, or Plot Signal.",
+            ]),
+        )
+
+    def _show_waveforms(self, waveforms, calculator: bool = False):
         from lumen.gui.waveform_viewer import SigViewWindow
         v = SigViewWindow()
         v.load_results(waveforms)
+        if calculator and hasattr(v, "show_calculator"):
+            v.show_calculator()
         v.show()
         self._waveform_viewers.append(v)
 
@@ -2384,15 +2834,25 @@ class ADEWindow(QMainWindow):
             self.statusBar().showMessage("Opened selected run in SigView", 4000)
             return
 
-        from lumen.gui.waveform_viewer import SigViewWindow
-        v = SigViewWindow()
-        v.show()
-        self._waveform_viewers.append(v)
-        QMessageBox.information(
-            self,
-            "SigView",
-            "No simulation waveforms are loaded yet. Run a simulation first, or open a .raw/.csv file from SigView.",
-        )
+        if hasattr(self, "main_tabs"):
+            self.main_tabs.setCurrentWidget(self.results_table.parentWidget())
+        self.statusBar().showMessage("No waveforms yet. Run simulation, then right-click a Results row and choose Plot.", 7000)
+
+    def _on_open_waveform_calculator(self):
+        if self._last_sigview_waveforms:
+            self._show_waveforms(self._last_sigview_waveforms, calculator=True)
+            self.statusBar().showMessage("Opened latest waveforms in SigView calculator", 4000)
+            return
+
+        selected = self.results_table.currentRow() if hasattr(self, "results_table") else -1
+        if selected in self._result_waveforms_by_row:
+            self._show_waveforms(self._result_waveforms_by_row[selected], calculator=True)
+            self.statusBar().showMessage("Opened selected run in SigView calculator", 4000)
+            return
+
+        if hasattr(self, "main_tabs"):
+            self.main_tabs.setCurrentWidget(self.results_table.parentWidget())
+        self.statusBar().showMessage("No waveforms yet. Run simulation, then right-click a Results row and choose Plot In SigView Calculator.", 7000)
 
     def _on_result_double_click(self, item):
         row = item.row()
@@ -2496,6 +2956,8 @@ class ADEWindow(QMainWindow):
             "simulator": self._current_simulator,
             "sim_dump_dir": self._resolved_sim_dump_dir(),
             "threads": self._sim_thread_count(),
+            "accuracy": self._sim_accuracy,
+            "method": self._sim_method,
             "pdk": self._selected_pdk_name(),
             "corner_mode": self.corner_mode_combo.currentText() if hasattr(self, "corner_mode_combo") else "Single",
             "analyses": {},
@@ -2607,6 +3069,21 @@ class ADEWindow(QMainWindow):
             self.thread_spin.blockSignals(True)
             self.thread_spin.setValue(self._sim_threads)
             self.thread_spin.blockSignals(False)
+
+        accuracy = str(setup.get("accuracy") or self._sim_accuracy or "High")
+        self._sim_accuracy = accuracy if accuracy in self._accuracy_presets() else "High"
+        if hasattr(self, "accuracy_combo"):
+            self.accuracy_combo.blockSignals(True)
+            self.accuracy_combo.setCurrentText(self._sim_accuracy)
+            self.accuracy_combo.blockSignals(False)
+
+        method = str(setup.get("method") or self._sim_method or "Auto")
+        allowed_methods = {"Auto", "Backward Euler", "Trapezoidal", "Gear2"}
+        self._sim_method = method if method in allowed_methods else "Auto"
+        if hasattr(self, "method_combo"):
+            self.method_combo.blockSignals(True)
+            self.method_combo.setCurrentText(self._sim_method)
+            self.method_combo.blockSignals(False)
 
         if hasattr(self, "pdk_combo"):
             pdk = setup.get("pdk", "")
