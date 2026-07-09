@@ -1054,6 +1054,9 @@ class WaveformCanvas(QWidget):
 class WaveformViewerWindow(QMainWindow):
     """Standalone SigView waveform window."""
 
+    send_to_simenv_output = pyqtSignal(object)
+    send_to_simenv_measurement = pyqtSignal(object)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Lumen - SigView")
@@ -1064,6 +1067,10 @@ class WaveformViewerWindow(QMainWindow):
         self._x_var = ""
         self._last_waveforms: dict[str, list[float]] = {}
         self._building_signal_list = False
+        self._calculator_history: list[str] = []
+        self._calculator_trace_specs: list[dict] = []
+        self._trace_expression_map: dict[str, str] = {}
+        self._simenv_attached = False
 
         self._build_ui()
         self._create_menus()
@@ -1181,6 +1188,14 @@ class WaveformViewerWindow(QMainWindow):
         self.calc_button = QPushButton("Create Calculator Trace")
         self.calc_button.clicked.connect(self._on_create_calculator_trace)
         expr_layout.addWidget(self.calc_button)
+        calc_send_row = QHBoxLayout()
+        self.btn_send_output = QPushButton("To SimENV Output")
+        self.btn_send_output.clicked.connect(self._on_send_calculator_to_simenv_output)
+        self.btn_send_measure = QPushButton("To SimENV Measurement")
+        self.btn_send_measure.clicked.connect(self._on_send_calculator_to_simenv_measurement)
+        calc_send_row.addWidget(self.btn_send_output)
+        calc_send_row.addWidget(self.btn_send_measure)
+        expr_layout.addLayout(calc_send_row)
         self.quick_combo = QComboBox()
         self.quick_combo.addItems(["Scale selected", "Offset selected", "Abs selected", "Derivative selected", "A - B", "A + B", "A / B"])
         expr_layout.addWidget(self.quick_combo)
@@ -1385,11 +1400,20 @@ class WaveformViewerWindow(QMainWindow):
 
     # ----- Data loading -----
 
-    def load_results(self, waveforms: dict, x_var: str = ""):
+    def load_results(
+        self,
+        waveforms: dict,
+        x_var: str = "",
+        visible_signals: list[str] | None = None,
+        derived_expressions: list[dict] | None = None,
+        preserve_user_expressions: bool = True,
+    ):
+        saved_specs = list(self._calculator_trace_specs) if preserve_user_expressions else []
         self._last_waveforms = dict(waveforms or {})
         self._x_var = self._detect_x_var(self._last_waveforms, x_var)
 
         self.canvas.clear_traces()
+        self._trace_expression_map = {}
         self._building_signal_list = True
         self.signal_list.clear()
         self._building_signal_list = False
@@ -1398,6 +1422,10 @@ class WaveformViewerWindow(QMainWindow):
         if not self._last_waveforms or not self._x_var:
             self.setWindowTitle("Lumen - SigView")
             return
+
+        visible_set = None
+        if visible_signals is not None:
+            visible_set = {self._trace_key(name) for name in visible_signals if str(name).strip()}
 
         x_data_raw = self._last_waveforms.get(self._x_var, [])
         loaded_count = 0
@@ -1410,7 +1438,13 @@ class WaveformViewerWindow(QMainWindow):
             if len(x_data) < 1 or len(y_data) < 1:
                 continue
             self.canvas.add_trace(name, x_data, y_data, source="result")
+            self._trace_expression_map[name] = self._default_expression_for_signal(name)
+            if visible_set is not None:
+                self.canvas.set_trace_visible(name, self._trace_key(name) in visible_set)
             loaded_count += 1
+
+        specs_to_apply = self._merge_expression_specs(derived_expressions or [], saved_specs)
+        skipped = self._apply_expression_specs(specs_to_apply, remember=False)
 
         self._rebuild_signal_list()
         self.canvas.x_label = self._x_var
@@ -1420,11 +1454,39 @@ class WaveformViewerWindow(QMainWindow):
         self.setWindowTitle(f"Lumen - SigView ({loaded_count} signals)")
         self._refresh_measurements()
         self._refresh_marker_table()
+        if skipped:
+            self.statusBar().showMessage(
+                f"Skipped {len(skipped)} expression trace(s): " + ", ".join(skipped[:3]),
+                6000,
+            )
+
+    def load_simenv_session(self, payload: dict):
+        if not isinstance(payload, dict):
+            self.load_results(payload or {})
+            return
+        self.load_results(
+            payload.get("waveforms", {}) or {},
+            payload.get("x_var", ""),
+            visible_signals=payload.get("visible_signals"),
+            derived_expressions=payload.get("derived_expressions"),
+            preserve_user_expressions=bool(payload.get("preserve_user_expressions", True)),
+        )
+        focus_expr = str(payload.get("focus_expression", "") or "").strip()
+        if focus_expr:
+            self.set_calculator_expression(focus_expr)
+        if bool(payload.get("show_calculator", False)):
+            self.show_calculator()
 
     def show_calculator(self):
         if hasattr(self, "calc_expr"):
             self.side_tabs.setCurrentWidget(self.calc_expr.parentWidget())
             self.calc_expr.setFocus()
+
+    def set_calculator_expression(self, text: str):
+        self._set_calculator_expression(text)
+
+    def attach_to_simenv(self):
+        self._simenv_attached = True
 
     def _detect_x_var(self, waveforms: dict, x_var: str) -> str:
         if x_var and x_var in waveforms:
@@ -1434,6 +1496,10 @@ class WaveformViewerWindow(QMainWindow):
                 return candidate
         keys = [k for k in waveforms.keys() if not str(k).startswith("_")]
         return keys[0] if keys else ""
+
+    @staticmethod
+    def _trace_key(name: str) -> str:
+        return re.sub(r"\s+", "", str(name or "")).lower()
 
     @staticmethod
     def _pair_numeric_points(x_data_raw: list, y_data_raw: list) -> tuple[list[float], list[float]]:
@@ -1449,6 +1515,90 @@ class WaveformViewerWindow(QMainWindow):
             x_out.append(xv)
             y_out.append(yv)
         return x_out, y_out
+
+    def _merge_expression_specs(self, primary: list[dict], secondary: list[dict]) -> list[dict]:
+        merged: list[dict] = []
+        seen: set[tuple[str, str]] = set()
+        for collection in (primary, secondary):
+            for spec in collection:
+                if not isinstance(spec, dict):
+                    continue
+                expr = str(spec.get("expression", "") or "").strip()
+                if not expr:
+                    continue
+                name = str(spec.get("name", "") or "").strip()
+                key = (name.lower(), expr.lower())
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append({
+                    "name": name,
+                    "expression": expr,
+                    "visible": bool(spec.get("visible", True)),
+                })
+        return merged
+
+    def _remember_expression(self, expression: str, name: str = "", visible: bool = True):
+        expr = str(expression or "").strip()
+        if not expr:
+            return
+        self._calculator_history = [item for item in self._calculator_history if item != expr]
+        self._calculator_history.insert(0, expr)
+        self._calculator_history = self._calculator_history[:24]
+        lowered_name = str(name or "").strip().lower()
+        self._calculator_trace_specs = [
+            spec for spec in self._calculator_trace_specs
+            if str(spec.get("name", "")).strip().lower() != lowered_name
+            and str(spec.get("expression", "")).strip().lower() != expr.lower()
+        ]
+        self._calculator_trace_specs.append({
+            "name": str(name or "").strip(),
+            "expression": expr,
+            "visible": bool(visible),
+        })
+
+    def _apply_expression_specs(self, specs: list[dict], remember: bool = False) -> list[str]:
+        skipped: list[str] = []
+        for spec in specs:
+            if not isinstance(spec, dict):
+                continue
+            expr = str(spec.get("expression", "") or "").strip()
+            if not expr:
+                continue
+            try:
+                result = SigViewCalculatorEngine(self.canvas._trace_by_name).evaluate(expr)
+                trace_name, x_data, y_data = self._calculator_result_to_trace(expr, result)
+            except Exception:
+                skipped.append(expr)
+                continue
+            preferred_name = str(spec.get("name", "") or "").strip()
+            if preferred_name:
+                trace_name = preferred_name
+            trace_name = self._unique_trace_name(trace_name)
+            self.canvas.add_trace(trace_name, x_data, y_data, source="calculator")
+            visible = bool(spec.get("visible", True))
+            self.canvas.set_trace_visible(trace_name, visible)
+            self._last_waveforms[trace_name] = list(y_data)
+            self._trace_expression_map[trace_name] = expr
+            if remember:
+                self._remember_expression(expr, trace_name, visible=visible)
+        return skipped
+
+    def _default_expression_for_signal(self, name: str) -> str:
+        text = str(name or "").strip()
+        if re.match(r"^[VI]\s*\(.*\)$", text, re.IGNORECASE):
+            return text
+        return self._calculator_expression_for_signal(text)
+
+    def _expression_for_trace(self, name: str) -> str:
+        expr = str(self._trace_expression_map.get(name, "") or "").strip()
+        return expr or self._default_expression_for_signal(name)
+
+    def _update_stored_trace_visibility(self, name: str, visible: bool):
+        key = str(name or "").strip().lower()
+        for spec in self._calculator_trace_specs:
+            if str(spec.get("name", "")).strip().lower() == key:
+                spec["visible"] = bool(visible)
 
     def _on_open_waveform_file(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -1592,6 +1742,7 @@ class WaveformViewerWindow(QMainWindow):
             return
         visible = item.checkState() == Qt.CheckState.Checked
         self.canvas.set_trace_visible(item.text(), visible)
+        self._update_stored_trace_visibility(item.text(), visible)
         self._refresh_measurements()
 
     def _on_current_signal_changed(self, _curr: QListWidgetItem | None, _prev: QListWidgetItem | None):
@@ -1654,7 +1805,7 @@ class WaveformViewerWindow(QMainWindow):
 
         menu.addSeparator()
         calc_menu = menu.addMenu("Send To Calculator")
-        calc_expr = self._calculator_expression_for_signal(primary)
+        calc_expr = self._expression_for_trace(primary)
         for label, expr in (
             ("Signal", calc_expr),
             ("dB20", f"db20({calc_expr})"),
@@ -1680,6 +1831,24 @@ class WaveformViewerWindow(QMainWindow):
             create_menu.addAction(action)
 
         menu.addSeparator()
+        simenv_menu = menu.addMenu("Send To SimENV")
+        simenv_menu.setEnabled(self._simenv_attached)
+        act_send_output = QAction("Add Output", self)
+        act_send_output.triggered.connect(lambda: self._emit_output_request(calc_expr, primary))
+        simenv_menu.addAction(act_send_output)
+        for label, meas_type in (
+            ("Add AVG Measurement", "AVG"),
+            ("Add RMS Measurement", "RMS"),
+            ("Add Peak-to-Peak Measurement", "PP"),
+            ("Add Frequency Measurement", "PARAM"),
+        ):
+            action = QAction(label, self)
+            action.triggered.connect(
+                lambda _checked=False, expr=calc_expr, sig=primary, mtype=meas_type:
+                self._emit_measurement_request(expr, mtype, sig)
+            )
+            simenv_menu.addAction(action)
+
         act_marker = QAction("Add Marker at Active Cursor", self)
         act_marker.triggered.connect(self._on_add_marker)
         menu.addAction(act_marker)
@@ -1695,6 +1864,7 @@ class WaveformViewerWindow(QMainWindow):
             trace = self.canvas._trace_by_name.get(name)
             if trace:
                 trace.visible = visible
+                self._update_stored_trace_visibility(name, visible)
         self._rebuild_signal_list()
         if fit:
             self.canvas.fit_all()
@@ -1753,14 +1923,17 @@ class WaveformViewerWindow(QMainWindow):
         hide_btn = QPushButton("Unplot")
         isolate_btn = QPushButton("Plot Only")
         calc_btn = QPushButton("Send To Calculator")
+        simenv_btn = QPushButton("Add To SimENV")
         plot_btn.clicked.connect(lambda: self._set_signal_visibility([name], True, fit=True))
         hide_btn.clicked.connect(lambda: self._set_signal_visibility([name], False, fit=False))
         isolate_btn.clicked.connect(lambda: self._isolate_signals([name]))
-        calc_btn.clicked.connect(lambda: self._set_calculator_expression(self._calculator_expression_for_signal(name)))
+        calc_btn.clicked.connect(lambda: self._set_calculator_expression(self._expression_for_trace(name)))
+        simenv_btn.clicked.connect(lambda: self._emit_output_request(self._expression_for_trace(name), name))
         buttons.addWidget(plot_btn)
         buttons.addWidget(hide_btn)
         buttons.addWidget(isolate_btn)
         buttons.addWidget(calc_btn)
+        buttons.addWidget(simenv_btn)
         layout.addLayout(buttons)
 
         close_buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
@@ -1797,6 +1970,8 @@ class WaveformViewerWindow(QMainWindow):
     def _on_clear(self):
         self._last_waveforms = {}
         self._x_var = ""
+        self._trace_expression_map = {}
+        self._calculator_trace_specs = []
         self.canvas.clear_traces()
         self.signal_list.clear()
         self.search_edit.clear()
@@ -1839,6 +2014,64 @@ class WaveformViewerWindow(QMainWindow):
         self.side_tabs.setCurrentWidget(self.calc_expr.parentWidget())
         self.calc_expr.setFocus()
 
+    def _on_send_calculator_to_simenv_output(self):
+        expression = self.calc_expr.text().strip()
+        if not expression:
+            QMessageBox.information(self, "SimENV Output", "Enter a calculator expression first.")
+            return
+        self._emit_output_request(expression, self.calc_name.text().strip())
+
+    def _on_send_calculator_to_simenv_measurement(self):
+        expression = self.calc_expr.text().strip()
+        if not expression:
+            QMessageBox.information(self, "SimENV Measurement", "Enter a calculator expression first.")
+            return
+        self._emit_measurement_request(expression, "AVG", self.calc_name.text().strip())
+
+    def _emit_output_request(self, expression: str, name_hint: str = ""):
+        expr = str(expression or "").strip()
+        if not expr:
+            return
+        if not self._simenv_attached:
+            QMessageBox.information(self, "SimENV Output", "This SigView window is not attached to a SimENV session.")
+            return
+        payload = {
+            "signal": str(name_hint or "").strip() or expr,
+            "expression": expr,
+            "plot": True,
+        }
+        self.send_to_simenv_output.emit(payload)
+        self.statusBar().showMessage(f"Sent expression to SimENV Outputs: {expr}", 4000)
+
+    def _emit_measurement_request(self, expression: str, meas_type: str = "AVG", name_hint: str = ""):
+        expr = str(expression or "").strip()
+        if not expr:
+            return
+        if not self._simenv_attached:
+            QMessageBox.information(self, "SimENV Measurement", "This SigView window is not attached to a SimENV session.")
+            return
+        from_time = ""
+        to_time = ""
+        if self.canvas.cursor_a_x is not None and self.canvas.cursor_b_x is not None:
+            lo = min(self.canvas.cursor_a_x, self.canvas.cursor_b_x)
+            hi = max(self.canvas.cursor_a_x, self.canvas.cursor_b_x)
+            from_time = f"{lo:.16g}"
+            to_time = f"{hi:.16g}"
+        payload = {
+            "name": str(name_hint or "").strip() or self._measurement_name_for_expression(expr, meas_type),
+            "type": str(meas_type or "AVG").strip().upper(),
+            "expression": expr,
+            "target": "",
+            "from": from_time,
+            "to": to_time,
+        }
+        self.send_to_simenv_measurement.emit(payload)
+        self.statusBar().showMessage(f"Sent measurement to SimENV: {payload['type']} {expr}", 4000)
+
+    def _measurement_name_for_expression(self, expression: str, meas_type: str) -> str:
+        base = re.sub(r"[^A-Za-z0-9_]+", "_", expression).strip("_") or "expr"
+        return f"{str(meas_type or 'avg').lower()}_{base[:24]}"
+
     def _on_create_calculator_trace(self):
         expression = self.calc_expr.text().strip()
         if not expression:
@@ -1856,6 +2089,8 @@ class WaveformViewerWindow(QMainWindow):
         name = self._unique_trace_name(name)
         self.canvas.add_trace(name, x_data, y_data, source="calculator")
         self._last_waveforms[name] = list(y_data)
+        self._trace_expression_map[name] = expression
+        self._remember_expression(expression, name, visible=True)
         self._rebuild_signal_list()
         self.canvas.fit_all()
         self._refresh_measurements()
@@ -1918,6 +2153,10 @@ class WaveformViewerWindow(QMainWindow):
         name, x_data, y_data = trace
         self.canvas.add_trace(name, x_data, y_data, source="expression")
         self._last_waveforms[name] = list(y_data)
+        expr = self._expression_for_quick_trace(mode, selected, value_text)
+        if expr:
+            self._trace_expression_map[name] = expr
+            self._remember_expression(expr, name, visible=True)
         self._rebuild_signal_list()
         self.canvas.fit_all()
         self._refresh_measurements()
@@ -1984,6 +2223,30 @@ class WaveformViewerWindow(QMainWindow):
             label = f"{t0.name}/{t1.name}"
         return unique_name(value_text or label), list(t0.x_data[:n]), y
 
+    def _expression_for_quick_trace(self, mode: str, selected: list[str], value_text: str) -> str:
+        if not selected:
+            return ""
+        expr_a = self._expression_for_trace(selected[0])
+        if mode in ("Scale selected", "Offset selected"):
+            value = str(value_text or "").strip()
+            if not value:
+                value = "1" if mode.startswith("Scale") else "0"
+            return f"({expr_a})*({value})" if mode.startswith("Scale") else f"({expr_a})+({value})"
+        if mode == "Abs selected":
+            return f"abs({expr_a})"
+        if mode == "Derivative selected":
+            return f"deriv({expr_a})"
+        if len(selected) < 2:
+            return expr_a
+        expr_b = self._expression_for_trace(selected[1])
+        if mode == "A - B":
+            return f"({expr_a})-({expr_b})"
+        if mode == "A + B":
+            return f"({expr_a})+({expr_b})"
+        if mode == "A / B":
+            return f"({expr_a})/({expr_b})"
+        return ""
+
     # ----- Session persistence -----
 
     def _on_save_session(self):
@@ -2036,7 +2299,13 @@ class WaveformViewerWindow(QMainWindow):
             "type": "lumen.sigview.session",
             "version": 1,
             "x_var": self._x_var,
-            "waveforms": self._last_waveforms,
+            "waveforms": self._base_waveforms_for_session(),
+            "calculator_history": list(self._calculator_history),
+            "calculator_traces": list(self._calculator_trace_specs),
+            "calculator_state": {
+                "expression": self.calc_expr.text().strip() if hasattr(self, "calc_expr") else "",
+                "name": self.calc_name.text().strip() if hasattr(self, "calc_name") else "",
+            },
             "traces": traces,
             "markers": [{"name": m.name, "x": m.x, "color": m.color.name()} for m in self.canvas.markers],
             "cursors": {"a": self.canvas.cursor_a_x, "b": self.canvas.cursor_b_x, "active": self.canvas.active_cursor},
@@ -2050,11 +2319,28 @@ class WaveformViewerWindow(QMainWindow):
             },
         }
 
+    def _base_waveforms_for_session(self) -> dict:
+        data: dict[str, list[float]] = {}
+        if self._x_var and self._x_var in self._last_waveforms:
+            data[self._x_var] = list(self._last_waveforms.get(self._x_var, []))
+        for trace in self.canvas.traces:
+            if str(trace.source or "") != "result":
+                continue
+            data[trace.name] = list(trace.y_data)
+            if self._x_var and self._x_var not in data and trace.x_data:
+                data[self._x_var] = list(trace.x_data)
+        return data or dict(self._last_waveforms)
+
     def _restore_session_state(self, state: dict):
         if not isinstance(state, dict) or state.get("type") != "lumen.sigview.session":
             raise ValueError("This is not a SigView session file.")
         waveforms = state.get("waveforms", {})
-        self.load_results(waveforms, state.get("x_var", ""))
+        self._calculator_history = [str(x).strip() for x in state.get("calculator_history", []) if str(x).strip()]
+        self._calculator_trace_specs = [
+            spec for spec in state.get("calculator_traces", [])
+            if isinstance(spec, dict) and str(spec.get("expression", "")).strip()
+        ]
+        self.load_results(waveforms, state.get("x_var", ""), preserve_user_expressions=True)
         trace_state = {entry.get("name"): entry for entry in state.get("traces", []) if isinstance(entry, dict)}
         for trace in self.canvas.traces:
             entry = trace_state.get(trace.name, {})
@@ -2085,6 +2371,10 @@ class WaveformViewerWindow(QMainWindow):
                     except (TypeError, ValueError):
                         pass
             self.canvas._auto_range = False
+        calc_state = state.get("calculator_state", {})
+        if isinstance(calc_state, dict):
+            self.calc_expr.setText(str(calc_state.get("expression", "") or ""))
+            self.calc_name.setText(str(calc_state.get("name", "") or ""))
         self._rebuild_signal_list()
         self._refresh_marker_table()
         self._refresh_measurements()

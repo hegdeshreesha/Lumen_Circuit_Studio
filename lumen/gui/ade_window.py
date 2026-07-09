@@ -997,8 +997,11 @@ class ADEWindow(QMainWindow):
         self.cell = cell
         self.ciw = ciw
         self._waveform_viewers = []
+        self._attached_sigview = None
         self._last_sigview_waveforms: dict = {}
+        self._last_sigview_payload: dict = {}
         self._result_waveforms_by_row: dict[int, dict] = {}
+        self._result_all_waveforms_by_row: dict[int, dict] = {}
         self._sim_thread: QThread | None = None
         self._sim_worker: SimEnvSimulationWorker | None = None
         self._sim_jobs_total = 0
@@ -1324,6 +1327,193 @@ class ADEWindow(QMainWindow):
         self._refresh_run_plan()
         self._save_simenv_view_silent()
 
+    def _add_or_select_output_expression(self, signal: str, expression: str, plot: bool = True) -> int:
+        sig = str(signal or expression or "sig").strip() or "sig"
+        expr = str(expression or "").strip()
+        if not expr:
+            return -1
+        table = self.outputs_widget.table
+        for row in range(table.rowCount()):
+            sig_item = table.item(row, 0)
+            expr_item = table.item(row, 1)
+            cur_sig = sig_item.text().strip() if sig_item else ""
+            cur_expr = expr_item.text().strip() if expr_item else ""
+            if self._trace_key(cur_sig) == self._trace_key(sig) and self._trace_key(cur_expr) == self._trace_key(expr):
+                chk = table.cellWidget(row, 2)
+                if isinstance(chk, QCheckBox):
+                    chk.setChecked(bool(plot))
+                table.selectRow(row)
+                return row
+        row = self.outputs_widget._add_entry(sig, expr)
+        chk = table.cellWidget(row, 2)
+        if isinstance(chk, QCheckBox):
+            chk.setChecked(bool(plot))
+        table.selectRow(row)
+        return row
+
+    def _add_measurement_entry(
+        self,
+        name: str,
+        meas_type: str,
+        expression: str,
+        target: str = "",
+        from_time: str = "",
+        to_time: str = "",
+    ) -> int:
+        table = self.measurement_widget.table
+        expr_key = self._trace_key(expression)
+        type_key = self._trace_key(meas_type)
+        for row in range(table.rowCount()):
+            type_widget = table.cellWidget(row, 1)
+            cur_type = type_widget.currentText().strip() if isinstance(type_widget, QComboBox) else ""
+            cur_expr = self._table_text(table, row, 2)
+            cur_from = self._table_text(table, row, 4)
+            cur_to = self._table_text(table, row, 5)
+            if (
+                self._trace_key(cur_type) == type_key
+                and self._trace_key(cur_expr) == expr_key
+                and str(cur_from).strip() == str(from_time).strip()
+                and str(cur_to).strip() == str(to_time).strip()
+            ):
+                table.selectRow(row)
+                return row
+        self.measurement_widget._add_row()
+        row = table.rowCount() - 1
+        self._set_table_text(table, row, 0, name or f"meas_{row}")
+        type_widget = table.cellWidget(row, 1)
+        if isinstance(type_widget, QComboBox):
+            idx = type_widget.findText(meas_type)
+            if idx >= 0:
+                type_widget.setCurrentIndex(idx)
+        self._set_table_text(table, row, 2, expression)
+        self._set_table_text(table, row, 3, target)
+        self._set_table_text(table, row, 4, from_time)
+        self._set_table_text(table, row, 5, to_time)
+        table.selectRow(row)
+        return row
+
+    def _on_sigview_output_request(self, payload: object):
+        if not isinstance(payload, dict):
+            return
+        row = self._add_or_select_output_expression(
+            str(payload.get("signal", "") or payload.get("expression", "")).strip(),
+            str(payload.get("expression", "")).strip(),
+            bool(payload.get("plot", True)),
+        )
+        if row >= 0:
+            self._refresh_run_plan()
+            self._save_simenv_view_silent()
+            self._log(f"Added SimENV output from SigView: {payload.get('expression', '')}")
+
+    def _on_sigview_measurement_request(self, payload: object):
+        if not isinstance(payload, dict):
+            return
+        row = self._add_measurement_entry(
+            str(payload.get("name", "")).strip(),
+            str(payload.get("type", "AVG")).strip().upper() or "AVG",
+            str(payload.get("expression", "")).strip(),
+            str(payload.get("target", "")).strip(),
+            str(payload.get("from", "")).strip(),
+            str(payload.get("to", "")).strip(),
+        )
+        if row >= 0:
+            self._refresh_run_plan()
+            self._save_simenv_view_silent()
+            self._log(f"Added SimENV measurement from SigView: {payload.get('type', 'AVG')} {payload.get('expression', '')}")
+
+    def _add_measurement_from_expression(
+        self,
+        expression: str,
+        name: str = "",
+        meas_type: str = "AVG",
+        target: str = "",
+        from_time: str = "",
+        to_time: str = "",
+    ):
+        row = self._add_measurement_entry(name, meas_type, expression, target, from_time, to_time)
+        if row >= 0:
+            self._refresh_run_plan()
+            self._save_simenv_view_silent()
+        return row
+
+    def _current_waveforms_for_sigview(self) -> dict:
+        if self._last_sigview_waveforms:
+            return dict(self._last_sigview_waveforms)
+        selected = self.results_table.currentRow() if hasattr(self, "results_table") else -1
+        if selected in self._result_all_waveforms_by_row:
+            return dict(self._result_all_waveforms_by_row[selected])
+        if selected in self._result_waveforms_by_row:
+            return dict(self._result_waveforms_by_row[selected])
+        return {}
+
+    def _show_expression_in_sigview(self, expression: str, name_hint: str = "", show_calculator: bool = False):
+        expr = str(expression or "").strip()
+        waveforms = self._current_waveforms_for_sigview()
+        if not expr or not waveforms:
+            self.statusBar().showMessage("No waveform data available for SigView expression plotting", 5000)
+            return
+        direct = self._match_waveform_for_expression(expr, waveforms)
+        payload = self._sigview_payload_for_waveforms(
+            waveforms,
+            explicit_signals=[direct] if direct else [],
+            focus_expression=expr,
+            show_calculator=show_calculator,
+        )
+        if not direct:
+            payload["derived_expressions"] = [{
+                "name": str(name_hint or expr).strip() or expr,
+                "expression": expr,
+                "visible": True,
+            }]
+        self._last_sigview_waveforms = dict(waveforms)
+        self._last_sigview_payload = payload
+        self._show_waveforms(payload, calculator=show_calculator)
+
+    def _on_outputs_context_menu(self, pos):
+        table = self.outputs_widget.table
+        row = table.rowAt(pos.y())
+        if row < 0:
+            return
+        table.selectRow(row)
+        sig = self._table_text(table, row, 0, "sig")
+        expr = self._table_text(table, row, 1, "")
+        menu = QMenu(self)
+        title = QAction(sig or expr or "Output", self)
+        title.setEnabled(False)
+        menu.addAction(title)
+        menu.addSeparator()
+        act_plot = QAction("Plot In SigView", self)
+        act_plot.triggered.connect(lambda: self._show_expression_in_sigview(expr, sig, show_calculator=False))
+        menu.addAction(act_plot)
+        act_calc = QAction("Send To Calculator", self)
+        act_calc.triggered.connect(lambda: self._show_expression_in_sigview(expr, sig, show_calculator=True))
+        menu.addAction(act_calc)
+        act_meas = QAction("Add Measurement From Output", self)
+        act_meas.triggered.connect(lambda: self._add_measurement_from_expression(expr, f"avg_{sig or row}", "AVG"))
+        menu.addAction(act_meas)
+        menu.exec(table.viewport().mapToGlobal(pos))
+
+    def _on_measurements_context_menu(self, pos):
+        table = self.measurement_widget.table
+        row = table.rowAt(pos.y())
+        if row < 0:
+            return
+        table.selectRow(row)
+        name = self._table_text(table, row, 0, f"meas_{row}")
+        expr = self._table_text(table, row, 2, "")
+        menu = QMenu(self)
+        title = QAction(name or expr or "Measurement", self)
+        title.setEnabled(False)
+        menu.addAction(title)
+        menu.addSeparator()
+        act_plot = QAction("Plot In SigView", self)
+        act_plot.triggered.connect(lambda: self._show_expression_in_sigview(expr, name, show_calculator=False))
+        menu.addAction(act_plot)
+        act_calc = QAction("Send To Calculator", self)
+        act_calc.triggered.connect(lambda: self._show_expression_in_sigview(expr, name, show_calculator=True))
+        menu.addAction(act_calc)
+        menu.exec(table.viewport().mapToGlobal(pos))
+
     def _save_simenv_view_silent(self):
         try:
             data = self._collect_simenv_setup()
@@ -1627,9 +1817,13 @@ class ADEWindow(QMainWindow):
             voltage_pick_hook=self._start_voltage_pick,
             current_pick_hook=self._start_current_pick,
         )
+        self.outputs_widget.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.outputs_widget.table.customContextMenuRequested.connect(self._on_outputs_context_menu)
         data_tabs.addTab(self.outputs_widget, "Outputs")
 
         self.measurement_widget = MeasurementSetupWidget()
+        self.measurement_widget.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.measurement_widget.table.customContextMenuRequested.connect(self._on_measurements_context_menu)
         data_tabs.addTab(self.measurement_widget, "Measurements")
 
         self.stimulus_widget = StimulusEditorWidget()
@@ -2311,6 +2505,7 @@ class ADEWindow(QMainWindow):
 
         self._refresh_run_plan()
         self._last_sigview_waveforms = {}
+        self._last_sigview_payload = {}
         self._sim_merged_waveforms = {}
         if not self._ensure_selected_analysis_for_run():
             QMessageBox.warning(self, "No Test", "Add at least one SimENV test first.")
@@ -2436,11 +2631,13 @@ class ADEWindow(QMainWindow):
         self._handle_simulation_result(result, run_name, plot_waveforms)
         if result.success and plot_waveforms:
             if self._sim_jobs_total == 1:
-                self._last_sigview_waveforms = dict(plot_waveforms)
+                all_waveforms = dict(getattr(result, "waveforms", {}) or plot_waveforms)
+                self._last_sigview_waveforms = all_waveforms
+                self._last_sigview_payload = self._sigview_payload_for_waveforms(all_waveforms)
                 signal_count = self._count_plottable_signals(self._last_sigview_waveforms)
                 self._log(f"SigView ready: {signal_count} waveform signal(s)")
                 if signal_count:
-                    self._show_waveforms(self._last_sigview_waveforms)
+                    self._show_waveforms(self._last_sigview_payload)
             else:
                 self._merge_corner_waveforms(self._sim_merged_waveforms, run_name, plot_waveforms)
         self.statusBar().showMessage(
@@ -2458,7 +2655,8 @@ class ADEWindow(QMainWindow):
     def _on_simulation_worker_finished(self):
         if self._sim_merged_waveforms:
             self._last_sigview_waveforms = dict(self._sim_merged_waveforms)
-            self._show_waveforms(self._sim_merged_waveforms)
+            self._last_sigview_payload = self._sigview_payload_for_waveforms(self._sim_merged_waveforms)
+            self._show_waveforms(self._last_sigview_payload)
         if self._sim_cancel_requested:
             self.statusBar().showMessage("Simulation stopped", 5000)
             self._log("Background simulation stopped.")
@@ -2494,9 +2692,16 @@ class ADEWindow(QMainWindow):
         if self.outputs_widget.chk_save_all_nodes.isChecked():
             return dict(waveforms)
 
-        requested = self._selected_voltage_trace_names()
+        requested = self._checked_output_specs()
         if not requested:
             return {}
+
+        if any(not self._match_waveform_for_expression(spec.get("expression", ""), waveforms) for spec in requested):
+            return dict(waveforms)
+
+        direct_requested = self._selected_direct_trace_names(waveforms)
+        if not direct_requested:
+            return dict(waveforms)
 
         x_var = self._x_var_for_waveforms(waveforms)
         filtered = {}
@@ -2510,7 +2715,7 @@ class ADEWindow(QMainWindow):
         }
 
         missing = []
-        for trace_name in requested:
+        for trace_name in direct_requested:
             match = available_by_key.get(self._trace_key(trace_name))
             if match:
                 filtered[match] = waveforms[match]
@@ -2528,26 +2733,54 @@ class ADEWindow(QMainWindow):
             return filtered
         return {}
 
-    def _selected_voltage_trace_names(self) -> list[str]:
-        """Return checked SimENV output voltage traces in SigView naming form."""
-        requested: list[str] = []
+    def _checked_output_specs(self) -> list[dict]:
+        specs: list[dict] = []
         table = self.outputs_widget.table
         for row in range(table.rowCount()):
             chk = table.cellWidget(row, 2)
             if isinstance(chk, QCheckBox) and not chk.isChecked():
                 continue
+            sig_item = table.item(row, 0)
             expr_item = table.item(row, 1)
+            signal = sig_item.text().strip() if sig_item else ""
             expr = expr_item.text().strip() if expr_item else ""
-            match = re.match(r"^\s*V\(\s*([^)]+)\s*\)\s*$", expr, re.IGNORECASE)
+            if not expr:
+                continue
+            specs.append({
+                "signal": signal or expr,
+                "expression": expr,
+                "plot": True,
+            })
+        return specs
+
+    def _selected_direct_trace_names(self, waveforms: dict) -> list[str]:
+        requested: list[str] = []
+        seen: set[str] = set()
+        for spec in self._checked_output_specs():
+            match = self._match_waveform_for_expression(spec.get("expression", ""), waveforms)
             if not match:
                 continue
-            net = match.group(1).strip()
-            if not net:
+            key = self._trace_key(match)
+            if key in seen:
                 continue
-            trace_name = f"V({net})"
-            if self._trace_key(trace_name) not in {self._trace_key(x) for x in requested}:
-                requested.append(trace_name)
+            seen.add(key)
+            requested.append(match)
         return requested
+
+    def _match_waveform_for_expression(self, expression: str, waveforms: dict) -> str:
+        expr = str(expression or "").strip()
+        if not expr or not waveforms:
+            return ""
+        x_var = self._x_var_for_waveforms(waveforms)
+        available = {
+            self._trace_key(name): name
+            for name in waveforms.keys()
+            if name != x_var and not str(name).startswith("_")
+        }
+        direct_key = self._trace_key(expr)
+        if direct_key in available:
+            return available[direct_key]
+        return ""
 
     @staticmethod
     def _trace_key(name: str) -> str:
@@ -2671,6 +2904,8 @@ class ADEWindow(QMainWindow):
         self.results_table.setItem(r, 4, QTableWidgetItem("--"))
         if stored_waveforms:
             self._result_waveforms_by_row[r] = stored_waveforms
+        if result.success and getattr(result, "waveforms", None):
+            self._result_all_waveforms_by_row[r] = dict(getattr(result, "waveforms", {}) or {})
 
         if result.success:
             self._log(f"[{run_name}] Simulation completed successfully")
@@ -2772,15 +3007,89 @@ class ADEWindow(QMainWindow):
             if str(name) != x_var and not str(name).startswith("_")
         ], key=lambda s: s.lower())
 
+    def _get_attached_sigview(self, create: bool = True):
+        viewer = self._attached_sigview
+        if viewer is not None:
+            try:
+                if not viewer.isVisible():
+                    viewer.show()
+                return viewer
+            except RuntimeError:
+                self._attached_sigview = None
+        if not create:
+            return None
+        from lumen.gui.waveform_viewer import SigViewWindow
+        viewer = SigViewWindow()
+        viewer.attach_to_simenv()
+        viewer.send_to_simenv_output.connect(self._on_sigview_output_request)
+        viewer.send_to_simenv_measurement.connect(self._on_sigview_measurement_request)
+        viewer.destroyed.connect(lambda *_args: setattr(self, "_attached_sigview", None))
+        viewer.show()
+        self._attached_sigview = viewer
+        self._waveform_viewers.append(viewer)
+        return viewer
+
+    def _sigview_payload_for_waveforms(
+        self,
+        waveforms: dict,
+        explicit_signals: list[str] | None = None,
+        focus_expression: str = "",
+        show_calculator: bool = False,
+    ) -> dict:
+        visible_signals: list[str] | None = None
+        derived_expressions: list[dict] = []
+
+        if explicit_signals:
+            visible_signals = []
+            seen: set[str] = set()
+            for name in explicit_signals:
+                match = self._match_waveform_for_expression(name, waveforms) or (name if name in waveforms else "")
+                if not match:
+                    continue
+                key = self._trace_key(match)
+                if key in seen:
+                    continue
+                seen.add(key)
+                visible_signals.append(match)
+        else:
+            checked = self._checked_output_specs()
+            if checked:
+                visible_signals = []
+                for spec in checked:
+                    expr = spec.get("expression", "")
+                    match = self._match_waveform_for_expression(expr, waveforms)
+                    if match:
+                        if self._trace_key(match) not in {self._trace_key(x) for x in visible_signals}:
+                            visible_signals.append(match)
+                    else:
+                        derived_expressions.append({
+                            "name": spec.get("signal", "") or expr,
+                            "expression": expr,
+                            "visible": True,
+                        })
+                if not visible_signals and not derived_expressions:
+                    visible_signals = None
+
+        return {
+            "waveforms": dict(waveforms or {}),
+            "x_var": self._x_var_for_waveforms(waveforms or {}),
+            "visible_signals": visible_signals,
+            "derived_expressions": derived_expressions,
+            "focus_expression": str(focus_expression or "").strip(),
+            "show_calculator": bool(show_calculator),
+            "preserve_user_expressions": True,
+        }
+
     def _plot_result_row(self, row: int, calculator: bool = False, signals: list[str] | None = None):
-        waveforms = self._result_waveforms_by_row.get(row, {})
+        waveforms = self._result_all_waveforms_by_row.get(row) or self._result_waveforms_by_row.get(row, {})
         if not waveforms:
             self.main_tabs.setCurrentWidget(self.results_table.parentWidget())
             self.statusBar().showMessage("Selected run has no plottable waveform data", 5000)
             return
-        plot_waveforms = self._waveforms_for_signals(waveforms, signals or [])
-        self._last_sigview_waveforms = dict(plot_waveforms)
-        self._show_waveforms(plot_waveforms, calculator=calculator)
+        payload = self._sigview_payload_for_waveforms(waveforms, explicit_signals=signals or [], show_calculator=calculator)
+        self._last_sigview_waveforms = dict(waveforms)
+        self._last_sigview_payload = payload
+        self._show_waveforms(payload, calculator=calculator)
 
     def _waveforms_for_signals(self, waveforms: dict, signals: list[str]) -> dict:
         if not signals:
@@ -2798,7 +3107,7 @@ class ADEWindow(QMainWindow):
         run = self.results_table.item(row, 0).text() if self.results_table.item(row, 0) else f"Run {row + 1}"
         analysis = self.results_table.item(row, 1).text() if self.results_table.item(row, 1) else ""
         status = self.results_table.item(row, 2).text() if self.results_table.item(row, 2) else ""
-        waveforms = self._result_waveforms_by_row.get(row, {})
+        waveforms = self._result_all_waveforms_by_row.get(row) or self._result_waveforms_by_row.get(row, {})
         signals = self._plottable_signal_names(waveforms)
         QMessageBox.information(
             self,
@@ -2814,23 +3123,30 @@ class ADEWindow(QMainWindow):
         )
 
     def _show_waveforms(self, waveforms, calculator: bool = False):
-        from lumen.gui.waveform_viewer import SigViewWindow
-        v = SigViewWindow()
-        v.load_results(waveforms)
-        if calculator and hasattr(v, "show_calculator"):
-            v.show_calculator()
-        v.show()
-        self._waveform_viewers.append(v)
+        viewer = self._get_attached_sigview(create=True)
+        payload = waveforms if isinstance(waveforms, dict) else {"waveforms": dict(waveforms or {})}
+        if "waveforms" not in payload:
+            payload = self._sigview_payload_for_waveforms(payload, show_calculator=calculator)
+        else:
+            payload = dict(payload)
+            if calculator:
+                payload["show_calculator"] = True
+        viewer.load_simenv_session(payload)
+        viewer.show()
+        viewer.raise_()
+        viewer.activateWindow()
 
     def _on_open_waveform(self):
         if self._last_sigview_waveforms:
-            self._show_waveforms(self._last_sigview_waveforms)
+            payload = self._sigview_payload_for_waveforms(self._last_sigview_waveforms)
+            self._last_sigview_payload = payload
+            self._show_waveforms(payload)
             self.statusBar().showMessage("Opened latest waveforms in SigView", 4000)
             return
 
         selected = self.results_table.currentRow() if hasattr(self, "results_table") else -1
-        if selected in self._result_waveforms_by_row:
-            self._show_waveforms(self._result_waveforms_by_row[selected])
+        if selected in self._result_waveforms_by_row or selected in self._result_all_waveforms_by_row:
+            self._plot_result_row(selected, calculator=False)
             self.statusBar().showMessage("Opened selected run in SigView", 4000)
             return
 
@@ -2840,13 +3156,15 @@ class ADEWindow(QMainWindow):
 
     def _on_open_waveform_calculator(self):
         if self._last_sigview_waveforms:
-            self._show_waveforms(self._last_sigview_waveforms, calculator=True)
+            payload = self._sigview_payload_for_waveforms(self._last_sigview_waveforms, show_calculator=True)
+            self._last_sigview_payload = payload
+            self._show_waveforms(payload, calculator=True)
             self.statusBar().showMessage("Opened latest waveforms in SigView calculator", 4000)
             return
 
         selected = self.results_table.currentRow() if hasattr(self, "results_table") else -1
-        if selected in self._result_waveforms_by_row:
-            self._show_waveforms(self._result_waveforms_by_row[selected], calculator=True)
+        if selected in self._result_waveforms_by_row or selected in self._result_all_waveforms_by_row:
+            self._plot_result_row(selected, calculator=True)
             self.statusBar().showMessage("Opened selected run in SigView calculator", 4000)
             return
 
@@ -2856,12 +3174,11 @@ class ADEWindow(QMainWindow):
 
     def _on_result_double_click(self, item):
         row = item.row()
-        waveforms = self._result_waveforms_by_row.get(row)
+        waveforms = self._result_all_waveforms_by_row.get(row) or self._result_waveforms_by_row.get(row)
         if not waveforms:
             QMessageBox.information(self, "SigView", "This run does not have plottable waveform data.")
             return
-        self._last_sigview_waveforms = dict(waveforms)
-        self._show_waveforms(waveforms)
+        self._plot_result_row(row, calculator=False)
 
     def _count_plottable_signals(self, waveforms: dict) -> int:
         if not waveforms:
