@@ -1,6 +1,6 @@
 """
 Lumen Circuit Studio - SimENV Window
-Tabbed simulation environment supporting GSPICE analyses.
+Tabbed simulation environment supporting GSPICE, Ngspice, and Xyce analyses.
 """
 import os
 import re
@@ -23,8 +23,15 @@ from PyQt6.QtGui import QAction, QFont, QColor, QKeySequence, QDesktopServices
 
 from lumen.core.database import LibraryDatabase
 from lumen.core.netlist import NetlistGenerator, NetlistDirectives
-from lumen.core.simulator import SimulatorBridge, SIMULATOR_INFO, get_supported_analyses, get_simulator_label
-from lumen.core.simulator_runtime import SimulatorRuntimeManager
+from lumen.core.simulator import (
+    SIMULATOR_INFO,
+    SimulatorBridge,
+    get_simulator_label,
+    get_supported_analyses,
+    normalize_simulator_name,
+)
+from lumen.core.simulator_compare import ReferenceComparisonRunner, format_reference_report
+from lumen.core.simulator_runtime import ACTIVE_SIMULATORS, SimulatorRuntimeManager
 from lumen.core.pdk_service import get_registry
 from lumen.gui.branding import apply_window_branding
 from lumen.gui.icons import editor_icon
@@ -405,7 +412,7 @@ class SimEnvSimulationWorker(QObject):
 
     def __init__(self, simulator: str, exe_path: str, work_dir: str,
                  jobs: list[tuple[str, str, str]], threads: int = 1,
-                 timeout: int = 0):
+                 timeout: int = 0, workspace: str = "", compare_references: bool = True):
         super().__init__()
         self.simulator = simulator
         self.exe_path = exe_path
@@ -413,6 +420,8 @@ class SimEnvSimulationWorker(QObject):
         self.jobs = list(jobs)
         self.threads = max(1, min(16, int(threads or 1)))
         self.timeout = int(timeout or 0)
+        self.workspace = workspace
+        self.compare_references = compare_references
         self._bridge: SimulatorBridge | None = None
         self._cancelled = False
 
@@ -434,6 +443,25 @@ class SimEnvSimulationWorker(QObject):
                     timeout=self.timeout,
                     progress_callback=self.progress.emit,
                 )
+                if self.compare_references and not self._cancelled:
+                    comparisons = ReferenceComparisonRunner(
+                        self.workspace,
+                        self.work_dir,
+                    ).compare(
+                        self.simulator,
+                        netlist,
+                        result,
+                        sim_name,
+                        threads=self.threads,
+                        progress_callback=self.progress.emit,
+                    )
+                    report = format_reference_report(comparisons)
+                    if report:
+                        result.log += "\n" + report + "\n"
+                        result.warnings.extend(
+                            item.summary_line() for item in comparisons
+                        )
+                        result.artifacts["reference_comparison"] = report
                 self.result_ready.emit(run_name, result)
                 if self._cancelled:
                     break
@@ -1019,6 +1047,12 @@ class ADEWindow(QMainWindow):
 
         self._analysis_tabs: dict[str, AnalysisSetupWidget] = {}
         self._current_simulator = "GSPICE"
+        try:
+            self._current_simulator = SimulatorRuntimeManager(
+                str(getattr(self.db, "workspace", ""))
+            ).get_active_simulator()
+        except Exception:
+            self._current_simulator = "GSPICE"
         self._missing_sim_prompted: set[str] = set()
         self._sim_dump_dir = self._default_sim_dump_dir()
         self._sim_threads = 1
@@ -1070,7 +1104,7 @@ class ADEWindow(QMainWindow):
         self._sim_threads = self._sim_thread_count()
         if hasattr(self, "thread_spin") and self.thread_spin.value() != self._sim_threads:
             self.thread_spin.setValue(self._sim_threads)
-        self._log(f"GSPICE threads set to: {self._sim_threads}")
+        self._log(f"{self._current_simulator} threads set to: {self._sim_threads}")
         self._refresh_run_plan()
         self._save_simenv_view_silent()
 
@@ -1096,6 +1130,11 @@ class ADEWindow(QMainWindow):
 
     def _accuracy_options_line(self) -> str:
         preset = self._accuracy_presets().get(self._sim_accuracy, self._accuracy_presets()["High"])
+        if self._current_simulator != "GSPICE":
+            compatible = ["RELTOL", "VNTOL", "ABSTOL"]
+            return ".OPTIONS " + " ".join(
+                f"{key}={preset[key]}" for key in compatible if key in preset
+            )
         accuracy = self._sim_accuracy.replace(" ", "").upper()
         method = self._sim_method_token()
         parts = [f"ACCURACY={accuracy}", f"METHOD={method}", "ADAPTIVE=1", *[f"{key}={value}" for key, value in preset.items()]]
@@ -1144,14 +1183,14 @@ class ADEWindow(QMainWindow):
 
     def _on_accuracy_changed(self, text: str):
         self._sim_accuracy = text if text in self._accuracy_presets() else "High"
-        self._log(f"GSPICE accuracy set to: {self._sim_accuracy}")
+        self._log(f"{self._current_simulator} accuracy set to: {self._sim_accuracy}")
         self._refresh_run_plan()
         self._save_simenv_view_silent()
 
     def _on_method_changed(self, text: str):
         allowed = {"Auto", "Backward Euler", "Trapezoidal", "Gear2"}
         self._sim_method = text if text in allowed else "Auto"
-        self._log(f"GSPICE transient method set to: {self._sim_method}")
+        self._log(f"{self._current_simulator} transient method set to: {self._sim_method}")
         self._refresh_run_plan()
         self._save_simenv_view_silent()
 
@@ -1598,10 +1637,11 @@ class ADEWindow(QMainWindow):
         if pdk_name == "ihp_sg13g2":
             wanted = self._ihp_model_file_names(used_devices)
             used_wrappers = set()
+            sim_folder = "xyce" if self._current_simulator == "Xyce" else "ngspice"
             preferred = sorted(
                 model_files,
                 key=lambda mf: (
-                    0 if f"{os.sep}ngspice{os.sep}" in mf.path.lower() else 1,
+                    0 if f"{os.sep}{sim_folder}{os.sep}" in mf.path.lower() else 1,
                     mf.path.lower(),
                 ),
             )
@@ -1755,7 +1795,7 @@ class ADEWindow(QMainWindow):
         self.thread_spin = QSpinBox()
         self.thread_spin.setRange(1, 16)
         self.thread_spin.setValue(self._sim_threads)
-        self.thread_spin.setToolTip("GSPICE worker threads. Values are clamped to the simulator maximum of 16.")
+        self.thread_spin.setToolTip("Simulator worker threads. Backends that do not expose a thread option ignore this setting.")
         self.thread_spin.valueChanged.connect(self._on_threads_changed)
         self.thread_spin.setStyleSheet(
             "QSpinBox{color:#f2f7fb;background:#1d303e;border:1px solid #4b6a82;"
@@ -1787,7 +1827,7 @@ class ADEWindow(QMainWindow):
         self.method_combo = QComboBox()
         self.method_combo.addItems(["Auto", "Backward Euler", "Trapezoidal", "Gear2"])
         self.method_combo.setCurrentText(self._sim_method)
-        self.method_combo.setToolTip("Transient integration method. Trapezoidal and Gear2 are recorded in the deck; current GSPICE device stamps solve with Backward Euler until those methods are completed.")
+        self.method_combo.setToolTip("Transient integration method. Native GSPICE records the selected method; external backends receive compatible tolerance options.")
         self.method_combo.currentTextChanged.connect(self._on_method_changed)
         self.method_combo.setStyleSheet(
             "QComboBox{color:#f2f7fb;background:#1d303e;border:1px solid #4b6a82;"
@@ -1851,8 +1891,15 @@ class ADEWindow(QMainWindow):
         sim_group = QGroupBox("Simulator")
         sim_form = QVBoxLayout(sim_group)
         self.sim_combo = QComboBox()
-        self.sim_combo.addItem(get_simulator_label("GSPICE"), "GSPICE")
-        self.sim_combo.setEnabled(False)
+        for sim in ACTIVE_SIMULATORS:
+            self.sim_combo.addItem(get_simulator_label(sim), sim)
+        idx = self.sim_combo.findData(self._current_simulator)
+        if idx < 0:
+            idx = self.sim_combo.findData("GSPICE")
+        if idx >= 0:
+            self.sim_combo.setCurrentIndex(idx)
+            self._current_simulator = self.sim_combo.currentData() or self._current_simulator
+        self.sim_combo.setEnabled(True)
         self.sim_combo.currentIndexChanged.connect(self._on_simulator_changed)
         sim_form.addWidget(self.sim_combo)
 
@@ -1890,7 +1937,16 @@ class ADEWindow(QMainWindow):
 
     def _on_simulator_changed(self, index):
         """Handle simulator selection change."""
-        self._current_simulator = self.sim_combo.currentData()
+        selected = self.sim_combo.currentData()
+        if not selected:
+            return
+        self._current_simulator = selected
+        try:
+            runtime = SimulatorRuntimeManager(str(getattr(self.db, "workspace", "")))
+            runtime.set_active_simulator(self._current_simulator)
+            runtime.apply_environment_overrides()
+        except Exception as exc:
+            self._log(f"Could not persist simulator selection: {exc}")
         self._refresh_analysis_tree()
         # Clear existing analysis tabs (they may not be supported)
         incompatible = []
@@ -1935,6 +1991,7 @@ class ADEWindow(QMainWindow):
                             "color:#8bc78b;background:transparent;padding:2px;"
                         )
         self._refresh_run_plan()
+        self._save_simenv_view_silent()
 
     def _refresh_analysis_tree(self):
         """Rebuild the analysis tree showing only supported analyses."""
@@ -2304,7 +2361,7 @@ class ADEWindow(QMainWindow):
 
         tb.addSeparator()
         tb.addWidget(QLabel(" Sim: "))
-        self.toolbar_sim_label = QLabel("GSPICE")
+        self.toolbar_sim_label = QLabel(self._current_simulator)
         self.toolbar_sim_label.setStyleSheet("color:#6b9ece;font-weight:bold;background:transparent;padding:0 4px;")
         tb.addWidget(self.toolbar_sim_label)
 
@@ -2600,6 +2657,8 @@ class ADEWindow(QMainWindow):
             bridge.work_dir,
             jobs,
             threads=self._sim_thread_count(),
+            workspace=str(getattr(self.db, "workspace", "")),
+            compare_references=True,
         )
         self._sim_worker.moveToThread(self._sim_thread)
 
@@ -3372,7 +3431,7 @@ class ADEWindow(QMainWindow):
         if not isinstance(setup, dict):
             return
 
-        sim = setup.get("simulator", "GSPICE")
+        sim = normalize_simulator_name(setup.get("simulator", "GSPICE"))
         idx = self.sim_combo.findData(sim)
         if idx >= 0:
             self.sim_combo.setCurrentIndex(idx)

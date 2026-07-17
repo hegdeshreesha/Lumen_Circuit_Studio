@@ -28,7 +28,7 @@ from lumen.gui.branding import apply_window_branding
 
 
 class SimulatorManagerWindow(QMainWindow):
-    """Manage simulator installations and executable paths (GSPICE-only for now)."""
+    """Manage simulator installations and executable paths."""
 
     def __init__(self, workspace: str, ciw=None, parent=None):
         super().__init__(parent)
@@ -206,11 +206,6 @@ class SimulatorManagerWindow(QMainWindow):
 
 def ensure_simulator_available(parent, workspace: str, simulator: str, logger=None) -> bool:
     """Prompt user to install/configure simulator when missing."""
-    if str(simulator or "").strip().upper() != "GSPICE":
-        if logger:
-            logger(f"{simulator} is disabled for now (GSPICE-only mode).")
-        return False
-
     runtime = SimulatorRuntimeManager(workspace)
     runtime.apply_environment_overrides()
     bridge = SimulatorBridge(simulator, exe_path=runtime.get_active_executable(simulator))

@@ -1079,7 +1079,9 @@ class SchematicEditorWindow(QMainWindow):
             self.editor.save()  # Save first
             from lumen.core.netlist import NetlistGenerator
             gen = NetlistGenerator(self.db)
-            gen.set_target_simulator("GSPICE")
+            workspace = str(getattr(self.db, "workspace", ""))
+            simulator = SimulatorRuntimeManager(workspace).get_active_simulator()
+            gen.set_target_simulator(simulator)
             netlist = gen.generate(self.library, self.cell, self.view)
             self.netlist_view.setPlainText(netlist)
             errors = gen.get_errors()
@@ -1105,7 +1107,7 @@ class SchematicEditorWindow(QMainWindow):
             self.statusBar().showMessage("Netlist generation failed", 5000)
 
     def _on_simulate(self):
-        """Generate netlist and run GSPICE simulation."""
+        """Generate netlist and run the workspace-selected simulator."""
         if (
             self._simenv_tab is not None
             and self.workspace_tabs.currentWidget() is self._simenv_tab
@@ -1117,11 +1119,14 @@ class SchematicEditorWindow(QMainWindow):
         try:
             self.editor.save()
             from lumen.core.netlist import NetlistGenerator
-            from lumen.core.simulator import SimulatorBridge, ensure_direct_run_analysis
+            from lumen.core.simulator import SimulatorBridge, ensure_direct_run_analysis, get_simulator_label
             import re
 
+            workspace = str(getattr(self.db, "workspace", ""))
+            runtime = SimulatorRuntimeManager(workspace)
+            simulator = runtime.get_active_simulator()
             gen = NetlistGenerator(self.db)
-            gen.set_target_simulator("GSPICE")
+            gen.set_target_simulator(simulator)
             netlist = gen.generate(self.library, self.cell, self.view)
             netlist, quick_note = ensure_direct_run_analysis(netlist)
             self.netlist_view.setPlainText(netlist)
@@ -1143,29 +1148,30 @@ class SchematicEditorWindow(QMainWindow):
         workspace = str(getattr(self.db, "workspace", ""))
         runtime = SimulatorRuntimeManager(workspace)
         runtime.apply_environment_overrides()
-        bridge = SimulatorBridge("GSPICE", exe_path=runtime.get_active_executable("GSPICE"))
+        sim_label = get_simulator_label(simulator)
+        bridge = SimulatorBridge(simulator, exe_path=runtime.get_active_executable(simulator))
         if not bridge.is_available():
-            ready = ensure_simulator_available(self, workspace, "GSPICE", logger=self.ciw.log if self.ciw else None)
+            ready = ensure_simulator_available(self, workspace, simulator, logger=self.ciw.log if self.ciw else None)
             if ready:
                 runtime = SimulatorRuntimeManager(workspace)
                 runtime.apply_environment_overrides()
-                bridge = SimulatorBridge("GSPICE", exe_path=runtime.get_active_executable("GSPICE"))
+                bridge = SimulatorBridge(simulator, exe_path=runtime.get_active_executable(simulator))
             else:
                 return
         if not bridge.is_available():
             self.netlist_view.append(
-                "\n* GSPICE not found. Netlist generated but simulation skipped.")
+                f"\n* {sim_label} not found. Netlist generated but simulation skipped.")
             self.netlist_view.append(
                 f"* Searched: {bridge.exe_path}")
             self.netlist_view.append(
-                "* Build GSPICE or set the path in Tools > Options.")
+                "* Install the simulator or set the path in Tools > Options.")
             if self.ciw:
-                self.ciw.log("GSPICE not found — simulation skipped")
+                self.ciw.log(f"{sim_label} not found - simulation skipped")
             return
 
         self.statusBar().showMessage("Simulating...")
         if self.ciw:
-            self.ciw.log(f"Running GSPICE simulation: {self.cell}")
+            self.ciw.log(f"Running {sim_label} simulation: {self.cell}")
 
         result = bridge.simulate(netlist, sim_name=self.cell)
 

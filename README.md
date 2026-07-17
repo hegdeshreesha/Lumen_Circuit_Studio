@@ -29,6 +29,10 @@ python -m unittest discover -s tests -v
 python scripts\verify_environment.py
 ```
 
+## Beta Testing
+
+For the current dogfood flow, start with `BETA_TESTING.md`. The beta focus is schematic to SimENV to simulator run to SigView, with run folders and logs preserved for every issue report.
+
 ## Repository Layout
 
 - `lumen`: application code (GUI, core engines, netlisting, simulation integration)

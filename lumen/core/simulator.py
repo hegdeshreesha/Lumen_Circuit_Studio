@@ -11,6 +11,7 @@ import struct
 import threading
 import time
 import re
+import math
 import tempfile
 import json
 from dataclasses import dataclass, field
@@ -87,18 +88,41 @@ SIMULATOR_INFO = {
 }
 
 
+def normalize_simulator_name(simulator: str) -> str:
+    """Return Lumen's canonical simulator name for UI, runtime, and bridge code."""
+    key = str(simulator or "").strip()
+    if not key:
+        return "GSPICE"
+    aliases = {
+        "GSPICE": "GSPICE",
+        "NGSPICE": "Ngspice",
+        "NG": "Ngspice",
+        "XYCE": "Xyce",
+    }
+    upper = key.upper()
+    if upper in aliases:
+        return aliases[upper]
+    for known in SIMULATOR_INFO.keys():
+        if known.lower() == key.lower():
+            return known
+    return key
+
+
 def get_supported_analyses(simulator: str) -> list[str]:
     """Return the list of analyses supported by the given simulator."""
+    simulator = normalize_simulator_name(simulator)
     info = SIMULATOR_INFO.get(simulator, {})
     return info.get("analyses", [])
 
 
 def get_simulator_label(simulator: str) -> str:
+    simulator = normalize_simulator_name(simulator)
     info = SIMULATOR_INFO.get(simulator, {})
     return info.get("label", simulator)
 
 
 def get_simulator_timeout(simulator: str) -> int:
+    simulator = normalize_simulator_name(simulator)
     info = SIMULATOR_INFO.get(simulator, {})
     return info.get("default_timeout", 300)
 
@@ -136,10 +160,11 @@ def ensure_direct_run_analysis(netlist: str, default_tran: str = ".TRAN 1n 10u")
 
 class SimulatorBridge:
     """Unified bridge for GSPICE, Xyce, and Ngspice."""
+    _ngspice_osdi_probe_cache: dict[str, tuple[bool, str]] = {}
 
     def __init__(self, simulator: str = "GSPICE", exe_path: str = "", work_dir: str = ""):
-        self.simulator = simulator
-        self.info = SIMULATOR_INFO.get(simulator, SIMULATOR_INFO["GSPICE"])
+        self.simulator = normalize_simulator_name(simulator)
+        self.info = SIMULATOR_INFO.get(self.simulator, SIMULATOR_INFO["GSPICE"])
 
         if exe_path:
             self.exe_path = exe_path
@@ -150,6 +175,7 @@ class SimulatorBridge:
         self._process: subprocess.Popen | None = None
         self._cancelled = False
         self._cache: dict[str, dict] = {}
+        self._xyce_plugins: list[str] = []
 
     def _select_work_dir(self, preferred_dir: str = "") -> str:
         """Pick a writable directory for simulator input and output files."""
@@ -291,6 +317,7 @@ class SimulatorBridge:
 
         sim_netlist, compatibility_notes = self._prepare_netlist_for_simulator(netlist)
         transient_stop = self._extract_transient_stop_seconds(sim_netlist)
+        transient_point_estimate = self._estimate_transient_output_points(sim_netlist)
         has_ac_analysis = bool(re.search(r"(?im)^\s*\.AC\b", sim_netlist))
         has_dynamic_sources = bool(re.search(r"(?im)^\s*[VI]\S*\s+\S+\s+\S+.*\b(PULSE|SIN|PWL|EXP|SFFM)\(", sim_netlist))
         node_aliases = self._extract_gspice_node_aliases(sim_netlist) if self.simulator == "GSPICE" else {}
@@ -303,10 +330,21 @@ class SimulatorBridge:
         result.log = f"Input deck: {netlist_path}\n"
         for note in compatibility_notes:
             result.log += f"{note}\n"
+        if transient_point_estimate and transient_point_estimate >= 1_000_000:
+            warning = (
+                f"[Transient size] Estimated {transient_point_estimate:,} requested output point(s). "
+                "This can run for a long time with PSP/OSDI models; consider increasing print step "
+                "or leaving maxstep controlled by the accuracy preset."
+            )
+            result.warnings.append(warning)
+            result.log += warning + "\n"
 
         try:
             with open(netlist_path, "w", encoding="utf-8", newline="\n") as f:
                 f.write(sim_netlist)
+            run_dir_notes = self._prepare_simulator_run_directory(sim_netlist)
+            for note in run_dir_notes:
+                result.log += f"{note}\n"
         except OSError as exc:
             result.errors.append(f"Could not write simulator input deck: {exc}")
             result.elapsed_time = time.time() - start_time
@@ -332,12 +370,17 @@ class SimulatorBridge:
             timeout = get_simulator_timeout(self.simulator)
 
         requested_threads = max(1, int(threads or 1))
+        cli_notes = self._prepare_command_line_rules(sim_netlist)
+        for note in cli_notes:
+            result.warnings.append(note)
+            result.log += note + "\n"
         cmd = self._build_command(netlist_path, output_path, requested_threads)
         result.command = cmd
         result.log += f"Command: {' '.join(cmd)}\n"
         self._cancelled = False
 
         preflight_errors = self._preflight_checks()
+        preflight_errors.extend(self._netlist_compatibility_errors(sim_netlist))
         if preflight_errors:
             result.errors.extend(preflight_errors)
             result.elapsed_time = time.time() - start_time
@@ -446,6 +489,7 @@ class SimulatorBridge:
                 out_thread.start()
                 err_thread.start()
                 deadline = time.time() + timeout if timeout and timeout > 0 else None
+                next_heartbeat = time.time() + 5.0
                 while self._process.poll() is None:
                     if self._cancelled:
                         self._process.terminate()
@@ -458,6 +502,24 @@ class SimulatorBridge:
                     if deadline is not None and time.time() > deadline:
                         self._process.kill()
                         raise subprocess.TimeoutExpired(run_cmd, timeout)
+                    now = time.time()
+                    if now >= next_heartbeat:
+                        elapsed = self._format_elapsed(now - launched_at)
+                        raw_size = 0
+                        try:
+                            raw_size = os.path.getsize(output_path) if output_path and os.path.exists(output_path) else 0
+                        except OSError:
+                            raw_size = 0
+                        detail = f"{self.simulator}: still running (elapsed {elapsed}"
+                        if transient_point_estimate:
+                            detail += f", requested points ~{transient_point_estimate:,}"
+                        if raw_size:
+                            detail += f", raw {raw_size:,} bytes"
+                        else:
+                            detail += ", raw pending"
+                        detail += ")"
+                        emit_progress(detail)
+                        next_heartbeat = now + 5.0
                     time.sleep(0.2)
                 out_thread.join(timeout=2)
                 err_thread.join(timeout=2)
@@ -595,10 +657,18 @@ class SimulatorBridge:
 
             fatal_lines, warning_lines = self._collect_output_diagnostics(stdout, stderr)
             result.warnings.extend(warning_lines)
+            backend_notes = self._backend_specific_diagnostics(stdout, stderr, sim_netlist)
+            result.errors.extend(backend_notes)
+            model_status_lines = self._collect_model_status(stdout, stderr)
+            if model_status_lines:
+                result.warnings.extend([f"[Model Status] {line}" for line in model_status_lines])
+                result.log += "\n[model status]\n" + "\n".join(model_status_lines) + "\n"
             if warning_lines:
                 result.log += "\n[diagnostics]\n" + "\n".join(f"WARNING: {line}" for line in warning_lines) + "\n"
             if fatal_lines:
                 result.errors.extend(fatal_lines)
+                result.success = False
+            if backend_notes:
                 result.success = False
 
             if result.success:
@@ -649,6 +719,22 @@ class SimulatorBridge:
             if self._process:
                 self._process.kill()
             result.errors.append(f"Simulation timed out ({timeout}s)")
+            if output_path and os.path.isfile(output_path) and os.path.getsize(output_path) > 0:
+                try:
+                    recovered = self._parse_raw(output_path)
+                except Exception as exc:
+                    recovered = {}
+                    result.warnings.append(f"Timed-out run produced a RAW file, but Lumen could not parse it: {exc}")
+                if recovered:
+                    result.waveforms = recovered
+                    result.output_path = output_path
+                    result.artifacts["raw"] = output_path
+                    result.artifacts.setdefault("waveforms", output_path)
+                    result.warnings.append(
+                        "Simulation reached the timeout, but a readable RAW file was produced and loaded."
+                    )
+                    result.errors.clear()
+                    result.success = True
 
         result.elapsed_time = time.time() - start_time
         self._write_run_manifest(result, manifest_path)
@@ -682,6 +768,28 @@ class SimulatorBridge:
             if len(tokens) >= 3:
                 return self._parse_spice_number(tokens[2])
         return 0.0
+
+    def _estimate_transient_output_points(self, netlist: str) -> int:
+        """Estimate requested output rows from the .TRAN print step and stop/start."""
+        for raw in str(netlist or "").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("*") or not re.match(r"(?i)^\.TRAN\b", line):
+                continue
+            body = re.split(r"[;$]", line, maxsplit=1)[0]
+            tokens = body.split()
+            if len(tokens) < 3:
+                return 0
+            try:
+                step = self._parse_spice_number(tokens[1])
+                stop = self._parse_spice_number(tokens[2])
+                start = self._parse_spice_number(tokens[3]) if len(tokens) >= 4 else 0.0
+            except (ValueError, TypeError):
+                return 0
+            duration = max(0.0, stop - start)
+            if step <= 0.0 or duration <= 0.0:
+                return 0
+            return int(duration / step) + 1
+        return 0
 
     def _create_run_dir(self, base_dir: str, safe_sim_name: str, started_at: float) -> str:
         """Create a stable per-run artifact directory."""
@@ -898,6 +1006,36 @@ class SimulatorBridge:
 
         return fatal_unique, warning_unique
 
+    def _collect_model_status(self, stdout: str, stderr: str) -> list[str]:
+        """Extract machine-readable simulator model-fidelity status lines."""
+        statuses: list[str] = []
+        for raw_line in (stdout + "\n" + stderr).splitlines():
+            line = raw_line.strip()
+            if not line.upper().startswith("MODEL_STATUS:"):
+                continue
+            payload = line.split(":", 1)[1].strip()
+            if payload and payload not in statuses:
+                statuses.append(payload)
+        return statuses
+
+    def _backend_specific_diagnostics(self, stdout: str, stderr: str, netlist: str) -> list[str]:
+        """Add actionable messages for backend-specific failure modes."""
+        combined = f"{stdout}\n{stderr}"
+        notes: list[str] = []
+        if self.simulator == "Ngspice":
+            psp_deck = bool(re.search(r"(?i)\bpsp(?:nqs)?103va\b|\bsg13_lv_[np]mos\b", netlist or ""))
+            psp_missing = bool(
+                re.search(r"(?i)unknown model type\s+psp(?:nqs)?103va|could not find a valid modelname|model name is not found", combined)
+            )
+            if psp_deck and psp_missing:
+                notes.append(
+                    "Ngspice did not load the IHP PSP OpenVAF/OSDI models. "
+                    "This deck needs an OSDI-enabled Ngspice build that can load "
+                    "psp103va.osdi and pspnqs103va.osdi, or use GSPICE with its OSDI "
+                    "loader for this IHP PSP simulation."
+                )
+        return notes
+
     def _safe_sim_name(self, sim_name: str) -> str:
         """Return a filesystem-safe simulation deck basename."""
         name = re.sub(r"[^A-Za-z0-9_.-]+", "_", sim_name or "sim").strip("._")
@@ -1018,6 +1156,10 @@ class SimulatorBridge:
         so PDK wrappers such as IHP sg13_lv_nmos/pmos can reach the PSP OSDI
         model instead of being downgraded to simplified primitive MOS devices.
         """
+        if self.simulator == "Xyce":
+            return self._prepare_netlist_for_xyce(netlist)
+        if self.simulator == "Ngspice":
+            return self._prepare_netlist_for_ngspice(netlist)
         if self.simulator != "GSPICE":
             return netlist, []
         notes = []
@@ -1028,6 +1170,284 @@ class SimulatorBridge:
         if tran_note:
             notes.append(tran_note)
         return netlist, notes
+
+    def _prepare_netlist_for_xyce(self, netlist: str) -> tuple[str, list[str]]:
+        """Make simple decks friendlier to Xyce without hiding model incompatibility."""
+        notes: list[str] = []
+        lines = []
+        changed_options = False
+        for raw in str(netlist or "").splitlines():
+            stripped = raw.strip()
+            upper = stripped.upper()
+            rewritten, rewrite_note = self._rewrite_ihp_model_library_for_simulator(raw, "xyce")
+            if rewrite_note:
+                notes.append(rewrite_note)
+                lines.append(rewritten)
+                continue
+            if upper.startswith(".OPTIONS"):
+                changed_options = True
+                lines.append(f"* [Lumen Xyce] skipped SPICE/GSPICE options: {raw}")
+                continue
+            if upper.startswith(".SAVE"):
+                lines.append(f"* [Lumen Xyce] skipped SPICE save directive; using .PRINT: {raw}")
+                continue
+            lines.append(raw)
+        if changed_options:
+            notes.append("[Xyce compatibility] Skipped generic .OPTIONS line(s); Xyce option syntax is backend-specific.")
+
+        text = "\n".join(lines)
+        if re.search(r"(?im)^\s*\.LIB\s+\"?[^\n\"]*libs\.tech[\\/]+xyce[\\/]+models[^\n\"]*", text):
+            if not re.search(r"(?im)^\s*\.PREPROCESS\s+replaceground\b", text):
+                text = self._insert_after_header_comments(text, ".PREPROCESS replaceground true")
+                notes.append("[Xyce rules] Added .PREPROCESS replaceground true for IHP/Xyce decks.")
+        if re.search(r"(?im)^\s*\.TRAN\b", text) and not re.search(r"(?im)^\s*\.PRINT\s+TRAN\b", text):
+            text = self._insert_before_end(text, ".PRINT TRAN FORMAT=RAW V(*)")
+            notes.append("[Xyce compatibility] Added .PRINT TRAN FORMAT=RAW V(*) so Xyce writes waveform vectors.")
+        elif re.search(r"(?im)^\s*\.AC\b", text) and not re.search(r"(?im)^\s*\.PRINT\s+AC\b", text):
+            text = self._insert_before_end(text, ".PRINT AC FORMAT=RAW V(*)")
+            notes.append("[Xyce compatibility] Added .PRINT AC FORMAT=RAW V(*) so Xyce writes waveform vectors.")
+        return text, notes
+
+    def _prepare_netlist_for_ngspice(self, netlist: str) -> tuple[str, list[str]]:
+        """Keep Ngspice decks faithful; model loaders are written to .spiceinit."""
+        text = str(netlist or "")
+        notes: list[str] = []
+        rewritten_lines = []
+        for raw in text.splitlines():
+            rewritten, rewrite_note = self._rewrite_ihp_model_library_for_simulator(raw, "ngspice")
+            if rewrite_note:
+                notes.append(rewrite_note)
+            rewritten_lines.append(rewritten)
+        text = "\n".join(rewritten_lines)
+        needs_psp = bool(re.search(r"(?i)\bpsp(?:nqs)?103va\b|\bsg13_lv_[np]mos\b", text))
+        already_loads = bool(re.search(r"(?im)^\s*\.?(?:pre_)?osdi\b", text))
+        if not needs_psp:
+            return text, notes
+        if already_loads:
+            notes.append("[Ngspice OSDI] Deck already contains an OSDI loader directive.")
+        else:
+            notes.append("[Ngspice OSDI] IHP PSP deck detected; OSDI loaders will be written to the run-folder .spiceinit.")
+        return text, notes
+
+    def _rewrite_ihp_model_library_for_simulator(self, line: str, backend: str) -> tuple[str, str]:
+        """Route IHP model .LIB directives to the selected simulator's model folder."""
+        match = re.match(
+            r'(?i)^(\s*\.LIB\s+)(?:"([^"]+)"|(\S+))(\s+([^\s;]+).*)?$',
+            str(line or ""),
+        )
+        if not match:
+            return line, ""
+        path = match.group(2) or match.group(3) or ""
+        if not re.search(r"(?i)ihp-sg13g2[\\/]+libs\.tech[\\/]+(?:ngspice|xyce)[\\/]+models[\\/]+", path):
+            return line, ""
+        current = "xyce" if re.search(r"(?i)[\\/]xyce[\\/]", path) else "ngspice"
+        target = "xyce" if str(backend).lower() == "xyce" else "ngspice"
+        if current == target:
+            return line, ""
+        target_path = re.sub(
+            r"(?i)(ihp-sg13g2[\\/]+libs\.tech[\\/]+)(?:ngspice|xyce)([\\/]+models[\\/]+)",
+            rf"\1{target}\2",
+            path,
+            count=1,
+        )
+        if os.path.isabs(target_path) and not os.path.isfile(target_path):
+            return line, f"[{self.simulator} rules] Wanted IHP {target} model library but file is missing: {target_path}"
+        suffix = match.group(4) or ""
+        rewritten = f'{match.group(1)}"{target_path}"{suffix}'
+        return rewritten, f"[{self.simulator} rules] Routed IHP model library to {target}: {os.path.basename(target_path)}"
+
+    def _prepare_simulator_run_directory(self, netlist: str) -> list[str]:
+        """Create per-run simulator startup files required before netlist parsing."""
+        if self.simulator != "Ngspice":
+            return []
+        if not re.search(r"(?i)\bpsp(?:nqs)?103va\b|\bsg13_lv_[np]mos\b", netlist or ""):
+            return []
+        paths = self._ngspice_osdi_paths()
+        missing = [path for path in paths if not path or not os.path.isfile(path)]
+        if missing:
+            return [
+                "[Ngspice OSDI] Could not write .spiceinit because compiled OpenVAF/OSDI "
+                f"files are missing: {', '.join(missing)}"
+            ]
+        init_path = os.path.join(self.work_dir, ".spiceinit")
+        lines = [f"osdi {self._ngspice_path_arg(path)}" for path in paths]
+        with open(init_path, "w", encoding="utf-8", newline="\n") as f:
+            f.write("\n".join(lines) + "\n")
+        return [f"[Ngspice OSDI] Wrote per-run .spiceinit with {len(paths)} PSP model loader(s)."]
+
+    def _netlist_compatibility_errors(self, netlist: str) -> list[str]:
+        errors: list[str] = []
+        uses_ihp_ngspice = bool(re.search(r"(?im)^\s*\.LIB\s+\"?[^\n\"]*libs\.tech[\\/]+ngspice[\\/]+models[^\n\"]*", netlist))
+        uses_ihp_xyce = bool(re.search(r"(?im)^\s*\.LIB\s+\"?[^\n\"]*libs\.tech[\\/]+xyce[\\/]+models[^\n\"]*", netlist))
+        uses_ihp_lv = bool(re.search(r"(?im)^\s*X\S+\s+.*\bsg13_lv_[np]mos\b", netlist))
+        if self.simulator == "Xyce":
+            if uses_ihp_ngspice and uses_ihp_lv:
+                errors.append(
+                    "Xyce deck still points at the IHP ngspice model library after backend rules. "
+                    "This should have been routed to libs.tech/xyce/models."
+                )
+            if uses_ihp_xyce and uses_ihp_lv and not self._xyce_plugin_path("Xyce_Plugin_PSP103_VA.so"):
+                errors.append(
+                    "Xyce needs the IHP PSP plugin for sg13_lv_nmos/sg13_lv_pmos, but "
+                    "Xyce_Plugin_PSP103_VA.so was not found. Build/install the IHP Xyce plugins "
+                    "with ADMS, matching the IIC-OSIC flow."
+                )
+        elif self.simulator == "Ngspice" and uses_ihp_ngspice and uses_ihp_lv:
+            osdi_ok, reason = self._ngspice_osdi_startup_available()
+            if not osdi_ok:
+                errors.append(
+                    "Ngspice cannot run this IHP PSP deck with the configured executable. "
+                    f"{reason} Select GSPICE for this run, or install/build an Ngspice binary "
+                    "with working OpenVAF/OSDI support."
+                )
+        return errors
+
+    def _prepare_command_line_rules(self, netlist: str) -> list[str]:
+        """Prepare simulator-specific command-line additions."""
+        self._xyce_plugins = []
+        if self.simulator != "Xyce":
+            return []
+        notes: list[str] = []
+        uses_ihp_xyce = bool(re.search(r"(?im)^\s*\.LIB\s+\"?[^\n\"]*libs\.tech[\\/]+xyce[\\/]+models[^\n\"]*", netlist or ""))
+        uses_ihp_lv = bool(re.search(r"(?im)^\s*X\S+\s+.*\bsg13_lv_[np]mos\b", netlist or ""))
+        if uses_ihp_xyce and uses_ihp_lv:
+            plugin = self._xyce_plugin_path("Xyce_Plugin_PSP103_VA.so")
+            if plugin:
+                self._xyce_plugins.append(plugin)
+                notes.append(f"[Xyce rules] Added IHP PSP plugin: {plugin}")
+        return notes
+
+    def _xyce_plugin_path(self, filename: str) -> str:
+        roots = self._ihp_pdk_roots()
+        for root in roots:
+            candidate = os.path.join(root, "libs.tech", "xyce", "plugins", filename)
+            if os.path.isfile(candidate):
+                return candidate
+        env = os.environ.get("LUMEN_XYCE_PLUGIN_DIR") or os.environ.get("XYCE_PLUGIN_DIR") or ""
+        if env:
+            candidate = os.path.join(env, filename)
+            if os.path.isfile(candidate):
+                return candidate
+        return ""
+
+    def _ihp_pdk_roots(self) -> list[str]:
+        roots: list[str] = []
+        here = Path(__file__).resolve()
+        repo = here.parents[2] if len(here.parents) > 2 else Path.cwd()
+        candidates = [
+            repo / "external" / "ihp_pdk" / "ihp-sg13g2",
+            repo / "ihp_pdk" / "ihp-sg13g2",
+            Path(r"C:\EDA\LumenCircuitStudio\external\ihp_pdk\ihp-sg13g2"),
+            Path(r"C:\EDA\ihp_pdk\ihp-sg13g2"),
+        ]
+        env_root = os.environ.get("PDK_ROOT") or ""
+        if env_root:
+            candidates.append(Path(env_root) / "ihp-sg13g2")
+        env_path = os.environ.get("PDKPATH") or ""
+        if env_path:
+            candidates.append(Path(env_path))
+        seen = set()
+        for candidate in candidates:
+            text = str(candidate)
+            if text.lower() in seen:
+                continue
+            seen.add(text.lower())
+            if candidate.exists():
+                roots.append(text)
+        return roots
+
+    def _ngspice_osdi_startup_available(self) -> tuple[bool, str]:
+        """Return whether Ngspice can load OSDI from a local .spiceinit before parsing."""
+        exe = self._ngspice_batch_executable()
+        cache_key = os.path.abspath(exe) if exe else ""
+        if cache_key in self._ngspice_osdi_probe_cache:
+            return self._ngspice_osdi_probe_cache[cache_key]
+
+        paths = self._ngspice_osdi_paths()
+        osdi_path = paths[0] if paths else ""
+        if not osdi_path or not os.path.isfile(osdi_path):
+            result = False, "The required psp103va.osdi file was not found."
+            self._ngspice_osdi_probe_cache[cache_key] = result
+            return result
+
+        if not (os.path.isfile(exe) or shutil.which(exe)):
+            result = False, f"Ngspice executable was not found: {exe}."
+            self._ngspice_osdi_probe_cache[cache_key] = result
+            return result
+
+        try:
+            probe_dir = tempfile.mkdtemp(prefix="lumen_ngspice_osdi_probe_", dir=self.work_dir)
+            probe_path = os.path.join(probe_dir, "input.sp")
+            init_path = os.path.join(probe_dir, ".spiceinit")
+            with open(init_path, "w", encoding="utf-8", newline="\n") as f:
+                f.write(f"osdi {self._ngspice_path_arg(osdi_path)}\n")
+            with open(probe_path, "w", encoding="utf-8", newline="\n") as f:
+                f.write("* Lumen Ngspice OSDI probe\n.END\n")
+            completed = subprocess.run(
+                [exe, "-b", "input.sp"],
+                cwd=probe_dir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=8,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            )
+        except Exception as exc:
+            result = False, f"OSDI probe could not be executed ({exc})."
+            self._ngspice_osdi_probe_cache[cache_key] = result
+            return result
+        finally:
+            try:
+                if "probe_dir" in locals():
+                    shutil.rmtree(probe_dir, ignore_errors=True)
+            except OSError:
+                pass
+
+        combined = f"{completed.stdout}\n{completed.stderr}"
+        failed_osdi = re.search(
+            r"(?i)osdi.*(?:model name is not found|could not find a valid modelname)|unknown command.*osdi|cannot\s+load|failed\s+to\s+load",
+            combined,
+            re.DOTALL,
+        )
+        if failed_osdi:
+            result = False, "This Ngspice build did not load OpenVAF/OSDI models from .spiceinit."
+        else:
+            result = True, ""
+        self._ngspice_osdi_probe_cache[cache_key] = result
+        return result
+
+    def _ngspice_osdi_paths(self) -> list[str]:
+        osdi_dir = self._default_gspice_osdi_dir()
+        if not osdi_dir:
+            return []
+        return [
+            os.path.join(osdi_dir, "psp103va.osdi"),
+            os.path.join(osdi_dir, "pspnqs103va.osdi"),
+        ]
+
+    @staticmethod
+    def _ngspice_path_arg(path: str) -> str:
+        return str(path).replace("\\", "/")
+
+    @staticmethod
+    def _insert_before_end(netlist: str, line_to_insert: str) -> str:
+        lines = str(netlist or "").rstrip().splitlines()
+        for idx in range(len(lines) - 1, -1, -1):
+            if lines[idx].strip().upper() == ".END":
+                return "\n".join([*lines[:idx], line_to_insert, *lines[idx:], ""])
+        return "\n".join([*lines, line_to_insert, ".END", ""])
+
+    @staticmethod
+    def _insert_after_header_comments(netlist: str, block: str) -> str:
+        lines = str(netlist or "").splitlines()
+        insert_at = 0
+        for idx, line in enumerate(lines):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("*"):
+                insert_at = idx + 1
+                continue
+            break
+        return "\n".join([*lines[:insert_at], block, *lines[insert_at:], ""])
 
     def _ensure_gspice_transient_maxstep(self, netlist: str) -> tuple[str, str]:
         if not re.search(r"(?im)^\s*\.TRAN\b", netlist):
@@ -1279,11 +1699,34 @@ class SimulatorBridge:
         if self.simulator == "GSPICE":
             return [self.exe_path, "--threads", str(max(1, int(threads or 1))), "-o", output_path, netlist_path]
         elif self.simulator == "Ngspice":
-            return [self.exe_path, "-b", "-r", output_path, netlist_path]
+            raw_arg = self._path_arg_for_work_dir(output_path)
+            deck_arg = self._path_arg_for_work_dir(netlist_path)
+            return [self._ngspice_batch_executable(), "-b", "-r", raw_arg, deck_arg]
         elif self.simulator == "Xyce":
-            return [self.exe_path, netlist_path,
-                    "-o", output_path]
+            cmd = [self.exe_path, "-r", output_path]
+            for plugin in getattr(self, "_xyce_plugins", []):
+                cmd.extend(["-plugin", plugin])
+            cmd.append(netlist_path)
+            return cmd
         return [self.exe_path, netlist_path]
+
+    def _path_arg_for_work_dir(self, path: str) -> str:
+        try:
+            rel = os.path.relpath(path, self.work_dir)
+        except (OSError, ValueError):
+            return path
+        if rel.startswith("..") or os.path.isabs(rel):
+            return path
+        return rel
+
+    def _ngspice_batch_executable(self) -> str:
+        exe = str(self.exe_path or "")
+        if os.name != "nt" or not exe:
+            return exe
+        if os.path.basename(exe).lower() != "ngspice.exe":
+            return exe
+        console = os.path.join(os.path.dirname(exe), "ngspice_con.exe")
+        return console if os.path.isfile(console) else exe
 
     def _extract_gspice_node_aliases(self, netlist: str) -> dict[int, str]:
         """Mirror GSPICE parser node creation order for stdout node labels."""
@@ -1409,50 +1852,196 @@ class SimulatorBridge:
             return {"_error": str(e)}
 
     def _parse_ascii_raw(self, filepath: str) -> dict:
-        """Parse ASCII SPICE raw output file."""
-        waveforms = {}
+        """Parse ASCII SPICE raw output file, preferring transient plots."""
         try:
             with open(filepath, "r") as f:
                 content = f.read()
-            lines = content.strip().split("\n")
-            header_done = False
-            variables = []
-            data_lines = []
-            for line in lines:
-                s = line.strip()
-                if s.startswith("Variables:"):
-                    header_done = False
+            sections = re.split(r"(?im)(?=^Title:\s*)", content)
+            parsed_sections: list[tuple[str, dict]] = []
+            for section in sections:
+                section = section.strip()
+                if not section:
                     continue
-                if s.startswith("Values:") or s.startswith("Binary:"):
-                    header_done = True
-                    continue
-                if not header_done:
-                    parts = s.split()
-                    if len(parts) >= 3 and parts[0].isdigit():
-                        variables.append(parts[1])
-                else:
-                    if s:
-                        data_lines.append(s)
-            if variables and data_lines:
-                n_vars = len(variables)
-                values = []
-                for line in data_lines:
-                    for p in line.split():
-                        try:
-                            values.append(float(p))
-                        except ValueError:
-                            pass
-                for i, var in enumerate(variables):
-                    waveforms[var] = []
-                n_pts = len(values) // n_vars if n_vars else 0
-                for pt in range(n_pts):
-                    for i, var in enumerate(variables):
-                        idx = pt * n_vars + i
-                        if idx < len(values):
-                            waveforms[var].append(values[idx])
+                plot_match = re.search(r"(?im)^Plotname:\s*(.+)$", section)
+                plotname = plot_match.group(1).strip() if plot_match else ""
+                waveforms = self._parse_ascii_raw_section(section)
+                if waveforms:
+                    parsed_sections.append((plotname, waveforms))
+            if not parsed_sections:
+                return {}
+            for plotname, waveforms in parsed_sections:
+                if "tran" in plotname.lower() or "transient" in plotname.lower():
+                    return waveforms
+            return parsed_sections[-1][1]
         except Exception as e:
-            waveforms["_error"] = str(e)
-        return waveforms
+            return {"_error": str(e)}
+
+    @staticmethod
+    def _parse_ascii_raw_section(section: str) -> dict:
+        variables: list[str] = []
+        value_lines: list[str] = []
+        declared_points = 0
+        in_variables = False
+        in_values = False
+        for line in section.splitlines():
+            s = line.strip()
+            if not s:
+                continue
+            points_match = re.match(r"(?i)^No\.\s+Points:\s*(\d+)", s)
+            if points_match:
+                try:
+                    declared_points = int(points_match.group(1))
+                except ValueError:
+                    declared_points = 0
+                continue
+            if s.startswith("Variables:"):
+                in_variables = True
+                in_values = False
+                continue
+            if s.startswith("Values:"):
+                in_variables = False
+                in_values = True
+                continue
+            if s.startswith("Binary:"):
+                break
+            if in_variables:
+                parts = s.split()
+                if len(parts) >= 3 and parts[0].isdigit():
+                    variables.append(parts[1])
+            elif in_values:
+                value_lines.append(s)
+
+        if not variables or not value_lines:
+            return {}
+
+        waveforms = {var: [] for var in variables}
+        n_vars = len(variables)
+
+        # GSPICE/Lumen compact ASCII RAW writes one complete sample per line:
+        #   <time> <sig1> <sig2> ...
+        # Ngspice ASCII RAW commonly writes a point index followed by values.
+        # Prefer line-based parsing so a killed/partial run cannot shift every
+        # following value into the wrong signal column.
+        parsed_line_rows = 0
+        pending_indexed_values: list[float] = []
+        for line in value_lines:
+            numeric: list[float] = []
+            for token in line.split():
+                try:
+                    numeric.append(float(token))
+                except ValueError:
+                    pass
+            if not numeric:
+                continue
+            if len(numeric) == n_vars:
+                for var, value in zip(variables, numeric):
+                    waveforms[var].append(value)
+                parsed_line_rows += 1
+                pending_indexed_values.clear()
+                continue
+            if len(numeric) == n_vars + 1 and float(numeric[0]).is_integer():
+                for var, value in zip(variables, numeric[1:]):
+                    waveforms[var].append(value)
+                parsed_line_rows += 1
+                pending_indexed_values.clear()
+                continue
+            if numeric and float(numeric[0]).is_integer() and len(numeric) == 1:
+                pending_indexed_values = []
+                continue
+            if pending_indexed_values is not None:
+                pending_indexed_values.extend(numeric)
+                while len(pending_indexed_values) >= n_vars:
+                    row = pending_indexed_values[:n_vars]
+                    pending_indexed_values = pending_indexed_values[n_vars:]
+                    for var, value in zip(variables, row):
+                        waveforms[var].append(value)
+                    parsed_line_rows += 1
+
+        if parsed_line_rows:
+            return SimulatorBridge._sanitize_waveforms(waveforms)
+
+        tokens: list[str] = []
+        for line in value_lines:
+            tokens.extend(line.split())
+
+        idx = 0
+        while idx < len(tokens):
+            try:
+                int(float(tokens[idx]))
+            except ValueError:
+                idx += 1
+                continue
+            idx += 1
+            point_values: list[float] = []
+            while idx < len(tokens) and len(point_values) < n_vars:
+                try:
+                    point_values.append(float(tokens[idx]))
+                except ValueError:
+                    pass
+                idx += 1
+            if len(point_values) != n_vars:
+                break
+            for var, value in zip(variables, point_values):
+                waveforms[var].append(value)
+        return SimulatorBridge._sanitize_waveforms(waveforms)
+
+    @staticmethod
+    def _sanitize_waveforms(waveforms: dict) -> dict:
+        if not isinstance(waveforms, dict):
+            return {}
+        x_name = ""
+        for candidate in ("time", "frequency", "v-sweep", "sweep"):
+            if candidate in waveforms:
+                x_name = candidate
+                break
+        if not x_name:
+            return {name: values for name, values in waveforms.items() if values}
+        x_raw = waveforms.get(x_name, [])
+        try:
+            x_vals = [float(v) for v in x_raw]
+        except (TypeError, ValueError):
+            return {name: values for name, values in waveforms.items() if values}
+        clean: dict[str, list[float]] = {x_name: []}
+        signal_names = [name for name in waveforms.keys() if name != x_name and not str(name).startswith("_")]
+        for name in signal_names:
+            clean[name] = []
+        rows: list[tuple[float, int, dict[str, float]]] = []
+        for idx, xv in enumerate(x_vals):
+            if not math.isfinite(xv):
+                continue
+            row: dict[str, float] = {}
+            ok = True
+            for name in signal_names:
+                vals = waveforms.get(name, [])
+                if idx >= len(vals):
+                    ok = False
+                    break
+                try:
+                    yv = float(vals[idx])
+                except (TypeError, ValueError):
+                    ok = False
+                    break
+                if not math.isfinite(yv):
+                    ok = False
+                    break
+                row[name] = yv
+            if ok:
+                rows.append((xv, idx, row))
+        if not rows:
+            return {}
+        rows.sort(key=lambda item: (item[0], item[1]))
+        last_x = None
+        for xv, _idx, row in rows:
+            if last_x is not None and xv == last_x:
+                clean[x_name][-1] = xv
+                for name in signal_names:
+                    clean[name][-1] = row[name]
+                continue
+            clean[x_name].append(xv)
+            for name in signal_names:
+                clean[name].append(row[name])
+            last_x = xv
+        return {name: values for name, values in clean.items() if values}
 
     def _parse_binary_raw(self, filepath: str) -> dict:
         """Parse binary SPICE raw output file (Ngspice/Xyce format)."""

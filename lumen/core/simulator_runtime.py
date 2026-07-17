@@ -15,9 +15,9 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Optional
 
-from lumen.core.simulator import SIMULATOR_INFO
+from lumen.core.simulator import SIMULATOR_INFO, normalize_simulator_name
 
-ACTIVE_SIMULATORS = ("GSPICE",)
+ACTIVE_SIMULATORS = ("GSPICE", "Ngspice", "Xyce")
 
 
 @dataclass
@@ -45,6 +45,8 @@ class SimulatorRuntimeManager:
     CONFIG_FILENAME = ".lumen_simulators.json"
     ENV_MAP = {
         "GSPICE": "LUMEN_GSPICE_EXE",
+        "Ngspice": "LUMEN_NGSPICE_EXE",
+        "Xyce": "LUMEN_XYCE_EXE",
     }
 
     def __init__(self, workspace: str | Path):
@@ -104,7 +106,7 @@ class SimulatorRuntimeManager:
 
     def get_active_executable(self, simulator: str) -> str:
         sim = self._normalize_simulator(simulator)
-        if not sim:
+        if not sim or sim not in ACTIVE_SIMULATORS:
             return ""
         configured = self._normalize_executable(
             self._config.get("simulators", {}).get(sim, {}).get("active_executable", "")
@@ -121,7 +123,7 @@ class SimulatorRuntimeManager:
 
     def set_active_executable(self, simulator: str, executable: str, source: str = "manual") -> bool:
         sim = self._normalize_simulator(simulator)
-        if not sim:
+        if not sim or sim not in ACTIVE_SIMULATORS:
             return False
         norm = self._normalize_executable(executable)
         if not norm:
@@ -175,8 +177,21 @@ class SimulatorRuntimeManager:
             }
         return {
             "config_path": str(self.config_path),
+            "active_simulator": self.get_active_simulator(),
             "simulators": sims,
         }
+
+    def get_active_simulator(self) -> str:
+        sim = self._normalize_simulator(self._config.get("active_simulator", "GSPICE"))
+        return sim if sim in ACTIVE_SIMULATORS else "GSPICE"
+
+    def set_active_simulator(self, simulator: str) -> bool:
+        sim = self._normalize_simulator(simulator)
+        if sim not in ACTIVE_SIMULATORS:
+            return False
+        self._config["active_simulator"] = sim
+        self._save_config()
+        return True
 
     def ensure_runtime(self, simulator: str, auto_install: bool = False) -> tuple[bool, str]:
         sim = self._normalize_simulator(simulator)
@@ -193,7 +208,7 @@ class SimulatorRuntimeManager:
         if sim not in ACTIVE_SIMULATORS:
             return SimulatorInstallResult(
                 success=False,
-                message=f"{sim} install is disabled for now. GSPICE-only mode is active.",
+                message=f"{sim} install is not enabled in this Lumen build.",
                 simulator=sim,
                 method="disabled",
                 logs=[],
@@ -484,13 +499,7 @@ class SimulatorRuntimeManager:
 
     @staticmethod
     def _normalize_simulator(simulator: str) -> str:
-        key = str(simulator or "").strip()
-        if not key:
-            return ""
-        for known in SIMULATOR_INFO.keys():
-            if known.lower() == key.lower():
-                return known
-        return key
+        return normalize_simulator_name(simulator)
 
     @staticmethod
     def _normalize_executable(path: str) -> str:

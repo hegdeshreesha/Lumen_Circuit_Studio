@@ -1503,8 +1503,7 @@ class WaveformViewerWindow(QMainWindow):
 
     @staticmethod
     def _pair_numeric_points(x_data_raw: list, y_data_raw: list) -> tuple[list[float], list[float]]:
-        x_out: list[float] = []
-        y_out: list[float] = []
+        pairs: list[tuple[float, float, int]] = []
         n = min(len(x_data_raw), len(y_data_raw))
         for i in range(n):
             try:
@@ -1512,8 +1511,22 @@ class WaveformViewerWindow(QMainWindow):
                 yv = float(y_data_raw[i])
             except (TypeError, ValueError):
                 continue
+            if not math.isfinite(xv) or not math.isfinite(yv):
+                continue
+            pairs.append((xv, yv, i))
+        if not pairs:
+            return [], []
+        pairs.sort(key=lambda item: (item[0], item[2]))
+        x_out: list[float] = []
+        y_out: list[float] = []
+        last_x: float | None = None
+        for xv, yv, _idx in pairs:
+            if last_x is not None and xv == last_x:
+                y_out[-1] = yv
+                continue
             x_out.append(xv)
             y_out.append(yv)
+            last_x = xv
         return x_out, y_out
 
     def _merge_expression_specs(self, primary: list[dict], secondary: list[dict]) -> list[dict]:
