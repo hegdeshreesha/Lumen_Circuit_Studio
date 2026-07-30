@@ -17,7 +17,10 @@ from typing import Optional
 
 from lumen.core.simulator import SIMULATOR_INFO, normalize_simulator_name
 
-ACTIVE_SIMULATORS = ("GSPICE", "Ngspice", "Xyce")
+# Public simulator choices exposed by Lumen.  Ngspice/Xyce bridge code is kept
+# in place for a future re-enable, but the product surface is GSPICE-only while
+# the native simulator is being brought up to Spectre-class RF coverage.
+ACTIVE_SIMULATORS = ("GSPICE",)
 
 
 @dataclass
@@ -76,6 +79,9 @@ class SimulatorRuntimeManager:
         if configured:
             candidates.append((configured, "config"))
 
+        for path in self._preferred_candidate_paths(sim):
+            candidates.append((path, "preferred"))
+
         for path in SIMULATOR_INFO.get(sim, {}).get("candidates", []):
             candidates.append((str(path), "default"))
 
@@ -114,6 +120,18 @@ class SimulatorRuntimeManager:
         if configured:
             resolved = self._resolve_executable(configured)
             if resolved:
+                configured_source = str(
+                    self._config.get("simulators", {}).get(sim, {}).get("active_source", "")
+                ).lower()
+                if (
+                    sim == "GSPICE"
+                    and configured_source in {"", "auto", "default", "path", "config"}
+                    and not self._gspice_executable_has_klu(resolved)
+                ):
+                    preferred = self._find_preferred_gspice_klu()
+                    if preferred:
+                        self.set_active_executable(sim, preferred, source="preferred-klu")
+                        return preferred
                 return resolved
         discovered = self.discover_installations(sim)
         if discovered:
@@ -160,9 +178,10 @@ class SimulatorRuntimeManager:
             del os.environ[env_var]
 
     def apply_environment_overrides(self) -> None:
-        for sim, env_var in self.ENV_MAP.items():
+        for sim in ACTIVE_SIMULATORS:
+            env_var = self.ENV_MAP.get(sim, "")
             exe = self.get_active_executable(sim)
-            if exe:
+            if env_var and exe:
                 os.environ[env_var] = exe
 
     def runtime_summary(self) -> dict:
@@ -488,6 +507,37 @@ class SimulatorRuntimeManager:
     def _default_candidate_paths(self, simulator: str) -> list[str]:
         defaults = [str(x) for x in SIMULATOR_INFO.get(simulator, {}).get("candidates", [])]
         return [p for p in defaults if p]
+
+    def _preferred_candidate_paths(self, simulator: str) -> list[str]:
+        if simulator != "GSPICE":
+            return []
+        return [
+            r"C:\EDA\GSPICE\build-vcpkg\Release\gspice.exe",
+            r"C:\EDA\GSPICE\build-vcpkg\gspice.exe",
+        ]
+
+    def _find_preferred_gspice_klu(self) -> str:
+        for installation in self.discover_installations("GSPICE"):
+            if self._gspice_executable_has_klu(installation.executable):
+                return installation.executable
+        return ""
+
+    def _gspice_executable_has_klu(self, executable: str) -> bool:
+        exe = self._resolve_executable(executable)
+        if not exe:
+            return False
+        try:
+            proc = subprocess.run(
+                [exe, "--capabilities"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        text = f"{proc.stdout}\n{proc.stderr}"
+        return "SuiteSparse-KLU" in text
 
     def _command_candidates(self, simulator: str) -> list[str]:
         names = {

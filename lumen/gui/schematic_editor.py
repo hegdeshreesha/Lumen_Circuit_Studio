@@ -11,19 +11,20 @@ Interactive schematic editor with:
 """
 import math
 import copy
+import json
 import re
 from collections import defaultdict
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QGraphicsView, QGraphicsScene,
     QGraphicsLineItem, QGraphicsRectItem, QGraphicsTextItem,
     QGraphicsEllipseItem, QGraphicsPathItem, QGraphicsItemGroup,
-    QInputDialog, QDialog, QDialogButtonBox, QListWidget,
+    QInputDialog, QDialog, QDialogButtonBox, QListWidget, QMenu,
     QListWidgetItem, QLabel, QHBoxLayout, QApplication, QRubberBand
 )
-from PyQt6.QtCore import Qt, QPointF, QRect, QRectF, pyqtSignal, QLineF, QTimer
+from PyQt6.QtCore import Qt, QPointF, QRect, QRectF, pyqtSignal, QLineF, QTimer, QMimeData
 from PyQt6.QtGui import (
     QPen, QBrush, QColor, QPainter, QPainterPath, QFont,
-    QTransform, QWheelEvent, QKeyEvent
+    QTransform, QWheelEvent, QKeyEvent, QAction
 )
 
 from lumen.core.database import LibraryDatabase
@@ -53,8 +54,13 @@ BG_COLOR = QColor("#0a0a0a")
 NET_HIGHLIGHT_COLOR = QColor("#ffd166")
 CURRENT_MARKER_COLOR = QColor("#ff6b6b")
 CONNECTIVITY_WARNING_COLOR = QColor("#ff3b30")
+DC_NODE_ANNOTATION_COLOR = QColor("#f6c85f")
+DC_OP_ANNOTATION_COLOR = QColor("#8bd3ff")
+DC_ANNOTATION_BG_COLOR = QColor(8, 12, 16, 218)
 PIN_GRAVITY_RADIUS = 6.0
 WIRE_ENDPOINT_GRAVITY_RADIUS = 3.5
+SCHEMATIC_CLIPBOARD_MIME = "application/x-lumen-schematic-clipboard"
+SCHEMATIC_CLIPBOARD_VERSION = 1
 
 
 def snap(val: float) -> float:
@@ -289,6 +295,8 @@ class InstanceItem(QGraphicsItemGroup):
 
     def _build_graphics(self):
         """Build the visual representation from symbol data."""
+        self._clear_graphics()
+        self.pin_positions.clear()
         pen = QPen(INSTANCE_COLOR, INSTANCE_WIDTH)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         render_options = self.symbol_data.get("render_options", {})
@@ -422,6 +430,20 @@ class InstanceItem(QGraphicsItemGroup):
         text_item.setDefaultTextColor(QColor("#90e0ef"))
         text_item.setFont(QFont("Consolas", 7))
         self.addToGroup(text_item)
+
+    def _clear_graphics(self):
+        """Remove all child graphics before rebuilding substituted labels."""
+        for child in list(self.childItems()):
+            self.removeFromGroup(child)
+            if child.scene():
+                child.scene().removeItem(child)
+
+    def refresh_graphics(self):
+        """Refresh symbol text/labels after parameter changes."""
+        was_selected = self.isSelected()
+        self._build_graphics()
+        self.setSelected(was_selected)
+        self.update()
 
     def _substitute_display_text(self, text: str) -> str:
         """Evaluate Cadence-CDF-style display labels such as @name and w=@w."""
@@ -586,7 +608,13 @@ class SchematicCanvas(QGraphicsView):
             self._zoom_band.hide()
             self._zoom_band.deleteLater()
             self._zoom_band = None
-            self.zoom_to_view_rect(band_rect)
+            if band_rect.width() < 8 and band_rect.height() < 8:
+                editor = self.parent()
+                if hasattr(editor, "show_context_menu"):
+                    scene_pos = self.mapToScene(event.position().toPoint())
+                    editor.show_context_menu(scene_pos, event.globalPosition().toPoint())
+            else:
+                self.zoom_to_view_rect(band_rect)
             event.accept()
         elif event.button() == Qt.MouseButton.MiddleButton:
             self._panning = False
@@ -642,6 +670,7 @@ class SchematicEditor(QWidget):
     coord_changed = pyqtSignal(float, float)
     mode_changed = pyqtSignal(str)
     output_pick_requested = pyqtSignal(str, object)
+    dc_annotation_requested = pyqtSignal(str, object)
 
     def __init__(self, db: LibraryDatabase, library: str, cell: str,
                  view: str, parent=None):
@@ -675,6 +704,7 @@ class SchematicEditor(QWidget):
         self._net_highlight_overlays: list[QGraphicsLineItem] = []
         self._current_probe_markers: list[QGraphicsEllipseItem] = []
         self._current_probe_labels: list[QGraphicsTextItem] = []
+        self._dc_annotation_items: list = []
         self._connectivity_warning_items: list = []
         self._connectivity_flash_ticks = 0
         self._connectivity_warning_timer = QTimer(self)
@@ -740,6 +770,124 @@ class SchematicEditor(QWidget):
         for item in self._current_probe_labels:
             self.scene.removeItem(item)
         self._current_probe_labels.clear()
+
+    def clear_dc_annotations(self):
+        """Remove transient DC operating-point annotation labels."""
+        for item in self._dc_annotation_items:
+            if item.scene():
+                self.scene.removeItem(item)
+        self._dc_annotation_items.clear()
+
+    def annotate_dc_node_voltage(self, net_name: str, value: float, pos: QPointF | None = None):
+        """Draw a Cadence-style DC node voltage label near a net."""
+        net = str(net_name or "").strip()
+        if not net:
+            return
+        anchor = QPointF(pos) if isinstance(pos, QPointF) else self._net_anchor(net)
+        self._add_dc_annotation_label(f"{net}: {self._format_dc_value(value, 'V')}", anchor, DC_NODE_ANNOTATION_COLOR)
+
+    def annotate_all_dc_node_voltages(self, voltages: dict[str, float]):
+        """Annotate every visible net that has a DC scalar value."""
+        if not voltages:
+            return
+        resolved_wire_nets = self._wire_net_names_by_geometry()
+        placed: set[str] = set()
+
+        for wire in self.wires:
+            net = (wire.net_name or "").strip() or resolved_wire_nets.get(id(wire), "")
+            if not net or net in placed or net not in voltages:
+                continue
+            line = wire.line()
+            wpos = wire.pos()
+            anchor = QPointF(
+                wpos.x() + (line.x1() + line.x2()) / 2.0,
+                wpos.y() + (line.y1() + line.y2()) / 2.0,
+            )
+            self.annotate_dc_node_voltage(net, voltages[net], anchor)
+            placed.add(net)
+
+        for pin in self.pins:
+            net = str(pin.pin_name or "").strip()
+            if net and net not in placed and net in voltages:
+                self.annotate_dc_node_voltage(net, voltages[net], pin.scenePos())
+                placed.add(net)
+
+    def annotate_dc_operating_point(self, instance_name: str, pin_voltages: dict[str, float]):
+        """Draw a compact DC OP label for an instance using available terminal voltages."""
+        inst = self._find_instance_by_name(instance_name)
+        if inst is None:
+            return
+        rows = []
+        for pin_name in sorted(pin_voltages.keys(), key=lambda value: value.lower()):
+            rows.append(f"{pin_name}={self._format_dc_value(pin_voltages[pin_name], 'V')}")
+        if not rows:
+            return
+        anchor = inst.sceneBoundingRect().topRight() + QPointF(8, -8)
+        self._add_dc_annotation_label(f"{inst.instance_name} OP\n" + "\n".join(rows), anchor, DC_OP_ANNOTATION_COLOR)
+
+    def _add_dc_annotation_label(self, text: str, anchor: QPointF, color: QColor):
+        label = QGraphicsTextItem(text)
+        label.setDefaultTextColor(color)
+        label.setFont(QFont("Consolas", 8, QFont.Weight.Bold))
+        label.setPos(anchor.x() + 6, anchor.y() - 18)
+        label.setZValue(130)
+        label.setFlag(QGraphicsTextItem.GraphicsItemFlag.ItemIsSelectable, False)
+        label.setFlag(QGraphicsTextItem.GraphicsItemFlag.ItemIsMovable, False)
+        self.scene.addItem(label)
+
+        rect = label.boundingRect().adjusted(-4, -2, 4, 2)
+        bg = QGraphicsRectItem(rect)
+        bg.setBrush(QBrush(DC_ANNOTATION_BG_COLOR))
+        bg.setPen(QPen(QColor(color).darker(170), 0.8))
+        bg.setPos(label.pos())
+        bg.setZValue(129)
+        bg.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsSelectable, False)
+        bg.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIsMovable, False)
+        self.scene.addItem(bg)
+
+        self._dc_annotation_items.extend([bg, label])
+
+    @staticmethod
+    def _format_dc_value(value: float, unit: str = "") -> str:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return str(value)
+        scale = [
+            (1e9, "G"),
+            (1e6, "M"),
+            (1e3, "k"),
+            (1.0, ""),
+            (1e-3, "m"),
+            (1e-6, "u"),
+            (1e-9, "n"),
+            (1e-12, "p"),
+        ]
+        abs_value = abs(number)
+        factor, suffix = 1.0, ""
+        for candidate_factor, candidate_suffix in scale:
+            if abs_value >= candidate_factor or candidate_factor == 1e-12:
+                factor, suffix = candidate_factor, candidate_suffix
+                break
+        return f"{number / factor:.4g}{suffix}{unit}"
+
+    def _net_anchor(self, net_name: str) -> QPointF:
+        target = str(net_name or "").strip()
+        resolved_wire_nets = self._wire_net_names_by_geometry()
+        for wire in self.wires:
+            wire_net = (wire.net_name or "").strip() or resolved_wire_nets.get(id(wire), "")
+            if wire_net != target:
+                continue
+            line = wire.line()
+            wpos = wire.pos()
+            return QPointF(
+                wpos.x() + (line.x1() + line.x2()) / 2.0,
+                wpos.y() + (line.y1() + line.y2()) / 2.0,
+            )
+        for pin in self.pins:
+            if str(pin.pin_name or "").strip() == target:
+                return pin.scenePos()
+        return QPointF(0, 0)
 
     def clear_connectivity_warnings(self):
         """Remove floating-node warning markers from the schematic canvas."""
@@ -1417,15 +1565,28 @@ class SchematicEditor(QWidget):
     # ── Copy / Paste ──────────────────────────────────────────
 
     def copy_selected(self):
-        """Copy selected schematic objects to the internal clipboard."""
-        self._clipboard.clear()
+        """Copy selected schematic objects to the app clipboard."""
+        entries = self._collect_selected_clipboard_entries()
+        if not entries:
+            self._clipboard.clear()
+            return
+        self._clipboard = copy.deepcopy(entries)
+        self._write_system_clipboard(entries)
+
+    def _collect_selected_clipboard_entries(self) -> list[dict]:
+        """Collect selected top-level schematic items into portable JSON data."""
+        entries: list[dict] = []
+        seen: set[int] = set()
         for item in self.scene.selectedItems():
             top = item
             while top.parentItem():
                 top = top.parentItem()
+            if id(top) in seen:
+                continue
+            seen.add(id(top))
             if isinstance(top, InstanceItem):
                 pos = top.pos()
-                self._clipboard.append({
+                entries.append({
                     'type': 'instance', 'sym': top.symbol_data,
                     'name': top.instance_name, 'x': pos.x(), 'y': pos.y(),
                     'params': dict(top.parameters), 'rot': top.rotation(),
@@ -1439,7 +1600,7 @@ class SchematicEditor(QWidget):
             elif isinstance(top, WireItem):
                 line = top.line()
                 pos = top.pos()
-                self._clipboard.append({
+                entries.append({
                     'type': 'wire',
                     'x1': line.x1() + pos.x(), 'y1': line.y1() + pos.y(),
                     'x2': line.x2() + pos.x(), 'y2': line.y2() + pos.y(),
@@ -1448,7 +1609,7 @@ class SchematicEditor(QWidget):
                 })
             elif isinstance(top, SchematicPinItem):
                 data = top.get_data()
-                self._clipboard.append({
+                entries.append({
                     'type': 'pin',
                     'text': data['name'], 'x': data['x'], 'y': data['y'],
                     'direction': data['direction'],
@@ -1457,23 +1618,83 @@ class SchematicEditor(QWidget):
                 })
             elif isinstance(top, NetLabelItem):
                 pos = top.pos()
-                self._clipboard.append({
+                entries.append({
                     'type': 'label',
                     'text': top.toPlainText(), 'x': pos.x(), 'y': pos.y(),
                 })
+        return entries
+
+    def _write_system_clipboard(self, entries: list[dict]):
+        """Write a Lumen schematic clipboard payload for cross-view paste."""
+        payload = {
+            "format": "lumen-schematic-clipboard",
+            "version": SCHEMATIC_CLIPBOARD_VERSION,
+            "source": {
+                "library": self.library,
+                "cell": self.cell,
+                "view": self.view,
+            },
+            "origin": self._clipboard_origin(entries),
+            "items": entries,
+        }
+        text = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+        mime = QMimeData()
+        mime.setData(SCHEMATIC_CLIPBOARD_MIME, text.encode("utf-8"))
+        mime.setText(text)
+        QApplication.clipboard().setMimeData(mime)
+
+    def _read_system_clipboard(self) -> list[dict]:
+        """Read schematic items from the app clipboard if a Lumen payload exists."""
+        clipboard = QApplication.clipboard()
+        mime = clipboard.mimeData()
+        raw = ""
+        if mime.hasFormat(SCHEMATIC_CLIPBOARD_MIME):
+            raw = bytes(mime.data(SCHEMATIC_CLIPBOARD_MIME)).decode("utf-8", errors="ignore")
+        elif mime.hasText():
+            text = mime.text().strip()
+            if text.startswith("{") and "lumen-schematic-clipboard" in text:
+                raw = text
+        if not raw:
+            return []
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+        if not isinstance(payload, dict):
+            return []
+        if payload.get("format") != "lumen-schematic-clipboard":
+            return []
+        items = payload.get("items", [])
+        if not isinstance(items, list):
+            return []
+        clean = [entry for entry in items if isinstance(entry, dict) and entry.get("type")]
+        return copy.deepcopy(clean)
+
+    def _clipboard_origin(self, entries: list[dict]) -> dict:
+        """Return the upper-left origin of a copied selection."""
+        points: list[tuple[float, float]] = []
+        for entry in entries:
+            kind = entry.get("type")
+            if kind == "wire":
+                points.append((float(entry.get("x1", 0) or 0), float(entry.get("y1", 0) or 0)))
+                points.append((float(entry.get("x2", 0) or 0), float(entry.get("y2", 0) or 0)))
+            else:
+                points.append((float(entry.get("x", 0) or 0), float(entry.get("y", 0) or 0)))
+        if not points:
+            return {"x": 0.0, "y": 0.0}
+        return {"x": min(x for x, _ in points), "y": min(y for _, y in points)}
 
     def paste_clipboard(self):
         """Paste clipboard items with offset."""
-        if not self._clipboard:
+        entries = self._read_system_clipboard() or copy.deepcopy(self._clipboard)
+        if not entries:
             return
         self.scene.clearSelection()
         cmds = []
-        for entry in self._clipboard:
+        for entry in entries:
             if entry['type'] == 'instance':
                 prefix = entry['sym'].get('prefix', 'X')
-                count = self._instance_counter.get(prefix, 0)
-                self._instance_counter[prefix] = count + 1
-                name = f"{prefix}{count}"
+                name = self._next_instance_name(prefix)
                 inst = InstanceItem(entry['sym'], name,
                                     entry['x'] + 20, entry['y'] + 20,
                                     dict(entry['params']))
@@ -1514,6 +1735,18 @@ class SchematicEditor(QWidget):
                     cmds.append(LabelCommand(self.scene, label, self.labels, add=True))
         if cmds:
             self._execute_command(CompoundCommand(cmds))
+
+    def _next_instance_name(self, prefix: str) -> str:
+        """Allocate a non-conflicting instance name for pasted/placed items."""
+        clean_prefix = str(prefix or "X")
+        used = {inst.instance_name for inst in self.instances}
+        count = max(0, int(self._instance_counter.get(clean_prefix, 0) or 0))
+        while True:
+            name = f"{clean_prefix}{count}"
+            count += 1
+            if name not in used:
+                self._instance_counter[clean_prefix] = count
+                return name
 
     def duplicate_selected(self):
         """Duplicate selected instances using the clipboard implementation."""
@@ -1596,7 +1829,77 @@ class SchematicEditor(QWidget):
                 return top
         return None
 
+    def select_instance_by_name(self, instance_name: str, center: bool = True) -> bool:
+        """Select a source instance by identity for layout-to-schematic probing."""
+        requested = str(instance_name or "")
+        for instance in self.instances:
+            if instance.instance_name != requested:
+                continue
+            self.scene.clearSelection()
+            instance.setSelected(True)
+            if center:
+                self.canvas.centerOn(instance)
+            return True
+        return False
+
     # ── Keyboard ──────────────────────────────────────────────
+
+    def show_context_menu(self, scene_pos: QPointF, global_pos):
+        """Show schematic object actions at the clicked scene position."""
+        item = self.scene.itemAt(scene_pos, QTransform())
+        top = item
+        while top is not None and top.parentItem():
+            top = top.parentItem()
+
+        if top is not None:
+            try:
+                top.setSelected(True)
+            except Exception:
+                pass
+
+        net = self._pick_net_at(scene_pos)
+        inst = top if isinstance(top, InstanceItem) else self.selected_instance()
+
+        menu = QMenu(self)
+        title_text = "Schematic"
+        if isinstance(inst, InstanceItem):
+            title_text = inst.instance_name
+        elif net:
+            title_text = net
+        title = QAction(title_text, self)
+        title.setEnabled(False)
+        menu.addAction(title)
+        menu.addSeparator()
+
+        if net:
+            act_node = QAction("Annotate DC Node Voltage", self)
+            act_node.triggered.connect(
+                lambda _=False, n=net, p=QPointF(scene_pos): self.dc_annotation_requested.emit(
+                    "node_voltage", {"net": n, "x": p.x(), "y": p.y()}
+                )
+            )
+            menu.addAction(act_node)
+
+        if isinstance(inst, InstanceItem):
+            act_op = QAction("Annotate DC Operating Point", self)
+            act_op.triggered.connect(
+                lambda _=False, i=inst.instance_name: self.dc_annotation_requested.emit(
+                    "operating_point", {"instance": i}
+                )
+            )
+            menu.addAction(act_op)
+
+        act_all_nodes = QAction("Annotate All DC Node Voltages", self)
+        act_all_nodes.triggered.connect(
+            lambda _=False: self.dc_annotation_requested.emit("all_node_voltages", {})
+        )
+        menu.addAction(act_all_nodes)
+
+        menu.addSeparator()
+        act_clear = QAction("Clear DC Annotations", self)
+        act_clear.triggered.connect(self.clear_dc_annotations)
+        menu.addAction(act_clear)
+        menu.exec(global_pos)
 
     def keyPressEvent(self, event: QKeyEvent):
         """Handle keyboard shortcuts."""
@@ -1999,6 +2302,13 @@ class SchematicEditor(QWidget):
             def on_change(key, value):
                 if key in inst.parameters:
                     inst.parameters[key] = value
+                    inst.refresh_graphics()
+                    self.clear_dc_annotations()
+                    self.redraw()
+                    if hasattr(main_win, "_dc_op_waveforms"):
+                        main_win._dc_op_waveforms = {}
+                    if hasattr(main_win, "_dc_annotation_source"):
+                        main_win._dc_annotation_source = ""
 
             main_win.prop_editor.show_properties(
                 f"{inst.instance_name} ({inst.cell_name})",

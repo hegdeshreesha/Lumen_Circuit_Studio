@@ -2,6 +2,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from lumen.core.simulator import SimulatorBridge
 from lumen.core.simulator_compare import compare_waveforms, format_reference_report, ReferenceRunComparison
@@ -31,31 +32,56 @@ class SimulatorRuntimeManagerTest(unittest.TestCase):
             self.assertIn("simulators", summary)
             sims = summary["simulators"]
             self.assertIn("GSPICE", sims)
-            self.assertIn("Ngspice", sims)
-            self.assertIn("Xyce", sims)
+            self.assertNotIn("Ngspice", sims)
+            self.assertNotIn("Xyce", sims)
             self.assertEqual(set(ACTIVE_SIMULATORS), set(sims.keys()))
 
-    def test_active_simulator_is_persisted_with_aliases(self):
+    def test_disabled_external_simulators_are_not_activated(self):
         with tempfile.TemporaryDirectory() as tmp:
             manager = SimulatorRuntimeManager(tmp)
-            self.assertTrue(manager.set_active_simulator("ngspice"))
-            self.assertEqual(manager.get_active_simulator(), "Ngspice")
+            self.assertFalse(manager.set_active_simulator("ngspice"))
+            self.assertFalse(manager.set_active_simulator("xyce"))
+            self.assertEqual(manager.get_active_simulator(), "GSPICE")
 
             reloaded = SimulatorRuntimeManager(tmp)
-            self.assertEqual(reloaded.get_active_simulator(), "Ngspice")
+            self.assertEqual(reloaded.get_active_simulator(), "GSPICE")
 
-    def test_bridge_commands_for_external_raw_backends(self):
-        ngspice = SimulatorBridge("NGSPICE", exe_path="ngspice")
-        self.assertEqual(
-            ngspice._build_command("input.sp", "output.raw", threads=8),
-            ["ngspice", "-b", "-r", "output.raw", "input.sp"],
-        )
+    def test_default_gspice_config_upgrades_to_klu_when_available(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "ws"
+            workspace.mkdir(parents=True, exist_ok=True)
+            internal = workspace / "internal" / "gspice.exe"
+            klu = workspace / "build-vcpkg" / "gspice.exe"
+            internal.parent.mkdir(parents=True, exist_ok=True)
+            klu.parent.mkdir(parents=True, exist_ok=True)
+            internal.write_text("", encoding="utf-8")
+            klu.write_text("", encoding="utf-8")
 
-        xyce = SimulatorBridge("xyce", exe_path="Xyce")
-        self.assertEqual(
-            xyce._build_command("input.sp", "output.raw", threads=8),
-            ["Xyce", "-r", "output.raw", "input.sp"],
-        )
+            manager = SimulatorRuntimeManager(str(workspace))
+            manager._config.setdefault("simulators", {})["GSPICE"] = {
+                "active_executable": str(internal),
+                "active_source": "default",
+            }
+
+            def has_klu(path: str) -> bool:
+                return Path(path) == klu
+
+            with patch.object(manager, "_preferred_candidate_paths", return_value=[str(klu)]), \
+                    patch.object(manager, "probe_version", return_value="GSPICE test"), \
+                    patch.object(manager, "_gspice_executable_has_klu", side_effect=has_klu):
+                self.assertEqual(manager.get_active_executable("GSPICE"), str(klu))
+
+    def test_external_raw_backends_are_not_launchable(self):
+        for name in ("NGSPICE", "xyce"):
+            bridge = SimulatorBridge(name, exe_path=name)
+            self.assertFalse(bridge.is_available())
+            with self.assertRaisesRegex(RuntimeError, "disabled"):
+                bridge._build_command("input.sp", "output.raw", threads=8)
+            with patch("lumen.core.simulator.subprocess.Popen") as popen:
+                result = bridge.simulate("V1 out 0 DC 1\n.OP\n.END\n")
+            self.assertFalse(result.success)
+            self.assertTrue(any("disabled" in error.lower() for error in result.errors))
+            popen.assert_not_called()
 
     def test_bridge_collects_gspice_model_status_lines(self):
         bridge = SimulatorBridge("GSPICE", exe_path="gspice")
@@ -124,14 +150,12 @@ class SimulatorRuntimeManagerTest(unittest.TestCase):
                 )
                 bridge = SimulatorBridge("Xyce", exe_path="Xyce")
                 notes = bridge._prepare_command_line_rules(deck)
-                cmd = bridge._build_command("input.sp", "waveforms.raw", threads=1)
             finally:
                 if old is None:
                     os.environ.pop("LUMEN_XYCE_PLUGIN_DIR", None)
                 else:
                     os.environ["LUMEN_XYCE_PLUGIN_DIR"] = old
-            self.assertIn("-plugin", cmd)
-            self.assertIn(str(plugin), cmd)
+            self.assertIn(str(plugin), bridge._xyce_plugins)
             self.assertTrue(any("Added IHP PSP plugin" in note for note in notes))
 
     def test_xyce_prepare_adds_print_and_skips_generic_options(self):
@@ -149,9 +173,11 @@ class SimulatorRuntimeManagerTest(unittest.TestCase):
             exe.write_text("", encoding="utf-8")
             con.write_text("", encoding="utf-8")
             bridge = SimulatorBridge("Ngspice", exe_path=str(exe))
-            cmd = bridge._build_command("input.sp", "waveforms.raw", threads=1)
-            expected = str(con) if os.name == "nt" else str(exe)
-            self.assertEqual(cmd[0], expected)
+            self.assertFalse(bridge.is_available())
+            self.assertEqual(
+                bridge._ngspice_batch_executable(),
+                str(con) if os.name == "nt" else str(exe),
+            )
 
     def test_ngspice_writes_ihp_psp_osdi_startup_when_available(self):
         with tempfile.TemporaryDirectory() as tmp:

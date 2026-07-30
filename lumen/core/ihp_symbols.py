@@ -17,6 +17,30 @@ from typing import Dict, Any
 @dataclass
 class IHPSymbolGenerator:
     """Generate IHP SG13G2-compliant symbols matching official PDK references."""
+
+    _LAYOUT_CELLS = {
+        "sg13_lv_nmos": ("nmos", {}), "sg13_lv_pmos": ("pmos", {}),
+        "sg13_hv_nmos": ("nmosHV", {}), "sg13_hv_pmos": ("pmosHV", {}),
+        "sg13_lv_rf_nmos": ("rfnmos", {"rfmode": 1}),
+        "sg13_lv_rf_pmos": ("rfpmos", {"rfmode": 1}),
+        "sg13_hv_rf_nmos": ("rfnmosHV", {"rfmode": 1}),
+        "sg13_hv_rf_pmos": ("rfpmosHV", {"rfmode": 1}),
+        "cap_cmim": ("cmim", {}), "cap_rfcmim": ("rfcmim", {}),
+        "rppd": ("rppd", {}), "rhigh": ("rhigh", {}), "rsil": ("rsil", {}),
+        "npn13G2": ("npn13G2", {}), "npn13G2l": ("npn13G2L", {}),
+        "npn13G2v": ("npn13G2V", {}),
+    }
+
+    def _layout_binding(self, name: str, parameters: list[str]) -> Dict[str, Any]:
+        pcell, forced = self._LAYOUT_CELLS[name]
+        binding = {
+            "technology": "sg13g2", "library": "SG13_dev", "pcell": pcell,
+            "parameter_map": {key: key for key in parameters if key != "m"},
+            "forced_parameters": forced,
+        }
+        if "m" in parameters:
+            binding["multiplicity_parameter"] = "m"
+        return binding
     
     def generate_nmos(self, name: str = "sg13_lv_nmos", model: str = "sg13_lv_nmos") -> Dict[str, Any]:
         """
@@ -61,11 +85,12 @@ class IHPSymbolGenerator:
                 {"type": "polygon", "points": [[20, 2.5], [15, 0], [20, -2.5]]},
             ],
             "parameters": [
-                {"name": "w", "default": "0.15u", "description": "Width"},
-                {"name": "l", "default": "0.13u", "description": "Length"},
+                {"name": "w", "default": "1.0u" if "_rf_" in name else ("0.3u" if "_hv_" in name else "0.15u"), "description": "Width"},
+                {"name": "l", "default": "0.72u" if "_rf_" in name else ("0.4u" if "_hv_" in name else "0.13u"), "description": "Length"},
                 {"name": "ng", "default": "1", "description": "Number of gate fingers"},
                 {"name": "m", "default": "1", "description": "Multiplier"},
-            ],
+            ] + ([{"name": "rfmode", "default": "1", "description": "RF PCell mode"}] if "_rf_" in name else []),
+            "layout": self._layout_binding(name, ["w", "l", "ng", "m"] + (["rfmode"] if "_rf_" in name else [])),
             "label": {"text": "@name", "x": 5, "y": -30}
         }
         return symbol
@@ -111,11 +136,12 @@ class IHPSymbolGenerator:
                 {"type": "polygon", "points": [[15, 0], [20, 2.5], [15, -2.5]]},
             ],
             "parameters": [
-                {"name": "w", "default": "0.15u", "description": "Width"},
-                {"name": "l", "default": "0.13u", "description": "Length"},
+                {"name": "w", "default": "1.0u" if "_rf_" in name else ("0.3u" if "_hv_" in name else "0.15u"), "description": "Width"},
+                {"name": "l", "default": "0.72u" if "_rf_" in name else ("0.45u" if "_hv_" in name else "0.13u"), "description": "Length"},
                 {"name": "ng", "default": "1", "description": "Number of gate fingers"},
                 {"name": "m", "default": "1", "description": "Multiplier"},
-            ],
+            ] + ([{"name": "rfmode", "default": "1", "description": "RF PCell mode"}] if "_rf_" in name else []),
+            "layout": self._layout_binding(name, ["w", "l", "ng", "m"] + (["rfmode"] if "_rf_" in name else [])),
             "label": {"text": "@name", "x": 5, "y": -30}
         }
         return symbol
@@ -130,6 +156,7 @@ class IHPSymbolGenerator:
     
     def generate_capacitor(self, name: str = "cap_cmim", model: str = "cap_cmim") -> Dict[str, Any]:
         """Generate MIM capacitor symbol."""
+        is_rf = name == "cap_rfcmim"
         symbol = {
             "type": "symbol",
             "name": name,
@@ -137,9 +164,9 @@ class IHPSymbolGenerator:
             "prefix": "C",
             "spice_model": model,
             "pins": [
-                {"name": "PLUS", "x": 0, "y": -30, "direction": "inout"},
-                {"name": "MINUS", "x": 0, "y": 30, "direction": "inout"},
-            ],
+                {"name": "c0", "x": 0, "y": -30, "direction": "inout"},
+                {"name": "c1", "x": 0, "y": 30, "direction": "inout"},
+            ] + ([{"name": "bn", "x": -30, "y": 0, "direction": "inout"}] if is_rf else []),
             "shapes": [
                 # Top plate
                 {"type": "line", "x1": -15, "y1": -10, "x2": 15, "y2": -10},
@@ -150,9 +177,12 @@ class IHPSymbolGenerator:
                 {"type": "line", "x1": 0, "y1": 10, "x2": 0, "y2": 30},
             ],
             "parameters": [
-                {"name": "C", "default": "1p", "description": "Capacitance"},
-            ],
-            "label": {"text": "@name\\nC=@C", "x": 20, "y": 0}
+                {"name": "w", "default": "10.0e-6" if is_rf else "7.0e-6", "description": "Width"},
+                {"name": "l", "default": "10.0e-6" if is_rf else "7.0e-6", "description": "Length"},
+            ] + ([{"name": "wfeed", "default": "5.0e-6", "description": "RF feed width"}]
+                 if is_rf else [{"name": "m", "default": "1", "description": "Multiplier"}]),
+            "layout": self._layout_binding(name, ["w", "l", "wfeed"] if is_rf else ["w", "l", "m"]),
+            "label": {"text": "@name\\n@w / @l", "x": 20, "y": 0}
         }
         return symbol
     
@@ -182,10 +212,11 @@ class IHPSymbolGenerator:
                 {"type": "line", "x1": 0, "y1": 20, "x2": 0, "y2": 30},
             ],
             "parameters": [
-                {"name": "W", "default": "1", "description": "Width"},
-                {"name": "L", "default": "1", "description": "Length"},
+                {"name": "w", "default": "0.5e-6", "description": "Width"},
+                {"name": "l", "default": "0.96e-6" if name == "rhigh" else "0.5e-6", "description": "Length"},
                 {"name": "m", "default": "1", "description": "Multiplier"},
-            ],
+            ] + ([{"name": "b", "default": "0", "description": "Bends"}] if name in {"rppd", "rhigh"} else []),
+            "layout": self._layout_binding(name, ["w", "l", "m"] + (["b"] if name in {"rppd", "rhigh"} else [])),
             "label": {"text": "@name", "x": 15, "y": 0}
         }
         return symbol
@@ -228,6 +259,7 @@ class IHPSymbolGenerator:
                 {"name": "C", "x": 0, "y": -30, "direction": "input"},
                 {"name": "B", "x": -20, "y": 0, "direction": "input"},
                 {"name": "E", "x": 0, "y": 30, "direction": "output"},
+                {"name": "S", "x": 20, "y": 0, "direction": "inout"},
             ],
             "shapes": [
                 {"type": "line", "x1": 0, "y1": -20, "x2": 0, "y2": 20},
@@ -238,9 +270,9 @@ class IHPSymbolGenerator:
                 {"type": "circle", "cx": 0, "cy": 0, "r": 20},
             ],
             "parameters": [
-                {"name": "m", "default": "1", "description": "Multiplier"},
-                {"name": "area", "default": "1", "description": "Area multiplier"},
-            ],
+                {"name": "Nx", "default": "1", "description": "Emitter stripes"},
+            ] + ([{"name": "El", "default": "1.0", "description": "Emitter length"}] if name == "npn13G2l" else []),
+            "layout": self._layout_binding(name, ["Nx"] + (["El"] if name == "npn13G2l" else [])),
             "label": {"text": "@name", "x": 5, "y": -25}
         }
         return symbol
@@ -252,12 +284,12 @@ def generate_all_ihp_primitives() -> Dict[str, Dict[str, Any]]:
     return {
         "sg13_lv_nmos": gen.generate_nmos(),
         "sg13_lv_pmos": gen.generate_pmos(),
-        "sg13_lv_rf_nmos": gen.generate_nmos("sg13_lv_rf_nmos", "sg13_lv_rf_nmos"),
-        "sg13_lv_rf_pmos": gen.generate_pmos("sg13_lv_rf_pmos", "sg13_lv_rf_pmos"),
+        "sg13_lv_rf_nmos": gen.generate_nmos("sg13_lv_rf_nmos", "sg13_lv_nmos"),
+        "sg13_lv_rf_pmos": gen.generate_pmos("sg13_lv_rf_pmos", "sg13_lv_pmos"),
         "sg13_hv_nmos": gen.generate_hv_nmos(),
         "sg13_hv_pmos": gen.generate_hv_pmos(),
-        "sg13_hv_rf_nmos": gen.generate_hv_nmos("sg13_hv_rf_nmos", "sg13_hv_rf_nmos"),
-        "sg13_hv_rf_pmos": gen.generate_hv_pmos("sg13_hv_rf_pmos", "sg13_hv_rf_pmos"),
+        "sg13_hv_rf_nmos": gen.generate_hv_nmos("sg13_hv_rf_nmos", "sg13_hv_nmos"),
+        "sg13_hv_rf_pmos": gen.generate_hv_pmos("sg13_hv_rf_pmos", "sg13_hv_pmos"),
         "cap_cmim": gen.generate_capacitor(),
         "cap_rfcmim": gen.generate_capacitor("cap_rfcmim", "cap_rfcmim"),
         "rppd": gen.generate_resistor(),

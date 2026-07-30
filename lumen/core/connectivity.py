@@ -837,6 +837,48 @@ class ConnectivityEngine:
 
         return shorts
 
+    def find_unconnected_bulks(self) -> list[dict]:
+        """Find MOSFET instances whose bulk (B/BULK) terminal is floating."""
+        unconnected = []
+        bulk_pin_names = {"B", "BULK", "B4", "4"}
+        for jid, j in self.junctions.items():
+            if j.is_pin and j.pin_name and j.pin_name.upper() in bulk_pin_names:
+                if not j.connected_segment_ids:
+                    unconnected.append({
+                        "instance": j.pin_instance,
+                        "pin": j.pin_name,
+                        "library": j.pin_library,
+                        "x": j.x,
+                        "y": j.y
+                    })
+        return unconnected
+
+    def run_check_and_save(self) -> dict:
+        """
+        Comprehensive Check & Save validation pipeline.
+        Returns detailed report containing errors, warnings, floating pins, and unconnected bulks.
+        """
+        floating = self.find_floating_pins()
+        shorts = self.find_net_shorts()
+        unconnected_bulks = self.find_unconnected_bulks()
+        errors = [f"Net short on instance '{s['instance']}' pin '{s['pin']}': {s['conflicting_nets']}" for s in shorts]
+        warnings = self.get_warnings()
+        for fp in floating:
+            warnings.append(f"Floating pin on instance '{fp['instance']}' pin '{fp['pin']}' at ({fp['x']}, {fp['y']})")
+        for ub in unconnected_bulks:
+            warnings.append(f"Unconnected MOS Bulk (B) terminal on instance '{ub['instance']}'")
+
+        is_valid = len(errors) == 0
+        return {
+            "valid": is_valid,
+            "errors": errors,
+            "warnings": warnings,
+            "floating_pins": floating,
+            "net_shorts": shorts,
+            "unconnected_bulks": unconnected_bulks,
+            "stats": self.get_stats()
+        }
+
     def get_junction_at(self, x: float, y: float) -> Optional[Junction]:
         """Get junction at position if exists."""
         jid = self._find_junction_at(x, y)

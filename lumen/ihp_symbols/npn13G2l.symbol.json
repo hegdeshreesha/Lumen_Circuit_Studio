@@ -22,6 +22,12 @@
       "x": 0,
       "y": 30,
       "direction": "output"
+    },
+    {
+      "name": "S",
+      "x": 20,
+      "y": 0,
+      "direction": "inout"
     }
   ],
   "shapes": [
@@ -79,16 +85,26 @@
   ],
   "parameters": [
     {
-      "name": "m",
+      "name": "Nx",
       "default": "1",
-      "description": "Multiplier"
+      "description": "Emitter stripes"
     },
     {
-      "name": "area",
-      "default": "1",
-      "description": "Area multiplier"
+      "name": "El",
+      "default": "1.0",
+      "description": "Emitter length"
     }
   ],
+  "layout": {
+    "technology": "sg13g2",
+    "library": "SG13_dev",
+    "pcell": "npn13G2L",
+    "parameter_map": {
+      "Nx": "Nx",
+      "El": "El"
+    },
+    "forced_parameters": {}
+  },
   "label": {
     "text": "@name",
     "x": 5,

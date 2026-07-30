@@ -50,6 +50,8 @@ SIMULATOR_INFO = {
             "STB (Stability)", "HBSTB", "PSSSTB",
         ],
         "candidates": [
+            r"C:\EDA\GSPICE\build-vcpkg\Release\gspice.exe",
+            r"C:\EDA\GSPICE\build-vcpkg\gspice.exe",
             r"C:\EDA\GSPICE\build\Release\gspice.exe",
             r"C:\EDA\GSPICE\build\Debug\gspice.exe",
             r"C:\EDA\GSPICE\build\gspice.exe",
@@ -159,12 +161,40 @@ def ensure_direct_run_analysis(netlist: str, default_tran: str = ".TRAN 1n 10u")
 
 
 class SimulatorBridge:
-    """Unified bridge for GSPICE, Xyce, and Ngspice."""
-    _ngspice_osdi_probe_cache: dict[str, tuple[bool, str]] = {}
+    """Unified bridge for GSPICE.
 
-    def __init__(self, simulator: str = "GSPICE", exe_path: str = "", work_dir: str = ""):
+    Ngspice/Xyce preparation helpers remain for compatibility tests and future
+    work, but external simulator execution is disabled in this build.
+    """
+    _ngspice_osdi_probe_cache: dict[str, tuple[bool, str]] = {}
+    DISABLED_EXTERNAL_SIMULATORS = {"Ngspice", "Xyce"}
+    DISABLED_EXTERNAL_MESSAGE = (
+        "Ngspice/Xyce execution is disabled in this Lumen build; "
+        "use GSPICE for simulation runs."
+    )
+
+    def __init__(
+        self,
+        simulator: str = "GSPICE",
+        exe_path: str = "",
+        work_dir: str = "",
+        sim_env: str = "local",
+        ssh_host: str = "",
+        ssh_user: str = "",
+        ssh_key: str = "",
+        remote_gspice: str = "",
+        save_mode: str = "all",
+        adaptive_maxstep: bool = True,
+    ):
         self.simulator = normalize_simulator_name(simulator)
         self.info = SIMULATOR_INFO.get(self.simulator, SIMULATOR_INFO["GSPICE"])
+        self.sim_env = str(sim_env or "local").lower()
+        self.ssh_host = str(ssh_host or "").strip()
+        self.ssh_user = str(ssh_user or "").strip()
+        self.ssh_key = str(ssh_key or "").strip()
+        self.remote_gspice = str(remote_gspice or "").strip()
+        self.save_mode = self._normalize_gspice_save_mode(save_mode)
+        self.adaptive_maxstep = bool(adaptive_maxstep)
 
         if exe_path:
             self.exe_path = exe_path
@@ -176,6 +206,11 @@ class SimulatorBridge:
         self._cancelled = False
         self._cache: dict[str, dict] = {}
         self._xyce_plugins: list[str] = []
+
+    @staticmethod
+    def _normalize_gspice_save_mode(save_mode: str) -> str:
+        mode = str(save_mode or "all").strip().lower()
+        return mode if mode in {"all", "selected", "none"} else "all"
 
     def _select_work_dir(self, preferred_dir: str = "") -> str:
         """Pick a writable directory for simulator input and output files."""
@@ -228,6 +263,11 @@ class SimulatorBridge:
         return candidates[-1]
 
     def is_available(self) -> bool:
+        if self.simulator in self.DISABLED_EXTERNAL_SIMULATORS:
+            return False
+        if str(getattr(self, "sim_env", "local")).lower() in ("ssh", "remote"):
+            if getattr(self, "ssh_host", "") and getattr(self, "ssh_user", ""):
+                return True
         resolved = self._resolve_executable(self.exe_path)
         if not resolved:
             return False
@@ -370,15 +410,6 @@ class SimulatorBridge:
             timeout = get_simulator_timeout(self.simulator)
 
         requested_threads = max(1, int(threads or 1))
-        cli_notes = self._prepare_command_line_rules(sim_netlist)
-        for note in cli_notes:
-            result.warnings.append(note)
-            result.log += note + "\n"
-        cmd = self._build_command(netlist_path, output_path, requested_threads)
-        result.command = cmd
-        result.log += f"Command: {' '.join(cmd)}\n"
-        self._cancelled = False
-
         preflight_errors = self._preflight_checks()
         preflight_errors.extend(self._netlist_compatibility_errors(sim_netlist))
         if preflight_errors:
@@ -389,6 +420,15 @@ class SimulatorBridge:
             if callback:
                 callback(result)
             return result
+
+        cli_notes = self._prepare_command_line_rules(sim_netlist)
+        for note in cli_notes:
+            result.warnings.append(note)
+            result.log += note + "\n"
+        cmd = self._build_command(netlist_path, output_path, requested_threads)
+        result.command = cmd
+        result.log += f"Command: {' '.join(cmd)}\n"
+        self._cancelled = False
 
         try:
             def _run_command(run_cmd: list[str]) -> tuple[str, str, int]:
@@ -949,6 +989,8 @@ class SimulatorBridge:
     def _preflight_checks(self) -> list[str]:
         """Return actionable preflight errors before launching a simulator."""
         errors: list[str] = []
+        if self.simulator in self.DISABLED_EXTERNAL_SIMULATORS:
+            return [self.DISABLED_EXTERNAL_MESSAGE]
         exe_resolved = self.exe_path
         if not (os.path.isfile(exe_resolved) or shutil.which(exe_resolved)):
             errors.append(f"{self.simulator} executable not found: {self.exe_path}")
@@ -1163,13 +1205,39 @@ class SimulatorBridge:
         if self.simulator != "GSPICE":
             return netlist, []
         notes = []
+        netlist, ac_note = self._ensure_ac_operating_point(netlist)
+        if ac_note:
+            notes.append(ac_note)
         osdi_dir = self._default_gspice_osdi_dir()
         if osdi_dir and not os.environ.get("GSPICE_OSDI_DIR"):
             notes.append(f"[GSPICE OSDI] Using PSP/OSDI search folder: {osdi_dir}")
-        netlist, tran_note = self._ensure_gspice_transient_maxstep(netlist)
-        if tran_note:
-            notes.append(tran_note)
+        if not self.adaptive_maxstep:
+            netlist, tran_note = self._ensure_gspice_transient_maxstep(netlist)
+            if tran_note:
+                notes.append(tran_note)
         return netlist, notes
+
+    def _ensure_ac_operating_point(self, netlist: str) -> tuple[str, str]:
+        """Make AC decks explicit about their DC bias solve.
+
+        SPICE small-signal AC is linearized at the DC operating point. GSPICE
+        does this internally, but inserting .OP before .AC makes SimENV decks
+        read like Cadence ADE and keeps direct script-generated decks clear.
+        """
+        text = str(netlist or "")
+        if not re.search(r"(?im)^\s*\.AC\b", text):
+            return text, ""
+        if re.search(r"(?im)^\s*\.OP\b", text):
+            return text, ""
+        updated = re.sub(
+            r"(?im)^(\s*\.AC\b[^\n]*)",
+            r"* Lumen AC bias operating point\n.OP\n\1",
+            text,
+            count=1,
+        )
+        if updated == text:
+            return text, ""
+        return updated, "[GSPICE AC] Added .OP before .AC so AC is explicitly biased from the DC operating point."
 
     def _prepare_netlist_for_xyce(self, netlist: str) -> tuple[str, list[str]]:
         """Make simple decks friendlier to Xyce without hiding model incompatibility."""
@@ -1695,19 +1763,69 @@ class SimulatorBridge:
         except OSError:
             return ""
 
+    def _find_gspice_ssh_script(self) -> str:
+        candidates = [
+            r"C:\EDA\GSPICE\tools\gspice_ssh.py",
+            os.path.join(os.path.dirname(self.exe_path), "..", "..", "tools", "gspice_ssh.py"),
+            os.path.join(os.path.dirname(self.exe_path), "..", "tools", "gspice_ssh.py"),
+            os.path.join(os.path.dirname(self.exe_path), "gspice_ssh.py"),
+        ]
+        for p in candidates:
+            if os.path.isfile(p):
+                return os.path.abspath(p)
+        return r"C:\EDA\GSPICE\tools\gspice_ssh.py"
+
     def _build_command(self, netlist_path, output_path, threads):
+        sim_env_lower = str(getattr(self, "sim_env", "local")).lower()
         if self.simulator == "GSPICE":
-            return [self.exe_path, "--threads", str(max(1, int(threads or 1))), "-o", output_path, netlist_path]
+            gspice_options = ["--save", self._normalize_gspice_save_mode(getattr(self, "save_mode", "all"))]
+            if getattr(self, "adaptive_maxstep", True):
+                gspice_options.append("--adaptive-maxstep")
+            if sim_env_lower in ("ssh", "remote"):
+                resolved = self._resolve_executable(self.exe_path)
+                if resolved:
+                    cmd = [resolved, "--sim-env", "ssh", "--ssh-host", self.ssh_host, "--ssh-user", self.ssh_user]
+                    if getattr(self, "ssh_key", ""):
+                        cmd.extend(["--ssh-key", self.ssh_key])
+                    if getattr(self, "remote_gspice", ""):
+                        cmd.extend(["--remote-gspice", self.remote_gspice])
+                    cmd.extend(gspice_options)
+                    cmd.extend(["--threads", str(max(1, int(threads or 1))), "-o", output_path, netlist_path])
+                    return cmd
+                else:
+                    import sys
+                    script = self._find_gspice_ssh_script()
+                    cmd = [
+                        sys.executable or "python",
+                        script,
+                        netlist_path,
+                        "--host", self.ssh_host,
+                        "--user", self.ssh_user,
+                        "--output", output_path,
+                        "--deploy-binary",
+                        "--keep-remote",
+                    ]
+                    if getattr(self, "ssh_key", ""):
+                        cmd.extend(["--key", self.ssh_key])
+                    if getattr(self, "remote_gspice", ""):
+                        cmd.extend(["--remote-gspice", self.remote_gspice])
+                    if self.exe_path and os.path.isfile(self.exe_path):
+                        cmd.extend(["--local-binary", self.exe_path])
+                    cmd.extend(gspice_options)
+                    return cmd
+            return [
+                self.exe_path,
+                *gspice_options,
+                "--threads",
+                str(max(1, int(threads or 1))),
+                "-o",
+                output_path,
+                netlist_path,
+            ]
         elif self.simulator == "Ngspice":
-            raw_arg = self._path_arg_for_work_dir(output_path)
-            deck_arg = self._path_arg_for_work_dir(netlist_path)
-            return [self._ngspice_batch_executable(), "-b", "-r", raw_arg, deck_arg]
+            raise RuntimeError(self.DISABLED_EXTERNAL_MESSAGE)
         elif self.simulator == "Xyce":
-            cmd = [self.exe_path, "-r", output_path]
-            for plugin in getattr(self, "_xyce_plugins", []):
-                cmd.extend(["-plugin", plugin])
-            cmd.append(netlist_path)
-            return cmd
+            raise RuntimeError(self.DISABLED_EXTERNAL_MESSAGE)
         return [self.exe_path, netlist_path]
 
     def _path_arg_for_work_dir(self, path: str) -> str:

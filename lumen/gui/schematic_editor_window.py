@@ -9,8 +9,11 @@ from PyQt6.QtWidgets import (
     QStatusBar, QLabel, QMessageBox, QTextEdit, QInputDialog, QFileDialog,
     QTabWidget, QApplication, QProgressDialog
 )
-from PyQt6.QtCore import Qt, QSize, QThread
+from PyQt6.QtCore import Qt, QSize, QThread, QTimer, QPointF
 from PyQt6.QtGui import QAction, QKeySequence
+import json
+import math
+import re
 from pathlib import Path
 
 from lumen.core.database import LibraryDatabase
@@ -36,6 +39,8 @@ class SchematicEditorWindow(QMainWindow):
         self.ciw = ciw
         self.layout_service = LayoutXLService(self.db)
         self._hierarchy_stack: list[tuple[str, str, str]] = []
+        self._dc_op_waveforms: dict = {}
+        self._dc_annotation_source = ""
 
         self.setWindowTitle(f"Lumen — {cell} ({view}) — [{library}]")
         apply_window_branding(self)
@@ -46,6 +51,7 @@ class SchematicEditorWindow(QMainWindow):
         self.editor = SchematicEditor(db, library, cell, view, parent=self)
         self.editor.coord_changed.connect(self._update_coords)
         self.editor.mode_changed.connect(self._update_mode)
+        self.editor.dc_annotation_requested.connect(self._on_dc_annotation_requested)
         self.workspace_tabs = QTabWidget()
         self.workspace_tabs.setDocumentMode(True)
         self.workspace_tabs.setTabsClosable(True)
@@ -60,6 +66,12 @@ class SchematicEditorWindow(QMainWindow):
         self._create_toolbars()
         self._create_dock_panels()
         self._create_status_bar()
+        self.editor.scene.selectionChanged.connect(self._on_layout_selection_changed)
+        self._layout_event_sequence = self._current_layout_event_sequence()
+        self._layout_event_timer = QTimer(self)
+        self._layout_event_timer.setInterval(300)
+        self._layout_event_timer.timeout.connect(self._poll_klayout_selection)
+        self._layout_event_timer.start()
 
     # ── Actions ───────────────────────────────────────────────
 
@@ -190,10 +202,21 @@ class SchematicEditorWindow(QMainWindow):
         # Layout integration actions
         self.act_open_layout = self._make_action(
             "Open Layout (KLayout)", "Ctrl+Shift+L", self._on_open_layout)
+        self.act_import_from_source = self._make_action(
+            "Import From Source Into KLayout", "Ctrl+Shift+I", self._on_import_from_source)
         self.act_update_layout = self._make_action(
-            "Update Layout From Schematic", slot=self._on_update_layout)
+            "Prepare Source Handoff Only", slot=self._on_update_layout)
+        self.act_highlight_layout_device = self._make_action(
+            "Highlight Selected Device in KLayout", "Ctrl+Shift+H", self._on_highlight_layout_device)
+        self.act_layout_highlight_sync = self._make_action(
+            "Device Highlight Sync", slot=self._toggle_layout_highlight_sync, checkable=True)
+        self.act_layout_highlight_sync.setChecked(True)
         self.act_layout_runtime = self._make_action(
             "KLayout Runtime...", slot=self._on_layout_runtime)
+        self.act_import_layout_stream = self._make_action(
+            "Import Layout Stream...", slot=self._on_import_layout_stream)
+        self.act_export_layout_stream = self._make_action(
+            "Export Layout Stream...", slot=self._on_export_layout_stream)
         self.act_run_drc = self._make_action("Run DRC...", slot=self._on_run_drc)
         self.act_run_lvs = self._make_action("Run LVS...", slot=self._on_run_lvs)
 
@@ -349,7 +372,14 @@ class SchematicEditorWindow(QMainWindow):
 
         layout_menu = menubar.addMenu("&Layout")
         layout_menu.addAction(self.act_open_layout)
+        layout_menu.addAction(self.act_import_from_source)
         layout_menu.addAction(self.act_update_layout)
+        layout_menu.addSeparator()
+        layout_menu.addAction(self.act_highlight_layout_device)
+        layout_menu.addAction(self.act_layout_highlight_sync)
+        layout_menu.addSeparator()
+        layout_menu.addAction(self.act_import_layout_stream)
+        layout_menu.addAction(self.act_export_layout_stream)
         layout_menu.addSeparator()
         layout_menu.addAction(self.act_run_drc)
         layout_menu.addAction(self.act_run_lvs)
@@ -426,6 +456,10 @@ class SchematicEditorWindow(QMainWindow):
         layout_tb = QToolBar("Layout")
         layout_tb.setIconSize(QSize(18, 18))
         layout_tb.addAction(self.act_open_layout)
+        layout_tb.addAction(self.act_import_from_source)
+        layout_tb.addAction(self.act_highlight_layout_device)
+        layout_tb.addAction(self.act_import_layout_stream)
+        layout_tb.addAction(self.act_export_layout_stream)
         layout_tb.addAction(self.act_run_drc)
         layout_tb.addAction(self.act_run_lvs)
         self.addToolBar(layout_tb)
@@ -654,21 +688,65 @@ class SchematicEditorWindow(QMainWindow):
         summary = self.layout_service.runtime_summary()
         active = summary.get("active_executable", "") or "<not configured>"
         version = summary.get("active_version", "") or "unknown"
-        QMessageBox.information(
-            self,
-            "Layer Palette",
-            "Schematic layers available now:\n\n"
-            "- wire: signal wire\n- bus: vector/bus wire\n- pin: top-level port\n"
-            "- label: net label\n- annotation: note/text\n\n"
-            f"KLayout runtime: {active}\n"
-            f"KLayout version: {version}\n\n"
-            "Use Layout menu for Open Layout / DRC / LVS actions.",
-        )
+        layers = self.layout_service.layer_palette()
+        if not layers:
+            QMessageBox.information(
+                self,
+                "Layer Palette",
+                "No physical KLayout layer palette is available yet.\n\n"
+                f"KLayout runtime: {active}\n"
+                f"KLayout version: {version}",
+            )
+            return
+
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QTableWidget, QTableWidgetItem
+        from PyQt6.QtGui import QBrush, QColor
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("IHP SG13G2 Layer Palette")
+        dialog.resize(760, 520)
+        layout = QVBoxLayout(dialog)
+        table = QTableWidget(len(layers), 7, dialog)
+        table.setHorizontalHeaderLabels(["Layer", "Purpose", "GDS", "Datatype", "Valid", "Visible", "Color"])
+        table.verticalHeader().setVisible(False)
+        for row, layer in enumerate(layers):
+            color = layer.get("color", "#808080")
+            values = [
+                layer.get("name", ""),
+                layer.get("purpose", ""),
+                str(layer.get("gds_layer", "")),
+                str(layer.get("gds_datatype", "")),
+                "yes" if layer.get("valid", True) else "no",
+                "yes" if layer.get("visible", True) else "no",
+                color,
+            ]
+            for col, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                if col in (0, 6):
+                    item.setForeground(QBrush(QColor(color)))
+                table.setItem(row, col, item)
+        table.resizeColumnsToContents()
+        layout.addWidget(QLabel(f"KLayout: {active} ({version})"))
+        layout.addWidget(table)
+        dialog.exec()
 
     def _on_open_layout(self):
         self.open_layout_editor()
 
     def open_layout_editor(self) -> bool:
+        if not self._ensure_klayout_runtime():
+            return False
+
+        result = self.layout_service.open_layout_editor(self.library, self.cell)
+        self.statusBar().showMessage(result.message, 5000)
+        if self.ciw:
+            self.ciw.log(f"[Layout] {result.message}")
+        if not result.success:
+            QMessageBox.warning(self, "Open Layout Failed", result.message)
+        return result.success
+
+    def _ensure_klayout_runtime(self) -> bool:
         ok, msg = self.layout_service.ensure_runtime(auto_install=False)
         if not ok:
             choice = QMessageBox.question(
@@ -688,21 +766,120 @@ class SchematicEditorWindow(QMainWindow):
                     return False
             else:
                 return False
-
-        result = self.layout_service.open_layout_editor(self.library, self.cell)
-        self.statusBar().showMessage(result.message, 5000)
-        if self.ciw:
-            self.ciw.log(f"[Layout] {result.message}")
-        if not result.success:
-            QMessageBox.warning(self, "Open Layout Failed", result.message)
-        return result.success
+        return True
 
     def _on_update_layout(self):
+        self.editor.save()
         result = self.layout_service.update_layout_from_schematic(self.library, self.cell)
-        self.statusBar().showMessage(result.message, 5000)
-        if self.ciw:
-            self.ciw.log(f"[Layout] {result.message}")
-        QMessageBox.information(self, "Update Layout", result.message)
+        self._show_layout_result("Prepare Source Handoff", result)
+
+    def _on_import_from_source(self):
+        if not self._ensure_klayout_runtime():
+            return
+        self.editor.save()
+        result = self.layout_service.import_from_source(self.library, self.cell)
+        self._show_layout_result("Import From Source", result)
+
+    def _on_highlight_layout_device(self):
+        instance = self.editor.selected_instance()
+        if not instance:
+            QMessageBox.information(
+                self,
+                "Device Highlight",
+                "Select one physical schematic device first.",
+            )
+            return
+        result = self.layout_service.highlight_layout_device(
+            self.library,
+            self.cell,
+            instance.instance_name,
+        )
+        self._show_layout_result("Device Highlight", result)
+
+    def _on_layout_selection_changed(self):
+        if not self.act_layout_highlight_sync.isChecked():
+            return
+        instance = self.editor.selected_instance()
+        if not instance:
+            return
+        result = self.layout_service.highlight_layout_device(
+            self.library,
+            self.cell,
+            instance.instance_name,
+        )
+        if result.success:
+            self.statusBar().showMessage(result.message, 2500)
+
+    def _toggle_layout_highlight_sync(self):
+        enabled = self.act_layout_highlight_sync.isChecked()
+        self.statusBar().showMessage(
+            f"KLayout device highlight sync {'enabled' if enabled else 'disabled'}",
+            3000,
+        )
+        if enabled:
+            self._on_layout_selection_changed()
+
+    def _current_layout_event_sequence(self) -> str:
+        event_file = self.layout_service.adapter.event_file
+        if not event_file.is_file():
+            return ""
+        try:
+            event = json.loads(event_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return ""
+        return str(event.get("sequence", ""))
+
+    def _poll_klayout_selection(self):
+        if not self.act_layout_highlight_sync.isChecked():
+            return
+        event_file = self.layout_service.adapter.event_file
+        if not event_file.is_file():
+            return
+        try:
+            event = json.loads(event_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        sequence = str(event.get("sequence", ""))
+        if not sequence or sequence == self._layout_event_sequence:
+            return
+        self._layout_event_sequence = sequence
+        if event.get("event") != "select_source_device":
+            return
+        if (
+            str(event.get("library", "")) != self.library
+            or str(event.get("cell", "")) != self.cell
+        ):
+            return
+        instance_name = str(event.get("instance", ""))
+        if self.editor.select_instance_by_name(instance_name):
+            self.statusBar().showMessage(
+                f"KLayout selected source device {instance_name}",
+                2500,
+            )
+
+    def _on_import_layout_stream(self):
+        source, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import Layout Stream",
+            "",
+            "Layout Stream (*.gds *.gdsii *.oas *.oasis);;All Files (*)",
+        )
+        if not source:
+            return
+        result = self.layout_service.import_layout_file(self.library, self.cell, source, copy_into_workspace=True)
+        self._show_layout_result("Import Layout", result)
+
+    def _on_export_layout_stream(self):
+        target, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Layout Stream",
+            f"{self.cell}.gds",
+            "GDSII (*.gds);;OASIS (*.oas);;All Files (*)",
+        )
+        if not target:
+            return
+        result = self.layout_service.export_layout_file(self.library, self.cell, target)
+        self._show_layout_result("Export Layout", result)
 
     def _on_layout_runtime(self):
         summary = self.layout_service.runtime_summary()
@@ -794,6 +971,14 @@ class SchematicEditorWindow(QMainWindow):
         return worker.result
 
     def _on_run_drc(self):
+        if not self._ensure_klayout_runtime():
+            return
+        profile = self.layout_service.runtime_summary().get("ihp_sg13g2", {})
+        if profile.get("available") and profile.get("drc_script"):
+            result = self.layout_service.run_ihp_sg13g2_drc(self.library, self.cell, topcell=self.cell)
+            self._show_layout_result("DRC", result)
+            return
+
         script_path, _ = QFileDialog.getOpenFileName(
             self,
             "Select KLayout DRC Script",
@@ -803,15 +988,28 @@ class SchematicEditorWindow(QMainWindow):
         if not script_path:
             return
         result = self.layout_service.run_drc(self.library, self.cell, script_path)
-        self.statusBar().showMessage(result.message, 7000)
-        if self.ciw:
-            self.ciw.log(f"[Layout] {result.message}")
-        if result.success:
-            QMessageBox.information(self, "DRC", result.message)
-        else:
-            QMessageBox.warning(self, "DRC Failed", result.message)
+        self._show_layout_result("DRC", result)
 
     def _on_run_lvs(self):
+        if not self._ensure_klayout_runtime():
+            return
+        netlist_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Optional: Select Schematic Netlist",
+            "",
+            "SPICE Netlist (*.sp *.cir *.net *.spice);;All Files (*)",
+        )
+        profile = self.layout_service.runtime_summary().get("ihp_sg13g2", {})
+        if profile.get("available") and profile.get("lvs_script"):
+            result = self.layout_service.run_ihp_sg13g2_lvs(
+                self.library,
+                self.cell,
+                schematic_netlist=netlist_path or "",
+                topcell=self.cell,
+            )
+            self._show_layout_result("LVS", result)
+            return
+
         script_path, _ = QFileDialog.getOpenFileName(
             self,
             "Select KLayout LVS Script",
@@ -820,25 +1018,22 @@ class SchematicEditorWindow(QMainWindow):
         )
         if not script_path:
             return
-        netlist_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Optional: Select Schematic Netlist",
-            "",
-            "SPICE Netlist (*.sp *.cir *.net *.spice);;All Files (*)",
-        )
         result = self.layout_service.run_lvs(
             self.library,
             self.cell,
             script_path,
             schematic_netlist=netlist_path or "",
         )
+        self._show_layout_result("LVS", result)
+
+    def _show_layout_result(self, title: str, result):
         self.statusBar().showMessage(result.message, 7000)
         if self.ciw:
             self.ciw.log(f"[Layout] {result.message}")
         if result.success:
-            QMessageBox.information(self, "LVS", result.message)
+            QMessageBox.information(self, title, result.message)
         else:
-            QMessageBox.warning(self, "LVS Failed", result.message)
+            QMessageBox.warning(self, f"{title} Failed", result.message)
 
     def _on_wire_name(self):
         name, ok = QInputDialog.getText(self, "Wire Name", "Net/bus name:")
@@ -865,6 +1060,263 @@ class SchematicEditorWindow(QMainWindow):
         if not summary:
             summary = "Select an instance, wire, pin, or label first."
         QMessageBox.information(self, "Quick Probe", summary)
+
+    def _on_dc_annotation_requested(self, kind: str, payload: object):
+        data = payload if isinstance(payload, dict) else {}
+        waveforms = self._ensure_dc_op_waveforms()
+        if not waveforms:
+            return
+
+        if kind == "node_voltage":
+            net = str(data.get("net", "")).strip()
+            value = self._dc_value_for_net(waveforms, net)
+            if value is None:
+                QMessageBox.information(self, "Annotate DC Node Voltage", f"No DC OP voltage was found for net '{net}'.")
+                return
+            self.editor.annotate_dc_node_voltage(
+                net,
+                value,
+                QPointF(float(data.get("x", 0) or 0), float(data.get("y", 0) or 0)),
+            )
+            source = self._dc_annotation_source or "simulation result"
+            self.statusBar().showMessage(f"Annotated DC node voltage for {net} from {source}", 5000)
+            return
+
+        if kind == "all_node_voltages":
+            voltages = self._dc_node_voltage_map(waveforms)
+            if not voltages:
+                QMessageBox.information(self, "Annotate DC Node Voltages", "No DC OP node voltages were found in the latest result.")
+                return
+            self.editor.annotate_all_dc_node_voltages(voltages)
+            source = self._dc_annotation_source or "simulation result"
+            self.statusBar().showMessage(f"Annotated {len(voltages)} DC node voltage(s) from {source}", 5000)
+            return
+
+        if kind == "operating_point":
+            inst_name = str(data.get("instance", "")).strip()
+            pin_voltages = self._dc_pin_voltages_for_instance(waveforms, inst_name)
+            if not pin_voltages:
+                QMessageBox.information(self, "Annotate DC Operating Point", f"No DC OP terminal voltages were found for '{inst_name}'.")
+                return
+            self.editor.annotate_dc_operating_point(inst_name, pin_voltages)
+            source = self._dc_annotation_source or "simulation result"
+            self.statusBar().showMessage(f"Annotated DC OP for {inst_name} from {source}", 5000)
+
+    def _ensure_dc_op_waveforms(self) -> dict:
+        simenv_waveforms = self._latest_simenv_waveforms_for_dc_annotation()
+        if simenv_waveforms:
+            self._dc_annotation_source = "latest SimENV result"
+            return simenv_waveforms
+
+        if self._dc_op_waveforms:
+            self._dc_annotation_source = "cached schematic DC OP"
+            return self._dc_op_waveforms
+
+        try:
+            from lumen.core.netlist import NetlistGenerator
+            from lumen.core.simulator import SimulatorBridge, get_simulator_label
+
+            self.editor.save()
+            workspace = str(getattr(self.db, "workspace", ""))
+            runtime = SimulatorRuntimeManager(workspace)
+            runtime.apply_environment_overrides()
+            simulator = runtime.get_active_simulator()
+            sim_label = get_simulator_label(simulator)
+
+            gen = NetlistGenerator(self.db)
+            gen.set_target_simulator(simulator)
+            base_netlist = gen.generate(self.library, self.cell, self.view)
+            op_netlist = self._build_dc_op_netlist(base_netlist)
+
+            bridge = SimulatorBridge(simulator, exe_path=runtime.get_active_executable(simulator))
+            if not bridge.is_available():
+                ready = ensure_simulator_available(self, workspace, simulator, logger=self.ciw.log if self.ciw else None)
+                if ready:
+                    runtime = SimulatorRuntimeManager(workspace)
+                    runtime.apply_environment_overrides()
+                    bridge = SimulatorBridge(simulator, exe_path=runtime.get_active_executable(simulator))
+            if not bridge.is_available():
+                QMessageBox.information(self, "Annotate DC OP", f"{sim_label} is not available for DC OP annotation.")
+                return {}
+
+            self.statusBar().showMessage(f"Running {sim_label} DC operating point...")
+            result = bridge.simulate(op_netlist, sim_name=f"{self.cell}_dcop")
+            if not result.success or not result.waveforms:
+                details = "\n".join(getattr(result, "errors", [])[:4])
+                QMessageBox.warning(
+                    self,
+                    "Annotate DC OP",
+                    f"DC operating point did not produce readable results."
+                    + (f"\n\n{details}" if details else ""),
+                )
+                self.statusBar().showMessage("DC operating point failed", 5000)
+                return {}
+
+            self._dc_op_waveforms = dict(result.waveforms)
+            self._dc_annotation_source = "fresh schematic DC OP"
+            self.statusBar().showMessage("DC operating point ready", 4000)
+            return self._dc_op_waveforms
+        except Exception as exc:
+            QMessageBox.critical(self, "Annotate DC OP", f"Could not run DC operating point:\n{exc}")
+            self.statusBar().showMessage("DC operating point failed", 5000)
+            return {}
+
+    def _latest_simenv_waveforms_for_dc_annotation(self) -> dict:
+        """Return the current/selected SimENV result if this schematic has one."""
+        simenv = getattr(self, "_simenv_tab", None)
+        if simenv is None:
+            return {}
+
+        providers = [
+            getattr(simenv, "_current_waveforms_for_sigview", None),
+        ]
+        for provider in providers:
+            if not callable(provider):
+                continue
+            try:
+                waveforms = provider() or {}
+            except Exception:
+                continue
+            if self._has_plottable_dc_annotation_values(waveforms):
+                return dict(waveforms)
+
+        for attr in ("_last_sigview_waveforms", "_sim_merged_waveforms"):
+            waveforms = getattr(simenv, attr, {}) or {}
+            if self._has_plottable_dc_annotation_values(waveforms):
+                return dict(waveforms)
+        return {}
+
+    @staticmethod
+    def _has_plottable_dc_annotation_values(waveforms: dict) -> bool:
+        if not isinstance(waveforms, dict):
+            return False
+        for name, values in waveforms.items():
+            if str(name).startswith("_"):
+                continue
+            if isinstance(values, (int, float)):
+                return True
+            if isinstance(values, (list, tuple)) and values:
+                return True
+        return False
+
+    def _build_dc_op_netlist(self, netlist: str) -> str:
+        lines = []
+        for raw in str(netlist or "").splitlines():
+            stripped = raw.strip()
+            low = stripped.lower()
+            if not stripped:
+                lines.append(raw)
+                continue
+            if low == ".end":
+                continue
+            if re.match(r"^\.(tran|ac|dc|noise|tf|pz|sp|hb|pss|op)\b", low):
+                lines.append(f"* [Lumen DC OP annotation] skipped analysis: {raw}")
+                continue
+            if re.match(r"^\.(save|print|plot)\b", low):
+                lines.append(f"* [Lumen DC OP annotation] skipped output: {raw}")
+                continue
+            lines.append(raw)
+        lines.extend([
+            "",
+            "* Lumen DC OP annotation",
+            ".OP",
+            ".SAVE ALL",
+            ".OPTIONS SAVECURRENTS",
+            ".END",
+            "",
+        ])
+        return "\n".join(lines)
+
+    def _dc_node_voltage_map(self, waveforms: dict) -> dict[str, float]:
+        voltages: dict[str, float] = {}
+        candidate_nets = set(self._schematic_net_names())
+        for net in candidate_nets:
+            value = self._dc_value_for_net(waveforms, net)
+            if value is not None:
+                voltages[net] = value
+        return voltages
+
+    def _schematic_net_names(self) -> list[str]:
+        names = set()
+        try:
+            names.update(self.editor._wire_net_names_by_geometry().values())
+        except Exception:
+            pass
+        for wire in self.editor.wires:
+            name = str(getattr(wire, "net_name", "") or "").strip()
+            if name:
+                names.add(name)
+        for label in self.editor.labels:
+            text = label.toPlainText().strip()
+            if text and not getattr(label, "is_note", False):
+                names.add(text)
+        for pin in self.editor.pins:
+            name = str(getattr(pin, "pin_name", "") or "").strip()
+            if name:
+                names.add(name)
+        return sorted(names)
+
+    def _dc_pin_voltages_for_instance(self, waveforms: dict, instance_name: str) -> dict[str, float]:
+        inst = self.editor._find_instance_by_name(instance_name)
+        if inst is None:
+            return {}
+        pin_values: dict[str, float] = {}
+        for pin_name in inst.pin_positions.keys():
+            pos = inst.get_pin_scene_pos(pin_name)
+            if pos is None:
+                continue
+            net = self.editor._pick_net_at(pos)
+            value = self._dc_value_for_net(waveforms, net)
+            if value is not None:
+                pin_values[str(pin_name)] = value
+        return pin_values
+
+    def _dc_value_for_net(self, waveforms: dict, net: str) -> float | None:
+        target = str(net or "").strip()
+        if not target or not isinstance(waveforms, dict):
+            return None
+        if target.lower() in {"0", "gnd", "ground"}:
+            return 0.0
+        target_key = self._dc_trace_key(target)
+        wrapped_key = self._dc_trace_key(f"v({target})")
+        for name, values in waveforms.items():
+            if str(name).startswith("_"):
+                continue
+            name_key = self._dc_trace_key(str(name))
+            if name_key != target_key:
+                continue
+            value = self._last_finite_scalar(values)
+            if value is not None:
+                return value
+        for name, values in waveforms.items():
+            name_key = self._dc_trace_key(str(name))
+            if name_key == wrapped_key or name_key.endswith(f".{target_key}") or name_key.endswith(f".{wrapped_key}"):
+                value = self._last_finite_scalar(values)
+                if value is not None:
+                    return value
+        return None
+
+    @staticmethod
+    def _dc_trace_key(name: str) -> str:
+        text = str(name or "").strip().lower()
+        if text.startswith("v(") and text.endswith(")"):
+            text = text[2:-1].strip()
+        return re.sub(r"[^a-z0-9_.$]+", "", text)
+
+    @staticmethod
+    def _last_finite_scalar(values) -> float | None:
+        if isinstance(values, (int, float)):
+            return float(values) if math.isfinite(float(values)) else None
+        if not isinstance(values, (list, tuple)):
+            return None
+        for raw in reversed(values):
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(value):
+                return value
+        return None
 
     def _on_descend(self):
         inst = self.editor.selected_instance()
@@ -1043,6 +1495,8 @@ class SchematicEditorWindow(QMainWindow):
 
     def _on_save(self):
         self.editor.save()
+        self._dc_op_waveforms = {}
+        self._dc_annotation_source = ""
         if self.ciw:
             self.ciw.log(f"Saved: {self.library}/{self.cell}/{self.view}")
         self.statusBar().showMessage("Saved", 3000)
@@ -1050,6 +1504,8 @@ class SchematicEditorWindow(QMainWindow):
     def _on_check_save(self):
         """Cadence-style check-and-save with visible floating-terminal markers."""
         self.editor.save()
+        self._dc_op_waveforms = {}
+        self._dc_annotation_source = ""
         issues = self.editor.check_connectivity(show_markers=True)
         if self.ciw:
             self.ciw.log(f"Check && Save: {self.library}/{self.cell}/{self.view}")
@@ -1118,6 +1574,8 @@ class SchematicEditorWindow(QMainWindow):
 
         try:
             self.editor.save()
+            self._dc_op_waveforms = {}
+            self._dc_annotation_source = ""
             from lumen.core.netlist import NetlistGenerator
             from lumen.core.simulator import SimulatorBridge, ensure_direct_run_analysis, get_simulator_label
             import re

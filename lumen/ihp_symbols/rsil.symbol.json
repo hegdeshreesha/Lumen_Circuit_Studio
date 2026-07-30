@@ -99,13 +99,13 @@
   ],
   "parameters": [
     {
-      "name": "W",
-      "default": "1",
+      "name": "w",
+      "default": "0.5e-6",
       "description": "Width"
     },
     {
-      "name": "L",
-      "default": "1",
+      "name": "l",
+      "default": "0.5e-6",
       "description": "Length"
     },
     {
@@ -114,6 +114,17 @@
       "description": "Multiplier"
     }
   ],
+  "layout": {
+    "technology": "sg13g2",
+    "library": "SG13_dev",
+    "pcell": "rsil",
+    "parameter_map": {
+      "w": "w",
+      "l": "l"
+    },
+    "forced_parameters": {},
+    "multiplicity_parameter": "m"
+  },
   "label": {
     "text": "@name",
     "x": 15,

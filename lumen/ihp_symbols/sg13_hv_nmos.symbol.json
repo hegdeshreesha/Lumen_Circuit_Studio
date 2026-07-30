@@ -118,12 +118,12 @@
   "parameters": [
     {
       "name": "w",
-      "default": "0.15u",
+      "default": "0.3u",
       "description": "Width"
     },
     {
       "name": "l",
-      "default": "0.13u",
+      "default": "0.4u",
       "description": "Length"
     },
     {
@@ -137,6 +137,18 @@
       "description": "Multiplier"
     }
   ],
+  "layout": {
+    "technology": "sg13g2",
+    "library": "SG13_dev",
+    "pcell": "nmosHV",
+    "parameter_map": {
+      "w": "w",
+      "l": "l",
+      "ng": "ng"
+    },
+    "forced_parameters": {},
+    "multiplicity_parameter": "m"
+  },
   "label": {
     "text": "@name",
     "x": 5,

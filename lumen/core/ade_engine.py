@@ -24,7 +24,9 @@ from enum import Enum
 from lumen.core.database import LibraryDatabase
 from lumen.core.netlist import NetlistGenerator, NetlistDirectives
 from lumen.core.simulator import SimulatorBridge, SimulationResult
+from lumen.core.simulator_runtime import ACTIVE_SIMULATORS
 from lumen.core.results_store import ResultsStore, RunManifest, hash_text, hash_files
+from lumen.core.pss import build_pss_statement
 
 
 # ── Analysis Types ─────────────────────────────────────────────
@@ -51,11 +53,21 @@ class AnalysisType(Enum):
 ANALYSIS_DEFAULTS = {
     AnalysisType.OP: {},
     AnalysisType.TRAN: {"step": "", "stop": "10u", "start": "0", "maxstep": "", "uic": False},
-    AnalysisType.AC: {"sweep": "DEC", "points": "100", "fstart": "1", "fstop": "10G"},
+    AnalysisType.AC: {"bias_op": True, "sweep": "DEC", "points": "100", "fstart": "1", "fstop": "10G"},
     AnalysisType.DC: {"source": "V1", "start": "0", "stop": "1.8", "step": "10m"},
     AnalysisType.NOISE: {"output": "V(out)", "source": "V1", "points": "50",
                          "fstart": "1", "fstop": "1G"},
-    AnalysisType.PSS: {"fund": "1G", "harmonics": "7", "tstab": "10n"},
+    AnalysisType.PSS: {
+        "mode": "driven",
+        "fund": "1G",
+        "harmonics": "7",
+        "tstab": "",
+        "tstab_periods": "",
+        "pss_adaptive": False,
+        "pss_continuation": False,
+        "pss_continuation_steps": "",
+        "pss_residual_goal": "",
+    },
     AnalysisType.HB: {"freq": "1G", "harmonics": "7", "maxiter": "100"},
     AnalysisType.SP: {"sweep": "LIN", "points": "201", "fstart": "100M", "fstop": "10G"},
 }
@@ -80,8 +92,8 @@ class AnalysisSetup:
             parts = [cmd]
             parts.append(str(params.get("step", "") or "20p"))
             parts.append(str(params.get("stop", "") or "10u"))
-            start = str(params.get("start", "") or "0")
-            maxstep = str(params.get("maxstep", "") or "20p")
+            start = str(params.get("start", "") or "0").strip()
+            maxstep = str(params.get("maxstep", "") or "").strip()
             if start != "0" or maxstep:
                 parts.append(start)
             if maxstep:
@@ -95,7 +107,8 @@ class AnalysisSetup:
             points = params.get("points", "100")
             fstart = params.get("fstart", "1")
             fstop = params.get("fstop", "10G")
-            return f"{cmd} {sweep} {points} {fstart} {fstop}"
+            ac_line = f"{cmd} {sweep} {points} {fstart} {fstop}"
+            return f".OP\n{ac_line}" if params.get("bias_op", True) else ac_line
 
         if self.analysis_type == AnalysisType.DC:
             src = params.get("source", "V1")
@@ -113,10 +126,7 @@ class AnalysisSetup:
             return f"{cmd} V({output}) {source} {points} {fstart} {fstop}"
 
         if self.analysis_type == AnalysisType.PSS:
-            fund = params.get("fund", "1G")
-            harms = params.get("harmonics", "7")
-            tstab = params.get("tstab", "10n")
-            return f"{cmd} {fund} {harms} {tstab}"
+            return build_pss_statement(params, cmd)
 
         if self.analysis_type == AnalysisType.HB:
             freq = params.get("freq", "1G")
@@ -212,7 +222,8 @@ class SimulationState:
         "RELTOL": "3e-4",
         "VNTOL": "300n",
         "ABSTOL": "100f",
-        "TRTOL": "1e-3",
+        "TRTOL": "1",
+        "LTE_RELTOL": "1e-3",
         "TRABSTOL": "300n",
         "ITL4": "80",
     })
@@ -566,9 +577,16 @@ class ADESession:
         return False
 
     def set_simulator(self, simulator: str = "GSPICE", path: str = "") -> "ADESession":
-        self.state.simulator = simulator
-        self.state.simulator_path = path
+        self.state.simulator = simulator if simulator in ACTIVE_SIMULATORS else "GSPICE"
+        self.state.simulator_path = path if self.state.simulator == simulator else ""
         return self
+
+    def _active_simulator(self) -> tuple[str, str]:
+        if self.state.simulator in ACTIVE_SIMULATORS:
+            return self.state.simulator, self.state.simulator_path
+        self.state.simulator = "GSPICE"
+        self.state.simulator_path = ""
+        return self.state.simulator, self.state.simulator_path
 
     def set_threads(self, n: int) -> "ADESession":
         self.state.threads = max(1, min(64, n))
@@ -662,7 +680,8 @@ class ADESession:
                        sweep_values: dict = None) -> str:
         """Build the complete SPICE netlist for the current state."""
         gen = NetlistGenerator(self.db)
-        gen.set_target_simulator(self.state.simulator)
+        simulator, _simulator_path = self._active_simulator()
+        gen.set_target_simulator(simulator)
         directives = NetlistDirectives()
 
         # Design variables
@@ -784,7 +803,8 @@ class ADESession:
             netlist = self._build_netlist(corner)
 
             # Create simulator bridge
-            bridge = SimulatorBridge(self.state.simulator, self.state.simulator_path)
+            simulator, simulator_path = self._active_simulator()
+            bridge = SimulatorBridge(simulator, simulator_path)
 
             # Run simulation
             result = bridge.simulate(
@@ -959,7 +979,8 @@ class ADESession:
                     else:
                         perturbed[key] = raw
                 netlist = self._build_netlist(corner, perturbed)
-                bridge = SimulatorBridge(self.state.simulator, self.state.simulator_path)
+                simulator, simulator_path = self._active_simulator()
+                bridge = SimulatorBridge(simulator, simulator_path)
                 result = bridge.simulate(
                     netlist=netlist,
                     sim_name=f"{self.state.cell}_{corner.name}_mc{idx + 1}",

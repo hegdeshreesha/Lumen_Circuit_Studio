@@ -137,6 +137,18 @@
       "description": "Multiplier"
     }
   ],
+  "layout": {
+    "technology": "sg13g2",
+    "library": "SG13_dev",
+    "pcell": "pmos",
+    "parameter_map": {
+      "w": "w",
+      "l": "l",
+      "ng": "ng"
+    },
+    "forced_parameters": {},
+    "multiplicity_parameter": "m"
+  },
   "label": {
     "text": "@name",
     "x": 5,

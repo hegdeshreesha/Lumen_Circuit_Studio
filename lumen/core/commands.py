@@ -249,10 +249,14 @@ class PropertyChangeCommand(Command):
     def execute(self):
         if hasattr(self.instance, 'parameters'):
             self.instance.parameters[self.property_name] = self.new_value
+        if hasattr(self.instance, 'refresh_graphics'):
+            self.instance.refresh_graphics()
 
     def undo(self):
         if hasattr(self.instance, 'parameters'):
             self.instance.parameters[self.property_name] = self.old_value
+        if hasattr(self.instance, 'refresh_graphics'):
+            self.instance.refresh_graphics()
 
     def description(self) -> str:
         return f"Change {self.instance.instance_name}.{self.property_name} from {self.old_value} to {self.new_value}"

@@ -52,7 +52,9 @@ For the current dogfood flow, start with `BETA_TESTING.md`. The beta focus is sc
 - PDK discovery and model parsing for built-in open PDK flows
 - Netlist generation and simulator bridge
 - ADE-style setup for analyses/corners/sweeps
-- KLayout runtime integration hooks for layout/DRC/LVS command flow
+- IHP SG13G2 KLayout integration with `SG13_dev` PCells, schematic/device
+  correspondence, layer setup, and DRC/LVS command flow. See
+  [IHP KLayout setup and Cadence-style workflow](docs/ihp_klayout_integration.md).
 
 ## License
 

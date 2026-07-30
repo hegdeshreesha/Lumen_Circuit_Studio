@@ -26,6 +26,7 @@ from typing import Dict, List, Optional, Any
 from enum import Enum
 import re
 
+from .layout_layers import parse_klayout_layer_properties
 from .validation import SchemaValidator
 
 
@@ -236,6 +237,32 @@ class PDKLock:
         with open(path, "r") as f:
             data = json.load(f)
         return cls(**data)
+
+    @classmethod
+    def create_lockfile(cls, pdk_info: PDKInfo, project_dir: str, used_corners: Optional[List[str]] = None, used_devices: Optional[List[str]] = None) -> 'PDKLock':
+        """Create a deterministic lockfile for a project workspace bound to a PDK."""
+        manifest_str = f"{pdk_info.name}:{pdk_info.version}:{pdk_info.foundry}"
+        pdk_hash = hashlib.sha256(manifest_str.encode("utf-8")).hexdigest()[:16]
+
+        models_str = ",".join(sorted(mf.path for mf in pdk_info.model_files))
+        models_hash = hashlib.sha256(models_str.encode("utf-8")).hexdigest()[:16]
+
+        devices_str = ",".join(sorted(d.name for d in pdk_info.devices))
+        device_hash = hashlib.sha256(devices_str.encode("utf-8")).hexdigest()[:16]
+
+        lock = cls(
+            pdk_name=pdk_info.name,
+            pdk_version=pdk_info.version,
+            pdk_manifest_hash=pdk_hash,
+            model_files_hash=models_hash,
+            device_catalog_hash=device_hash,
+            used_corners=used_corners or [c.name for c in pdk_info.corners],
+            used_devices=used_devices or [d.name for d in pdk_info.devices],
+            timestamp=time.time(),
+        )
+        lock_path = Path(project_dir) / "lumen.lock"
+        lock.save(str(lock_path))
+        return lock
 
 
 # ── Model File Parser ──────────────────────────────────────────
@@ -707,6 +734,18 @@ class PDKRegistry:
 
         self._attach_builtin_model_files(pdk)
         if name == "ihp_sg13g2":
+            klayout_lyp = (Path(pdk.root_path) / "libs.tech" / "klayout" / "tech" / "sg13g2.lyp") if pdk.root_path else None
+            if klayout_lyp and klayout_lyp.exists():
+                parsed_layers = parse_klayout_layer_properties(str(klayout_lyp))
+                if parsed_layers:
+                    pdk.layers = [
+                        {
+                            **asdict(l),
+                            "gds_number": l.gds_layer,
+                            "description": l.display_name or f"{l.name}/{l.purpose}",
+                        }
+                        for l in parsed_layers
+                    ]
             self._enrich_ihp_from_xschem(pdk)
         return pdk
 

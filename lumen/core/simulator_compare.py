@@ -1,21 +1,17 @@
 """Reference simulator comparison helpers.
 
-Lumen uses this to keep GSPICE honest by comparing the same deck against
-Ngspice and Xyce whenever those runtimes are available.
+External Ngspice/Xyce reference runs are disabled in this build.
 """
 from __future__ import annotations
 
 import math
-import os
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Callable
 
-from lumen.core.simulator import SimulationResult, SimulatorBridge
-from lumen.core.simulator_runtime import SimulatorRuntimeManager
+from lumen.core.simulator import SimulationResult
 
 
-REFERENCE_SIMULATORS = ("Ngspice", "Xyce")
+REFERENCE_SIMULATORS: tuple[str, ...] = ()
 
 
 @dataclass
@@ -57,12 +53,11 @@ class ReferenceRunComparison:
 
 
 class ReferenceComparisonRunner:
-    """Run Ngspice/Xyce reference decks and compare waveforms."""
+    """Compare waveforms against enabled reference simulators."""
 
     def __init__(self, workspace: str, work_dir: str):
         self.workspace = str(workspace or "")
         self.work_dir = str(work_dir or "")
-        self.runtime = SimulatorRuntimeManager(self.workspace or self.work_dir or ".")
 
     def compare(
         self,
@@ -73,24 +68,7 @@ class ReferenceComparisonRunner:
         threads: int = 1,
         progress_callback: Callable[[str], None] | None = None,
     ) -> list[ReferenceRunComparison]:
-        if not getattr(primary_result, "success", False):
-            return []
-
-        results: list[ReferenceRunComparison] = []
-        for simulator in REFERENCE_SIMULATORS:
-            if simulator == primary_simulator:
-                continue
-            results.append(
-                self._run_reference(
-                    simulator,
-                    netlist,
-                    primary_result,
-                    sim_name,
-                    threads,
-                    progress_callback,
-                )
-            )
-        return results
+        return []
 
     def _run_reference(
         self,
@@ -101,46 +79,11 @@ class ReferenceComparisonRunner:
         threads: int,
         progress_callback: Callable[[str], None] | None,
     ) -> ReferenceRunComparison:
-        self.runtime.apply_environment_overrides()
-        exe = self.runtime.get_active_executable(simulator)
-        ref_work_dir = os.path.join(self.work_dir or str(Path.home()), "reference_compare", simulator)
-        bridge = SimulatorBridge(simulator, exe_path=exe, work_dir=ref_work_dir)
-        if not bridge.is_available():
-            return ReferenceRunComparison(
-                simulator=simulator,
-                status="SKIP",
-                message=f"{simulator} executable not configured or not found",
-            )
-
-        if progress_callback:
-            progress_callback(f"Reference compare: running {simulator}...")
-        ref = bridge.simulate(
-            netlist,
-            sim_name=f"{sim_name}_{simulator}_reference",
-            threads=threads,
-            progress_callback=progress_callback,
-        )
-        comparison = ReferenceRunComparison(
+        return ReferenceRunComparison(
             simulator=simulator,
-            status="PASS" if ref.success else "FAIL",
-            message="reference run completed" if ref.success else "reference run failed",
-            raw_path=ref.output_path,
-            run_dir=ref.run_dir,
-            errors=list(ref.errors),
-            warnings=list(ref.warnings),
+            status="SKIP",
+            message="External Ngspice/Xyce reference runs are disabled in this build.",
         )
-        if not ref.success:
-            if ref.errors:
-                comparison.message = "; ".join(ref.errors[:3])
-            return comparison
-        comparison.signals = compare_waveforms(primary_result.waveforms, ref.waveforms)
-        if not comparison.signals:
-            comparison.status = "FAIL"
-            comparison.message = "no common waveform signals to compare"
-        elif any(not item.passed for item in comparison.signals):
-            comparison.status = "FAIL"
-            comparison.message = "one or more common signals exceeded comparison tolerance"
-        return comparison
 
 
 def compare_waveforms(primary: dict, reference: dict) -> list[SignalComparison]:

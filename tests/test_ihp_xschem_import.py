@@ -55,6 +55,21 @@ class IHPXschemImportTest(unittest.TestCase):
         self.assertEqual(inv.prefix, "X")
         self.assertEqual(inv.component_name, "sg13g2_inv_1")
 
+    def test_registry_uses_ihp_klayout_layer_table(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            registry = PDKRegistry(workspace)
+            pdk = registry.get_pdk("ihp_sg13g2")
+
+        self.assertGreater(len(pdk.layers), 50)
+        metal1 = [
+            layer for layer in pdk.layers
+            if layer.get("name") == "Metal1" and layer.get("purpose") == "drawing"
+        ]
+        self.assertTrue(metal1)
+        self.assertEqual(metal1[0]["gds_number"], 8)
+        self.assertEqual(metal1[0]["gds_datatype"], 0)
+        self.assertTrue(metal1[0]["color"].startswith("#"))
+
 
 if __name__ == "__main__":
     unittest.main()

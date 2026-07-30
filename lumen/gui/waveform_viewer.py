@@ -61,6 +61,9 @@ from PyQt6.QtWidgets import (
 from lumen.gui.branding import apply_window_branding
 from lumen.gui.icons import editor_icon
 from lumen.core.simulator import SimulatorBridge
+from lumen.core.waveform_calculator import WaveformCalculator
+from lumen.core.decimation import lttb_decimate
+from lumen.gui.calculator_window import CalculatorWindow
 
 
 class WaveVector:
@@ -365,6 +368,7 @@ class WaveformCanvas(QWidget):
         self.y_label = "Y"
         self.show_grid = True
         self.stacked_mode = False
+        self.display_mode = "line"
 
         self.x_min = 0.0
         self.x_max = 1.0
@@ -423,6 +427,13 @@ class WaveformCanvas(QWidget):
             self._compute_auto_range()
         self.update()
         self._emit_cursor_text()
+
+    def set_display_mode(self, mode: str):
+        clean = str(mode or "line").strip().lower()
+        if clean not in {"line", "points", "line_points"}:
+            clean = "line"
+        self.display_mode = clean
+        self.update()
 
     def get_trace_names(self) -> list[str]:
         return [t.name for t in self.traces]
@@ -755,7 +766,7 @@ class WaveformCanvas(QWidget):
         if self.show_grid:
             self._draw_grid(painter, plot, self.x_min, self.x_max, self.y_min, self.y_max)
         for trace in traces:
-            self._draw_trace_line(painter, trace, plot, self.y_min, self.y_max)
+            self._draw_trace(painter, trace, plot, self.y_min, self.y_max)
 
     def _paint_stacked(self, painter: QPainter, plot: QRectF, traces: list[TraceRecord]):
         count = len(traces)
@@ -776,13 +787,19 @@ class WaveformCanvas(QWidget):
             if self.show_grid:
                 self._draw_grid(painter, lane, self.x_min, self.x_max, y0, y1, light=True)
 
-            self._draw_trace_line(painter, trace, lane, y0, y1)
+            self._draw_trace(painter, trace, lane, y0, y1)
             painter.setPen(QPen(QColor("#8f9daa"), 1))
             painter.setFont(QFont("Consolas", 8))
             painter.drawText(int(lane.left() + 6), int(lane.top() + 14), trace.name)
 
             painter.setPen(QPen(QColor("#2b323a"), 1))
             painter.drawLine(int(lane.left()), int(lane.bottom()), int(lane.right()), int(lane.bottom()))
+
+    def _draw_trace(self, painter: QPainter, trace: TraceRecord, rect: QRectF, y_min: float, y_max: float):
+        if self.display_mode in {"line", "line_points"}:
+            self._draw_trace_line(painter, trace, rect, y_min, y_max)
+        if self.display_mode in {"points", "line_points"}:
+            self._draw_trace_points(painter, trace, rect, y_min, y_max)
 
     def _draw_trace_line(self, painter: QPainter, trace: TraceRecord, rect: QRectF, y_min: float, y_max: float):
         width = 2.7 if trace.name == self.selected_trace_name else 1.8
@@ -803,30 +820,105 @@ class WaveformCanvas(QWidget):
                 painter.drawEllipse(pp, 4.0, 4.0)
             return
 
-        stride = max(1, int(n / max(2000, int(rect.width()) * 2)))
+        target = max(1200, int(rect.width()) * 4)
+        draw_x, draw_y = self._line_render_samples(x_data[:n], y_data[:n], target)
         path = QPainterPath()
-        started = False
-        idx = 0
-        while idx < n:
+        points = [
+            self._data_to_screen(xv, yv, lane_rect=rect, y_min=y_min, y_max=y_max)
+            for xv, yv in zip(draw_x, draw_y)
+            if isinstance(xv, (int, float)) and isinstance(yv, (int, float)) and math.isfinite(xv) and math.isfinite(yv)
+        ]
+        self._append_smooth_path(path, points)
+        painter.drawPath(path)
+
+    @staticmethod
+    def _line_render_samples(x_data: list[float], y_data: list[float], target: int) -> tuple[list[float], list[float]]:
+        finite_x: list[float] = []
+        finite_y: list[float] = []
+        for xv, yv in zip(x_data, y_data):
+            if (
+                isinstance(xv, (int, float)) and isinstance(yv, (int, float)) and
+                math.isfinite(xv) and math.isfinite(yv)
+            ):
+                finite_x.append(float(xv))
+                finite_y.append(float(yv))
+        if len(finite_x) <= target:
+            return finite_x, finite_y
+        try:
+            return lttb_decimate(finite_x, finite_y, target_points=target)
+        except Exception:
+            stride = max(1, int(len(finite_x) / max(target, 1)))
+            return finite_x[::stride], finite_y[::stride]
+
+    @staticmethod
+    def _append_smooth_path(path: QPainterPath, points: list[QPointF]) -> None:
+        if not points:
+            return
+        path.moveTo(points[0])
+        if len(points) == 1:
+            return
+        if len(points) == 2:
+            path.lineTo(points[1])
+            return
+
+        def clamp(value: float, lo: float, hi: float) -> float:
+            if lo > hi:
+                lo, hi = hi, lo
+            return max(lo, min(hi, value))
+
+        def clamped_control(raw: QPointF, a: QPointF, b: QPointF, prev: QPointF, nxt: QPointF) -> QPointF:
+            y_lo = min(prev.y(), a.y(), b.y(), nxt.y())
+            y_hi = max(prev.y(), a.y(), b.y(), nxt.y())
+            return QPointF(
+                clamp(raw.x(), a.x(), b.x()),
+                clamp(raw.y(), y_lo, y_hi),
+            )
+
+        tension = 0.42
+        for i in range(len(points) - 1):
+            p0 = points[max(0, i - 1)]
+            p1 = points[i]
+            p2 = points[i + 1]
+            p3 = points[min(len(points) - 1, i + 2)]
+            if p2.x() <= p1.x():
+                path.lineTo(p2)
+                continue
+            c1_raw = QPointF(
+                p1.x() + (p2.x() - p0.x()) * tension / 3.0,
+                p1.y() + (p2.y() - p0.y()) * tension / 3.0,
+            )
+            c2_raw = QPointF(
+                p2.x() - (p3.x() - p1.x()) * tension / 3.0,
+                p2.y() - (p3.y() - p1.y()) * tension / 3.0,
+            )
+            c1 = clamped_control(c1_raw, p1, p2, p0, p3)
+            c2 = clamped_control(c2_raw, p1, p2, p0, p3)
+            path.cubicTo(c1, c2, p2)
+
+    def _draw_trace_points(self, painter: QPainter, trace: TraceRecord, rect: QRectF, y_min: float, y_max: float):
+        x_data = trace.x_data
+        y_data = trace.y_data
+        n = min(len(x_data), len(y_data))
+        if n < 1:
+            return
+        target_points = max(300, int(rect.width()) * 3)
+        stride = max(1, int(n / target_points))
+        radius = 3.0 if trace.name == self.selected_trace_name else 2.2
+        fill = QColor(trace.color)
+        fill.setAlpha(220)
+        painter.setPen(QPen(trace.color, 1))
+        painter.setBrush(fill)
+        for idx in range(0, n, stride):
             xv = x_data[idx]
             yv = y_data[idx]
-            if isinstance(xv, (int, float)) and isinstance(yv, (int, float)) and math.isfinite(xv) and math.isfinite(yv):
-                pp = self._data_to_screen(xv, yv, lane_rect=rect, y_min=y_min, y_max=y_max)
-                if not started:
-                    path.moveTo(pp)
-                    started = True
-                else:
-                    path.lineTo(pp)
-            else:
-                started = False
-            idx += stride
-
-        if not path.isEmpty():
-            plast_x = x_data[n - 1]
-            plast_y = y_data[n - 1]
-            if isinstance(plast_x, (int, float)) and isinstance(plast_y, (int, float)) and math.isfinite(plast_x) and math.isfinite(plast_y):
-                path.lineTo(self._data_to_screen(plast_x, plast_y, lane_rect=rect, y_min=y_min, y_max=y_max))
-        painter.drawPath(path)
+            if not (
+                isinstance(xv, (int, float)) and isinstance(yv, (int, float)) and
+                math.isfinite(xv) and math.isfinite(yv)
+            ):
+                continue
+            pp = self._data_to_screen(xv, yv, lane_rect=rect, y_min=y_min, y_max=y_max)
+            if rect.left() - radius <= pp.x() <= rect.right() + radius and rect.top() - radius <= pp.y() <= rect.bottom() + radius:
+                painter.drawEllipse(pp, radius, radius)
 
     def _draw_grid(self, painter: QPainter, rect: QRectF, x0: float, x1: float, y0: float, y1: float, light: bool = False):
         grid_color = QColor("#232a31" if light else "#2a3038")
@@ -1277,6 +1369,19 @@ class WaveformViewerWindow(QMainWindow):
         self.menu_stack.setCheckable(True)
         self.menu_stack.toggled.connect(self._on_toggle_stacked)
         view_menu.addAction(self.menu_stack)
+        view_menu.addSeparator()
+        self.menu_display_line = QAction("Line", self)
+        self.menu_display_points = QAction("Points", self)
+        self.menu_display_line_points = QAction("Line + Points", self)
+        for mode, action in (
+            ("line", self.menu_display_line),
+            ("points", self.menu_display_points),
+            ("line_points", self.menu_display_line_points),
+        ):
+            action.setCheckable(True)
+            action.triggered.connect(lambda _checked=False, m=mode: self._on_display_mode_changed(m))
+            view_menu.addAction(action)
+        self.menu_display_line.setChecked(True)
 
         marker_menu = self.menuBar().addMenu("&Markers")
         act_add_marker = QAction("Add Marker at Active Cursor", self)
@@ -1346,6 +1451,12 @@ class WaveformViewerWindow(QMainWindow):
         self.act_stack.setChecked(False)
         self.act_stack.toggled.connect(self._on_toggle_stacked)
         tb.addAction(self.act_stack)
+
+        self.act_points = QAction("Points", self)
+        self.act_points.setCheckable(True)
+        self.act_points.setToolTip("Show saved waveform samples as points instead of connected lines")
+        self.act_points.toggled.connect(lambda checked: self._on_display_mode_changed("points" if checked else "line"))
+        tb.addAction(self.act_points)
 
         tb.addSeparator()
 
@@ -1980,6 +2091,26 @@ class WaveformViewerWindow(QMainWindow):
         self.canvas.set_stacked_mode(checked)
         self.canvas.fit_all()
 
+    def _on_display_mode_changed(self, mode: str):
+        clean = str(mode or "line").strip().lower()
+        if clean not in {"line", "points", "line_points"}:
+            clean = "line"
+        self.canvas.set_display_mode(clean)
+        for action_name, action_mode in (
+            ("menu_display_line", "line"),
+            ("menu_display_points", "points"),
+            ("menu_display_line_points", "line_points"),
+        ):
+            action = getattr(self, action_name, None)
+            if action is not None and action.isChecked() != (clean == action_mode):
+                action.blockSignals(True)
+                action.setChecked(clean == action_mode)
+                action.blockSignals(False)
+        if hasattr(self, "act_points") and self.act_points.isChecked() != (clean == "points"):
+            self.act_points.blockSignals(True)
+            self.act_points.setChecked(clean == "points")
+            self.act_points.blockSignals(False)
+
     def _on_clear(self):
         self._last_waveforms = {}
         self._x_var = ""
@@ -2325,6 +2456,7 @@ class WaveformViewerWindow(QMainWindow):
             "view": {
                 "grid": self.canvas.show_grid,
                 "stacked": self.canvas.stacked_mode,
+                "display_mode": self.canvas.display_mode,
                 "x_min": self.canvas.x_min,
                 "x_max": self.canvas.x_max,
                 "y_min": self.canvas.y_min,
@@ -2377,6 +2509,7 @@ class WaveformViewerWindow(QMainWindow):
         if isinstance(view, dict):
             self._on_toggle_grid(bool(view.get("grid", True)))
             self._on_toggle_stacked(bool(view.get("stacked", False)))
+            self._on_display_mode_changed(str(view.get("display_mode", "line")))
             for attr in ("x_min", "x_max", "y_min", "y_max"):
                 if attr in view:
                     try:

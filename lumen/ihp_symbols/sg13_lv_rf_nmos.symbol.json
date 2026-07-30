@@ -3,7 +3,7 @@
   "name": "sg13_lv_rf_nmos",
   "library": "ihp_primitives",
   "prefix": "M",
-  "spice_model": "sg13_lv_rf_nmos",
+  "spice_model": "sg13_lv_nmos",
   "pins": [
     {
       "name": "D",
@@ -118,12 +118,12 @@
   "parameters": [
     {
       "name": "w",
-      "default": "0.15u",
+      "default": "1.0u",
       "description": "Width"
     },
     {
       "name": "l",
-      "default": "0.13u",
+      "default": "0.72u",
       "description": "Length"
     },
     {
@@ -135,8 +135,28 @@
       "name": "m",
       "default": "1",
       "description": "Multiplier"
+    },
+    {
+      "name": "rfmode",
+      "default": "1",
+      "description": "RF PCell mode"
     }
   ],
+  "layout": {
+    "technology": "sg13g2",
+    "library": "SG13_dev",
+    "pcell": "rfnmos",
+    "parameter_map": {
+      "w": "w",
+      "l": "l",
+      "ng": "ng",
+      "rfmode": "rfmode"
+    },
+    "forced_parameters": {
+      "rfmode": 1
+    },
+    "multiplicity_parameter": "m"
+  },
   "label": {
     "text": "@name",
     "x": 5,

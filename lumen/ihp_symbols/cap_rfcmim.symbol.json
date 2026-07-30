@@ -6,15 +6,21 @@
   "spice_model": "cap_rfcmim",
   "pins": [
     {
-      "name": "PLUS",
+      "name": "c0",
       "x": 0,
       "y": -30,
       "direction": "inout"
     },
     {
-      "name": "MINUS",
+      "name": "c1",
       "x": 0,
       "y": 30,
+      "direction": "inout"
+    },
+    {
+      "name": "bn",
+      "x": -30,
+      "y": 0,
       "direction": "inout"
     }
   ],
@@ -50,13 +56,34 @@
   ],
   "parameters": [
     {
-      "name": "C",
-      "default": "1p",
-      "description": "Capacitance"
+      "name": "w",
+      "default": "10.0e-6",
+      "description": "Width"
+    },
+    {
+      "name": "l",
+      "default": "10.0e-6",
+      "description": "Length"
+    },
+    {
+      "name": "wfeed",
+      "default": "5.0e-6",
+      "description": "RF feed width"
     }
   ],
+  "layout": {
+    "technology": "sg13g2",
+    "library": "SG13_dev",
+    "pcell": "rfcmim",
+    "parameter_map": {
+      "w": "w",
+      "l": "l",
+      "wfeed": "wfeed"
+    },
+    "forced_parameters": {}
+  },
   "label": {
-    "text": "@name\\nC=@C",
+    "text": "@name\\n@w / @l",
     "x": 20,
     "y": 0
   }
