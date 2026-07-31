@@ -214,6 +214,7 @@ class SimulatorRuntimeManagerTest(unittest.TestCase):
         bridge = SimulatorBridge("GSPICE", exe_path="gspice")
         deck = (
             "X1 out in vdd vdd sg13_lv_pmos l=0.5u w=0.15u\n"
+            ".PSS 60M 7 DRIVEN TSTAB=100n\n"
             ".TRAN 2.2e-11 1.1u\n"
             ".END\n"
         )
@@ -225,6 +226,7 @@ class SimulatorRuntimeManagerTest(unittest.TestCase):
         )
         self.assertTrue(any("could not find a DC operating point" in note for note in notes))
         self.assertTrue(any("ring oscillators" in note for note in notes))
+        self.assertTrue(any("driven PSS" in note for note in notes))
 
     def test_waveform_comparison_interpolates_reference_axis(self):
         primary = {

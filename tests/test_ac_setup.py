@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import QApplication
 from lumen.core.ade_engine import AnalysisSetup, AnalysisType
 from lumen.core.database import LibraryDatabase
 from lumen.core.simulator import SimulationResult, SimulatorBridge
-from lumen.gui.ade_window import ADEWindow, AnalysisSetupWidget, StimulusEditorWidget
+from lumen.gui.ade_window import ADEWindow, AnalysisSetupWidget, ConvergenceHelpersWidget, StimulusEditorWidget
 
 
 class _AcHarness:
@@ -75,6 +75,18 @@ class AcSetupTest(unittest.TestCase):
         type_widget.setCurrentText("AC")
         widget.table.item(0, 4).setText("0 1 45")
         self.assertIn("V1 net1 0 DC 0 AC 1 45", widget.get_stimulus_lines())
+
+    def test_convergence_helper_placeholder_rows_are_ignored(self):
+        widget = ConvergenceHelpersWidget()
+        widget._add_row(widget.nodeset_table, "node", "0")
+        widget._add_row(widget.ic_table, "node", "0")
+        self.assertEqual(widget.get_nodeset_lines(), [])
+        self.assertEqual(widget.get_ic_lines(), [])
+
+        widget.nodeset_table.item(0, 0).setText("STG3")
+        widget.ic_table.item(0, 0).setText("STG1")
+        self.assertEqual(widget.get_nodeset_lines(), [".NODESET STG3=0"])
+        self.assertEqual(widget.get_ic_lines(), [".IC STG1=0"])
 
     def test_gspice_bridge_inserts_op_before_direct_ac_deck(self):
         bridge = SimulatorBridge("GSPICE")

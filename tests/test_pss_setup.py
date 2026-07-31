@@ -61,12 +61,13 @@ class PssSetupTest(unittest.TestCase):
                     "TstabPeriods": "5",
                     "Adaptive": True,
                     "Continuation": True,
+                    "UseIC": True,
                     "ContinuationSteps": "4",
                     "ResidualGoal": "0.25",
                 }
             ),
             ".PSS 800M 11 OSCILLATOR=YES TSTAB=250n TSTAB_PERIODS=5 "
-            "PSS_ADAPTIVE=YES PSS_CONTINUATION=YES PSS_CONTINUATION_STEPS=4 "
+            "PSS_ADAPTIVE=YES PSS_CONTINUATION=YES USE_INITIAL_CONDITIONS=YES PSS_CONTINUATION_STEPS=4 "
             "PSS_RESIDUAL_GOAL=0.25",
         )
 
@@ -125,6 +126,7 @@ class PssSetupTest(unittest.TestCase):
                 "TstabPeriods": "3",
                 "Adaptive": True,
                 "Continuation": True,
+                "UseIC": True,
                 "ContinuationSteps": "2",
                 "ResidualGoal": "0.5",
             }
@@ -132,7 +134,7 @@ class PssSetupTest(unittest.TestCase):
         self.assertEqual(
             widget.get_spice_line(),
             ".PSS 2G 15 OSCILLATOR=YES TSTAB=100n TSTAB_PERIODS=3 "
-            "PSS_ADAPTIVE=YES PSS_CONTINUATION=YES PSS_CONTINUATION_STEPS=2 "
+            "PSS_ADAPTIVE=YES PSS_CONTINUATION=YES USE_INITIAL_CONDITIONS=YES PSS_CONTINUATION_STEPS=2 "
             "PSS_RESIDUAL_GOAL=0.5",
         )
         self.assertEqual(widget.validation_errors(), [])

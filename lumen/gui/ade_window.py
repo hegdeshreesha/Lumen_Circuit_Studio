@@ -78,6 +78,7 @@ ANALYSES = {
         ("TstabPeriods", "", "Optional stabilization periods before shooting"),
         ("Adaptive", False, "Enable GSPICE adaptive PSS controls"),
         ("Continuation", False, "Enable GSPICE continuation for harder oscillator starts"),
+        ("UseIC", False, "Use .IC entries from the Convergence tab for PSS startup"),
         ("ContinuationSteps", "", "Optional continuation step count"),
         ("ResidualGoal", "", "Optional PSS residual goal")]},
     "Harmonic Balance": {"cmd": ".HB", "category": "RF Core", "params": [
@@ -287,6 +288,7 @@ class AnalysisSetupWidget(QWidget):
             "tstab_periods": "TstabPeriods",
             "pss_adaptive": "Adaptive",
             "pss_continuation": "Continuation",
+            "pss_use_ic": "UseIC",
             "pss_continuation_steps": "ContinuationSteps",
             "pss_residual_goal": "ResidualGoal",
         }.items():
@@ -1288,7 +1290,7 @@ class ConvergenceHelpersWidget(QWidget):
                 return True
         return super().eventFilter(source, event)
 
-    def _add_row(self, table: QTableWidget, node="node", value="0"):
+    def _add_row(self, table: QTableWidget, node="", value="0"):
         r = table.rowCount()
         table.insertRow(r)
         node_item = QTableWidgetItem(node)
@@ -1297,6 +1299,14 @@ class ConvergenceHelpersWidget(QWidget):
         table.setItem(r, 1, val_item)
         table.selectRow(r)
         table.editItem(node_item)
+
+    @staticmethod
+    def _convergence_line(kind: str, node: str, value: str) -> str:
+        node = str(node or "").strip()
+        value = str(value or "").strip()
+        if not node or node.lower() == "node" or node.startswith("*"):
+            return ""
+        return f".{kind} {node}={value or '0'}"
 
     def _delete_selected_rows(self, table: QTableWidget):
         selected_rows = sorted({item.row() for item in table.selectedItems()}, reverse=True)
@@ -1355,10 +1365,9 @@ class ConvergenceHelpersWidget(QWidget):
             node_item = self.nodeset_table.item(r, 0)
             val_item = self.nodeset_table.item(r, 1)
             if node_item and val_item:
-                node = node_item.text().strip()
-                val = val_item.text().strip()
-                if node and not node.startswith("*"):
-                    lines.append(f".NODESET {node}={val}")
+                line = self._convergence_line("NODESET", node_item.text(), val_item.text())
+                if line:
+                    lines.append(line)
         return lines
 
     def get_ic_lines(self) -> list[str]:
@@ -1367,10 +1376,9 @@ class ConvergenceHelpersWidget(QWidget):
             node_item = self.ic_table.item(r, 0)
             val_item = self.ic_table.item(r, 1)
             if node_item and val_item:
-                node = node_item.text().strip()
-                val = val_item.text().strip()
-                if node and not node.startswith("*"):
-                    lines.append(f".IC {node}={val}")
+                line = self._convergence_line("IC", node_item.text(), val_item.text())
+                if line:
+                    lines.append(line)
         return lines
 
 

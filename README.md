@@ -58,4 +58,12 @@ For the current dogfood flow, start with `BETA_TESTING.md`. The beta focus is sc
 
 ## License
 
-Apache License 2.0
+Lumen Circuit Studio source code is licensed under the Apache License 2.0. See
+`LICENSE`.
+
+Third-party PDKs, model files, helper scripts, and Python packages keep their
+own licenses. See `THIRD_PARTY_NOTICES.md`.
+
+Note: the current GUI dependency is PyQt6, which is GPLv3/commercial licensed.
+For Apache-only binary distribution, use a commercial PyQt license or port the
+GUI binding layer to an LGPL/commercial Qt binding such as PySide6.

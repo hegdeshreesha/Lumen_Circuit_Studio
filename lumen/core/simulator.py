@@ -1172,6 +1172,15 @@ class SimulatorBridge:
                     "deliberate initial conditions on every storage node, or add a startup perturbation "
                     "instead of relying on the DC solve."
                 )
+                if re.search(r"(?im)^\s*\.PSS\s+\S+\s+\S+\s+DRIVEN\b", netlist or "") and not re.search(
+                    r"(?im)^\s*[VI]\S+\s+\S+\s+\S+.*\b(?:SIN|PULSE|PWL)\s*\(",
+                    netlist or "",
+                ):
+                    notes.append(
+                        "This deck uses driven PSS but has no periodic independent source. "
+                        "For an autonomous ring oscillator, set PSS mode to Oscillator so Lumen emits "
+                        "OSCILLATOR=YES."
+                    )
             transient_min_step_fail = bool(
                 re.search(
                     r"(?is)Transient step failed to converge at minimum timestep.*(?:update_error=inf|residual_error=inf)",
