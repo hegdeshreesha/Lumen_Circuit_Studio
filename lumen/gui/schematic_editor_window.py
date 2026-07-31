@@ -279,7 +279,6 @@ class SchematicEditorWindow(QMainWindow):
             self.act_zoom_out: "zoom_out",
             self.act_zoom_fit: "zoom_fit",
             self.act_netlist: "netlist",
-            self.act_simulate: "run",
             self.act_waveform: "wave",
             self.act_open_layout: "open",
             self.act_health_check: "health",
@@ -371,7 +370,6 @@ class SchematicEditorWindow(QMainWindow):
         sim_menu.addAction(self.act_check_save)
         sim_menu.addSeparator()
         sim_menu.addAction(self.act_netlist)
-        sim_menu.addAction(self.act_simulate)
         sim_menu.addSeparator()
         act_ade = QAction("SimENV - Simulation Environment", self)
         act_ade.triggered.connect(self._on_open_ade)
@@ -429,7 +427,6 @@ class SchematicEditorWindow(QMainWindow):
         sim_tb = QToolBar("Simulation")
         sim_tb.setIconSize(QSize(18, 18))
         sim_tb.addAction(self.act_netlist)
-        sim_tb.addAction(self.act_simulate)
         sim_tb.addAction(self.act_waveform)
         self.addToolBar(sim_tb)
 
@@ -1383,7 +1380,7 @@ class SchematicEditorWindow(QMainWindow):
         commands = [
             "Wire (W)", "Bus (B)", "Instance (I)", "Pin (P)", "Label (L)",
             "Find / Select (Ctrl+F)", "Object Properties (Q)",
-            "Generate Netlist (Ctrl+Shift+N)", "Run Simulation (F5)",
+            "Generate Netlist (Ctrl+Shift+N)", "Open SimENV",
             "Zoom Fit (F)", "Right-drag zoom window",
         ]
         QMessageBox.information(self, "Command Palette", "\n".join(commands))
