@@ -66,12 +66,8 @@ class SchematicEditorWindow(QMainWindow):
         self._create_toolbars()
         self._create_dock_panels()
         self._create_status_bar()
-        self.editor.scene.selectionChanged.connect(self._on_layout_selection_changed)
-        self._layout_event_sequence = self._current_layout_event_sequence()
-        self._layout_event_timer = QTimer(self)
-        self._layout_event_timer.setInterval(300)
-        self._layout_event_timer.timeout.connect(self._poll_klayout_selection)
-        self._layout_event_timer.start()
+        self._layout_event_sequence = ""
+        self._layout_event_timer = None
 
     # ── Actions ───────────────────────────────────────────────
 
@@ -370,22 +366,6 @@ class SchematicEditorWindow(QMainWindow):
         hier_menu.addSeparator()
         hier_menu.addAction(self.act_symbol)
 
-        layout_menu = menubar.addMenu("&Layout")
-        layout_menu.addAction(self.act_open_layout)
-        layout_menu.addAction(self.act_import_from_source)
-        layout_menu.addAction(self.act_update_layout)
-        layout_menu.addSeparator()
-        layout_menu.addAction(self.act_highlight_layout_device)
-        layout_menu.addAction(self.act_layout_highlight_sync)
-        layout_menu.addSeparator()
-        layout_menu.addAction(self.act_import_layout_stream)
-        layout_menu.addAction(self.act_export_layout_stream)
-        layout_menu.addSeparator()
-        layout_menu.addAction(self.act_run_drc)
-        layout_menu.addAction(self.act_run_lvs)
-        layout_menu.addSeparator()
-        layout_menu.addAction(self.act_layout_runtime)
-
         # Simulation
         sim_menu = menubar.addMenu("&Simulation")
         sim_menu.addAction(self.act_check_save)
@@ -452,17 +432,6 @@ class SchematicEditorWindow(QMainWindow):
         sim_tb.addAction(self.act_simulate)
         sim_tb.addAction(self.act_waveform)
         self.addToolBar(sim_tb)
-
-        layout_tb = QToolBar("Layout")
-        layout_tb.setIconSize(QSize(18, 18))
-        layout_tb.addAction(self.act_open_layout)
-        layout_tb.addAction(self.act_import_from_source)
-        layout_tb.addAction(self.act_highlight_layout_device)
-        layout_tb.addAction(self.act_import_layout_stream)
-        layout_tb.addAction(self.act_export_layout_stream)
-        layout_tb.addAction(self.act_run_drc)
-        layout_tb.addAction(self.act_run_lvs)
-        self.addToolBar(layout_tb)
 
         smart_tb = QToolBar("Lumen")
         smart_tb.setIconSize(QSize(18, 18))
