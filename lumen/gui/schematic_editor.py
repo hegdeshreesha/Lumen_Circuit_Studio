@@ -13,7 +13,6 @@ import math
 import copy
 import json
 import re
-from collections import defaultdict
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QGraphicsView, QGraphicsScene,
     QGraphicsLineItem, QGraphicsRectItem, QGraphicsTextItem,
@@ -1407,6 +1406,22 @@ class SchematicEditor(QWidget):
             (abs(p[0] - b[0]) < 1e-6 and abs(p[1] - b[1]) < 1e-6)
         )
 
+    def _wire_branch_dirs(
+        self,
+        p: tuple[float, float],
+        a: tuple[float, float],
+        b: tuple[float, float],
+    ) -> set[tuple[int, int]]:
+        dirs: set[tuple[int, int]] = set()
+        for q in (a, b):
+            dx = q[0] - p[0]
+            dy = q[1] - p[1]
+            if abs(dx) < 1e-6 and abs(dy) < 1e-6:
+                continue
+            dirs.add((0 if abs(dx) < 1e-6 else (1 if dx > 0 else -1),
+                      0 if abs(dy) < 1e-6 else (1 if dy > 0 else -1)))
+        return dirs
+
     def _segment_intersection(
         self,
         a1: tuple[float, float],
@@ -1432,7 +1447,11 @@ class SchematicEditor(QWidget):
         h1, h2 = (b1, b2) if a_vertical else (a1, a2)
         x = v1[0]
         y = h1[1]
-        if self._point_on_segment(x, y, v1, v2) and self._point_on_segment(x, y, h1, h2):
+        if (
+            self._point_on_segment(x, y, v1, v2)
+            and self._point_on_segment(x, y, h1, h2)
+            and (self._is_endpoint((x, y), v1, v2) or self._is_endpoint((x, y), h1, h2))
+        ):
             return (x, y)
         return None
 
@@ -1454,19 +1473,17 @@ class SchematicEditor(QWidget):
                 if ip is not None:
                     candidates.add(self._norm_point(*ip))
 
-        contributions: dict[tuple[int, int], int] = defaultdict(int)
         for nx, ny in candidates:
             px, py = float(nx), float(ny)
-            count = 0
+            branches: set[tuple[int, int]] = set()
             for a, b in segments:
                 if not self._point_on_segment(px, py, a, b):
                     continue
-                count += 1 if self._is_endpoint((px, py), a, b) else 2
-            if count >= 3:
-                contributions[(nx, ny)] = count
+                branches.update(self._wire_branch_dirs((px, py), a, b))
+            if len(branches) < 3:
+                continue
 
-        for (x, y) in contributions.keys():
-            dot = JunctionDot(float(x), float(y))
+            dot = JunctionDot(float(nx), float(ny))
             self.scene.addItem(dot)
             self.junction_dots.append(dot)
 
@@ -1781,12 +1798,36 @@ class SchematicEditor(QWidget):
 
     def name_selected_wires(self, net_name: str, as_bus: bool = False):
         """Assign a net or bus name to selected wires."""
-        for item in self.scene.selectedItems():
-            if isinstance(item, WireItem):
-                item.net_name = net_name
-                item.wire_kind = "bus" if as_bus else "wire"
-                if as_bus:
-                    item.setPen(QPen(QColor("#2dd4bf"), WIRE_WIDTH + 1))
+        selected = {item for item in self.scene.selectedItems() if isinstance(item, WireItem)}
+        if not selected:
+            return
+
+        segments_by_wire = {}
+        for wire in self.wires:
+            line = wire.line()
+            pos = wire.pos()
+            a = (line.x1() + pos.x(), line.y1() + pos.y())
+            b = (line.x2() + pos.x(), line.y2() + pos.y())
+            if self._norm_point(*a) != self._norm_point(*b):
+                segments_by_wire[wire] = (a, b)
+        named = set(selected)
+        queue = list(selected)
+        while queue:
+            wire = queue.pop(0)
+            a1, a2 = segments_by_wire.get(wire, ((0, 0), (0, 0)))
+            for other, (b1, b2) in segments_by_wire.items():
+                if other in named:
+                    continue
+                if self._segment_intersection(a1, a2, b1, b2) is not None:
+                    named.add(other)
+                    queue.append(other)
+
+        pen = QPen(QColor("#2dd4bf"), WIRE_WIDTH + 1) if as_bus else QPen(WIRE_COLOR, WIRE_WIDTH)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        for item in named:
+            item.net_name = net_name
+            item.wire_kind = "bus" if as_bus else "wire"
+            item.setPen(pen)
 
     def add_bus_tap(self, name: str):
         """Create a named tap label at the midpoint of the first selected wire."""

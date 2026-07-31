@@ -87,6 +87,28 @@ class ConnectivitySmokeTest(unittest.TestCase):
 
         self.assertEqual(engine.get_net_map(), {"VIN": ["R0.PLUS"]})
 
+    def test_crossing_wires_do_not_connect_unless_wire_ends_there(self):
+        engine = ConnectivityEngine()
+        engine.build_from_schematic({
+            "wires": [
+                {"x1": 0, "y1": 0, "x2": 20, "y2": 0},
+                {"x1": 10, "y1": -10, "x2": 10, "y2": 10},
+            ],
+            "labels": [
+                {"text": "H", "x": 0, "y": 0},
+                {"text": "V", "x": 10, "y": -10},
+            ],
+            "pins": [],
+            "instances": [],
+        })
+        engine.normalize_wires()
+        engine.add_instance_pins("RH", "primitives", "res", 20, 0, [{"name": "PLUS", "x": 0, "y": 0}])
+        engine.add_instance_pins("RV", "primitives", "res", 10, 10, [{"name": "PLUS", "x": 0, "y": 0}])
+
+        net_map = engine.get_net_map()
+        self.assertEqual(net_map["H"], ["RH.PLUS"])
+        self.assertEqual(net_map["V"], ["RV.PLUS"])
+
 
 if __name__ == "__main__":
     unittest.main()

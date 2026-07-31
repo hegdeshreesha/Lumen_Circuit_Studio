@@ -71,6 +71,43 @@ class SchematicClipboardTest(unittest.TestCase):
             dst.instances.append(SimpleNamespace(instance_name="R1"))
             self.assertEqual(dst._next_instance_name("R"), "R2")
 
+    def test_junction_dots_follow_cadence_crossing_rules(self):
+        _ = _app()
+        with tempfile.TemporaryDirectory() as tmp:
+            db = LibraryDatabase(tmp)
+            editor = SchematicEditor(db, "", "top", "schematic")
+            for wire in (WireItem(0, 0, 20, 0), WireItem(10, -10, 10, 10)):
+                editor.scene.addItem(wire)
+                editor.wires.append(wire)
+
+            editor._refresh_junction_dots()
+            self.assertEqual(len(editor.junction_dots), 0)
+
+            stub = WireItem(10, 0, 30, 0)
+            editor.scene.addItem(stub)
+            editor.wires.append(stub)
+            editor._refresh_junction_dots()
+            self.assertEqual(len(editor.junction_dots), 1)
+
+    def test_connected_horizontal_wires_share_name_without_dot(self):
+        _ = _app()
+        with tempfile.TemporaryDirectory() as tmp:
+            db = LibraryDatabase(tmp)
+            editor = SchematicEditor(db, "", "top", "schematic")
+            left = WireItem(0, 0, 10, 0)
+            right = WireItem(10, 0, 20, 0)
+            for wire in (left, right):
+                editor.scene.addItem(wire)
+                editor.wires.append(wire)
+
+            left.setSelected(True)
+            editor.name_selected_wires("VIN")
+            editor._refresh_junction_dots()
+
+            self.assertEqual(left.net_name, "VIN")
+            self.assertEqual(right.net_name, "VIN")
+            self.assertEqual(len(editor.junction_dots), 0)
+
 
 if __name__ == "__main__":
     unittest.main()
