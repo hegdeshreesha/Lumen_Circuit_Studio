@@ -152,6 +152,43 @@ class NetlistQucsSupportTest(unittest.TestCase):
         self.assertIn("xfer file=touchstone span=9", netlist)
         self.assertIn("XXSP_SP", netlist)
 
+    def test_schematic_child_emits_required_subckt_definition(self):
+        self._save_symbol(
+            "amp",
+            "amp",
+            [{"name": "IN", "x": -10, "y": 0}, {"name": "OUT", "x": 10, "y": 0}],
+            [],
+        )
+        self.db.save_view("work", "amp", "schematic", {
+            "type": "schematic",
+            "name": "amp",
+            "library": "work",
+            "instances": [{
+                "name": "R1",
+                "library": "primitives",
+                "cell": "res",
+                "x": 0,
+                "y": 0,
+                "params": {"R": "1k"},
+            }],
+            "wires": [{"x1": -10, "y1": 0, "x2": 0, "y2": -40},
+                      {"x1": 10, "y1": 0, "x2": 0, "y2": 40}],
+            "labels": [],
+            "pins": [{"name": "IN", "x": -10, "y": 0}, {"name": "OUT", "x": 10, "y": 0}],
+        })
+        self._save_top([{
+            "name": "X1",
+            "library": "work",
+            "cell": "amp",
+            "x": 0,
+            "y": 0,
+            "params": {},
+        }])
+        netlist = NetlistGenerator(self.db).generate("work", "top")
+        self.assertIn(".SUBCKT amp IN OUT", netlist)
+        self.assertIn("R1 IN OUT 1k", netlist)
+        self.assertIn("X1 net0 net1 amp", netlist)
+
     def test_malformed_pin_records_do_not_crash_netlisting(self):
         self._save_symbol(
             "badpins",

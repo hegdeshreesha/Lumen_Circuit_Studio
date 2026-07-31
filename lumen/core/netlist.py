@@ -133,8 +133,7 @@ class NetlistGenerator:
             lines.extend(inst_lines)
         else:
             # Generate hierarchical .subckt
-            pins = data.get("pins", [])
-            pin_names = [p.get("name", "") for p in pins]
+            pin_names = self._schematic_pin_names(data)
             port_str = " ".join(pin_names) if pin_names else ""
             lines.append(f".SUBCKT {cell} {port_str}")
             inst_lines = self._netlist_instances(data, net_map)
@@ -280,7 +279,51 @@ class NetlistGenerator:
         lines = []
         for sub in self._directives.subcircuits:
             lines.append(sub)
+        lines.extend(self._generate_child_subcircuits(data, set()))
         return lines
+
+    def _generate_child_subcircuits(self, data: dict, seen: set[tuple[str, str]]) -> list[str]:
+        """Emit schematic-backed child subcircuits needed by this schematic."""
+        lines: list[str] = []
+        for inst in data.get("instances", []):
+            lib_name = inst.get("library", "")
+            cell_name = inst.get("cell", "")
+            key = (lib_name, cell_name)
+            if key in seen or lib_name.startswith("pdk:"):
+                continue
+            child = self.db.load_view(lib_name, cell_name, "schematic")
+            if not child:
+                continue
+
+            seen.add(key)
+            lines.extend(self._generate_child_subcircuits(child, seen))
+
+            pin_names = self._schematic_pin_names(child)
+            port_str = " ".join(pin_names)
+            subckt_name = self._subckt_model_name(lib_name, cell_name)
+            child_net_map = self._build_net_map_connectivity(child) if self._use_connectivity else self._build_net_map(child)
+            child_lines = self._netlist_instances(child, child_net_map)
+            lines.append(f".SUBCKT {subckt_name}" + (f" {port_str}" if port_str else ""))
+            lines.extend(f"  {line}" for line in child_lines)
+            lines.append(f".ENDS {subckt_name}")
+        return lines
+
+    def _schematic_pin_names(self, data: dict) -> list[str]:
+        names: list[str] = []
+        for pin in data.get("pins", []):
+            name = pin.get("name", "") if isinstance(pin, dict) else str(pin)
+            name = str(name).strip()
+            if name:
+                names.append(name)
+        return names
+
+    def _subckt_model_name(self, library: str, cell: str) -> str:
+        sym = self._get_symbol_or_generated(library, cell)
+        if isinstance(sym, dict):
+            model = str(sym.get("spice_model", "")).strip()
+            if model:
+                return model
+        return cell
 
     def get_errors(self) -> list[str]:
         """Return any errors from the last netlist generation."""
@@ -288,9 +331,10 @@ class NetlistGenerator:
 
     def get_warnings(self) -> list[str]:
         """Return any warnings from the last netlist generation."""
+        warnings = list(self._warnings)
         if self._connectivity:
-            return self._connectivity.get_warnings()
-        return list(self._warnings)
+            warnings.extend(self._connectivity.get_warnings())
+        return list(dict.fromkeys(warnings))
 
     def _get_pdk_registry(self):
         """Lazily create the unified PDK registry bound to this workspace."""
