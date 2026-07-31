@@ -29,6 +29,7 @@ class _AnalysisHarness:
     _accuracy_options_line = ADEWindow._accuracy_options_line
     _sim_method_token = ADEWindow._sim_method_token
     _sim_save_mode_token = ADEWindow._sim_save_mode_token
+    _has_transient_initial_conditions = ADEWindow._has_transient_initial_conditions
 
 
 class _ConvergenceHarness(_AnalysisHarness):
@@ -76,6 +77,15 @@ class SimEnvAccuracyTest(unittest.TestCase):
         self.assertIn("LTE_RELTOL=1e-5", line)
         self.assertIn("TRTOL=1", line)
 
+    def test_loose_tolerance_override_is_ignored(self):
+        harness = _AnalysisHarness()
+        harness._sim_tolerance_override = "1"
+        line = ADEWindow._accuracy_options_line(harness)
+        self.assertIn("RELTOL=1e-4", line)
+        self.assertIn("LTE_RELTOL=3e-4", line)
+        self.assertNotIn("RELTOL=1 ", line)
+        self.assertNotIn("LTE_RELTOL=1 ", line)
+
     def test_automatic_transient_defaults_scale_with_stop_time(self):
         short = SimulatorBridge._parse_spice_number(
             gspice_transient_defaults("High", "5u")["step"]
@@ -111,13 +121,24 @@ class SimEnvAccuracyTest(unittest.TestCase):
         line = ADEWindow._analysis_spice_line(_AnalysisHarness(), "Transient", widget)
         self.assertEqual(line, ".TRAN 25p 5u 0 10p")
 
-    def test_transient_line_adds_uic_when_ic_helpers_exist(self):
+    def test_transient_line_implies_uic_from_ic_helpers(self):
         widget = _TransientWidget({
             "Step": "40p",
             "Stop": "2u",
             "Start": "0",
             "MaxStep": "Auto",
             "UIC": False,
+        })
+        line = ADEWindow._analysis_spice_line(_ConvergenceHarness(), "Transient", widget)
+        self.assertEqual(line, ".TRAN 40p 2u UIC")
+
+    def test_transient_line_keeps_explicit_uic(self):
+        widget = _TransientWidget({
+            "Step": "40p",
+            "Stop": "2u",
+            "Start": "0",
+            "MaxStep": "Auto",
+            "UIC": True,
         })
         line = ADEWindow._analysis_spice_line(_ConvergenceHarness(), "Transient", widget)
         self.assertEqual(line, ".TRAN 40p 2u UIC")

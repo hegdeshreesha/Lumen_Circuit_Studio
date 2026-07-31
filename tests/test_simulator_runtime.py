@@ -98,6 +98,134 @@ class SimulatorRuntimeManagerTest(unittest.TestCase):
             ],
         )
 
+    def test_gspice_prepare_removes_markdown_separator_lines(self):
+        bridge = SimulatorBridge("GSPICE", exe_path="gspice")
+        prepared, notes = bridge._prepare_netlist_for_simulator(
+            "* title\n-\nV1 out 0 DC 1\n.TRAN 1n 10n\n.END\n"
+        )
+        self.assertNotIn("\n-\n", prepared)
+        self.assertIn("V1 out 0 DC 1", prepared)
+        self.assertTrue(any("markdown separator" in note for note in notes))
+
+    def test_gspice_prepare_uses_be_for_psp_uic_auto_transient(self):
+        bridge = SimulatorBridge("GSPICE", exe_path="gspice")
+        prepared, notes = bridge._prepare_netlist_for_simulator(
+            "X1 out in vdd vdd sg13_lv_pmos l=0.5u w=0.15u\n"
+            ".OPTIONS METHOD=AUTO RELTOL=1e-4\n"
+            ".TRAN 1p 1n UIC\n"
+            ".END\n"
+        )
+        self.assertIn("METHOD=BE", prepared)
+        self.assertNotIn("METHOD=AUTO", prepared)
+        self.assertTrue(any("METHOD=BE selected" in note for note in notes))
+
+    def test_gspice_prepare_uses_be_for_non_uic_psp_transient(self):
+        bridge = SimulatorBridge("GSPICE", exe_path="gspice")
+        prepared, notes = bridge._prepare_netlist_for_simulator(
+            "X1 out in vdd vdd sg13_lv_pmos l=0.5u w=0.15u\n"
+            ".OPTIONS METHOD=AUTO RELTOL=1e-4\n"
+            ".TRAN 1p 1n\n"
+            ".END\n"
+        )
+        self.assertIn("METHOD=BE", prepared)
+        self.assertNotIn("METHOD=AUTO", prepared)
+        self.assertTrue(any("METHOD=BE selected" in note for note in notes))
+
+    def test_gspice_prepare_inserts_be_for_psp_transient_without_method(self):
+        bridge = SimulatorBridge("GSPICE", exe_path="gspice")
+        prepared, notes = bridge._prepare_netlist_for_simulator(
+            "X1 out in vdd vdd sg13_lv_pmos l=0.5u w=0.15u\n"
+            ".OPTIONS RELTOL=1e-4\n"
+            ".TRAN 1p 1n\n"
+            ".END\n"
+        )
+        self.assertIn(".OPTIONS RELTOL=1e-4 METHOD=BE", prepared)
+        self.assertTrue(any("METHOD=BE selected" in note for note in notes))
+
+    def test_gspice_crash_safe_keeps_subcircuit_instances(self):
+        bridge = SimulatorBridge("GSPICE", exe_path="gspice")
+        safe, notes = bridge._build_crash_safe_netlist(
+            '.LIB "models.lib" mos_tt\n'
+            "X1 out in vdd vdd sg13_lv_pmos l=0.5u w=0.15u\n"
+            ".SAVE ALL\n"
+            "C1 out 0 100f\n"
+            ".TRAN 1n 10n\n"
+            ".END\n"
+        )
+        self.assertIn('.LIB "models.lib" mos_tt', safe)
+        self.assertIn("X1 out in vdd vdd sg13_lv_pmos", safe)
+        self.assertIn(".SAVE ALL", safe)
+        self.assertFalse(notes)
+
+    def test_gspice_quality_rejects_stripped_or_loose_trivial_psp_transient(self):
+        bridge = SimulatorBridge("GSPICE", exe_path="gspice")
+        stdout = (
+            "Transient summary: accepted=56 rejected=0 output_points=50002 min_step=1e-12 max_step=2.2e-08\n"
+            "Accuracy summary: method=Auto reltol=1.000000000e+00 lte_reltol=1.000000000e+00\n"
+            "Simulation Completed Successfully.\n"
+        )
+        deck = (
+            "X1 out in vdd vdd sg13_lv_pmos l=0.5u w=0.15u\n"
+            ".TRAN 2.2e-11 1.1u UIC\n"
+            ".END\n"
+        )
+        errors = bridge._gspice_result_quality_errors(
+            stdout,
+            deck,
+            transient_point_estimate=50002,
+            crash_safe_notes=["[GSPICE crash-safe] Stripped 10 line(s) with risky/unsupported constructs and retried."],
+        )
+        self.assertTrue(any("crash-safe retry stripped" in error for error in errors))
+        self.assertTrue(any("RELTOL=1" in error for error in errors))
+        self.assertTrue(any("LTE_RELTOL=1" in error for error in errors))
+        self.assertTrue(any("accepted only 56" in error for error in errors))
+
+    def test_gspice_quality_allows_reasonable_transient_summary(self):
+        bridge = SimulatorBridge("GSPICE", exe_path="gspice")
+        stdout = (
+            "Transient summary: accepted=240 rejected=2 output_points=50002 min_step=1e-14 max_step=2.2e-11\n"
+            "Accuracy summary: method=Auto reltol=1.000000000e-04 lte_reltol=3.000000000e-04\n"
+        )
+        deck = "X1 out in vdd vdd sg13_lv_pmos l=0.5u w=0.15u\n.TRAN 2.2e-11 1.1u\n.END\n"
+        self.assertEqual(
+            bridge._gspice_result_quality_errors(stdout, deck, transient_point_estimate=50002, crash_safe_notes=[]),
+            [],
+        )
+
+    def test_gspice_min_timestep_failure_gets_actionable_diagnostic(self):
+        bridge = SimulatorBridge("GSPICE", exe_path="gspice")
+        deck = (
+            "X1 out in vdd vdd sg13_lv_pmos l=0.5u w=0.15u\n"
+            ".OPTIONS RELTOL=1 LTE_RELTOL=1\n"
+            ".TRAN 2.2e-11 1.1u UIC\n"
+            ".END\n"
+        )
+        notes = bridge._backend_specific_diagnostics(
+            "",
+            "ERROR: Simulation failed: Transient step failed to converge at minimum timestep "
+            "at time=2.356728984e-08 step=2.2e-14 update_error=inf residual_error=inf\n",
+            deck,
+        )
+        self.assertTrue(any("minimum timestep" in note for note in notes))
+        self.assertTrue(any("RELTOL=1" in note for note in notes))
+        self.assertTrue(any("LTE_RELTOL=1" in note for note in notes))
+
+    def test_gspice_dc_op_failure_gets_ring_startup_diagnostic(self):
+        bridge = SimulatorBridge("GSPICE", exe_path="gspice")
+        deck = (
+            "X1 out in vdd vdd sg13_lv_pmos l=0.5u w=0.15u\n"
+            ".TRAN 2.2e-11 1.1u\n"
+            ".END\n"
+        )
+        notes = bridge._backend_specific_diagnostics(
+            "Calculating DC Operating Point...\n",
+            "ERROR: Simulation failed: DC operating point did not converge during "
+            "Calculating DC Operating Point... PTC final\n",
+            deck,
+        )
+        self.assertTrue(any("could not find a DC operating point" in note for note in notes))
+        self.assertTrue(any("ring oscillators" in note for note in notes))
+
     def test_waveform_comparison_interpolates_reference_axis(self):
         primary = {
             "time": [0.0, 0.5, 1.0],

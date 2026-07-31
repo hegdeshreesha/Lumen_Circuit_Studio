@@ -12,13 +12,21 @@ Interactive waveform plotting window with:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 import ast
 import csv
 import json
 import math
 import re
 from pathlib import Path
+from typing import Any
+
+try:
+    import numpy as np
+    HAS_NUMPY = True
+except ImportError:
+    HAS_NUMPY = False
+    np = None
 
 from PyQt6.QtCore import Qt, QPoint, QPointF, QRectF, QSize, pyqtSignal
 from PyQt6.QtGui import (
@@ -28,6 +36,7 @@ from PyQt6.QtGui import (
     QColor,
     QFont,
     QPainterPath,
+    QPolygonF,
     QKeySequence,
     QWheelEvent,
 )
@@ -325,6 +334,19 @@ class TraceRecord:
     y_data: list[float]
     visible: bool = True
     source: str = ""
+    np_x: Any = None
+    np_y: Any = None
+    cache_key: tuple | None = None
+    cache_polygon: Any = None
+
+    def get_np_arrays(self):
+        if HAS_NUMPY and self.np_x is None and self.x_data and self.y_data:
+            try:
+                self.np_x = np.ascontiguousarray(self.x_data, dtype=np.float64)
+                self.np_y = np.ascontiguousarray(self.y_data, dtype=np.float64)
+            except Exception:
+                pass
+        return self.np_x, self.np_y
 
 
 @dataclass
@@ -802,53 +824,235 @@ class WaveformCanvas(QWidget):
             self._draw_trace_points(painter, trace, rect, y_min, y_max)
 
     def _draw_trace_line(self, painter: QPainter, trace: TraceRecord, rect: QRectF, y_min: float, y_max: float):
-        width = 2.7 if trace.name == self.selected_trace_name else 1.8
-        pen = QPen(trace.color, width)
-        pen.setCosmetic(True)
-        painter.setPen(pen)
+        try:
+            width = 2.7 if trace.name == self.selected_trace_name else 1.8
+            pen = QPen(trace.color, width)
+            pen.setCosmetic(True)
+            painter.setPen(pen)
 
-        x_data = trace.x_data
-        y_data = trace.y_data
-        n = min(len(x_data), len(y_data))
-        if n < 1:
-            return
-        if n == 1:
-            xv = x_data[0]
-            yv = y_data[0]
-            if isinstance(xv, (int, float)) and isinstance(yv, (int, float)) and math.isfinite(xv) and math.isfinite(yv):
-                pp = self._data_to_screen(xv, yv, lane_rect=rect, y_min=y_min, y_max=y_max)
-                painter.drawEllipse(pp, 4.0, 4.0)
-            return
+            x_data = trace.x_data
+            y_data = trace.y_data
+            n = min(len(x_data), len(y_data))
+            if n < 1:
+                return
+            if n == 1:
+                xv = x_data[0]
+                yv = y_data[0]
+                if isinstance(xv, (int, float)) and isinstance(yv, (int, float)) and math.isfinite(xv) and math.isfinite(yv):
+                    pp = self._data_to_screen(xv, yv, lane_rect=rect, y_min=y_min, y_max=y_max)
+                    painter.drawEllipse(pp, 4.0, 4.0)
+                return
 
-        target = max(1200, int(rect.width()) * 4)
-        draw_x, draw_y = self._line_render_samples(x_data[:n], y_data[:n], target)
-        path = QPainterPath()
-        points = [
-            self._data_to_screen(xv, yv, lane_rect=rect, y_min=y_min, y_max=y_max)
-            for xv, yv in zip(draw_x, draw_y)
-            if isinstance(xv, (int, float)) and isinstance(yv, (int, float)) and math.isfinite(xv) and math.isfinite(yv)
-        ]
-        self._append_smooth_path(path, points)
-        painter.drawPath(path)
+            width_px = max(200, int(rect.width()))
+            height_px = max(200, int(rect.height()))
+            cache_key = (
+                round(self.x_min, 12),
+                round(self.x_max, 12),
+                round(y_min, 8),
+                round(y_max, 8),
+                int(rect.left()),
+                int(rect.top()),
+                width_px,
+                height_px,
+                trace.name == self.selected_trace_name
+            )
+
+            if trace.cache_key == cache_key and trace.cache_polygon is not None:
+                if isinstance(trace.cache_polygon, QPolygonF):
+                    painter.drawPolyline(trace.cache_polygon)
+                    return
+                elif isinstance(trace.cache_polygon, QPainterPath):
+                    painter.drawPath(trace.cache_polygon)
+                    return
+
+            np_x, np_y = trace.get_np_arrays()
+            polygon = None
+            is_path = False
+
+            if HAS_NUMPY and np_x is not None and np_y is not None and len(np_x) == n and len(np_y) == n:
+                polygon, is_path = self._vectorized_line_render(np_x, np_y, self.x_min, self.x_max, y_min, y_max, rect)
+
+            if polygon is None:
+                draw_x, draw_y = self._line_render_samples(x_data[:n], y_data[:n], self.x_min, self.x_max, width_px)
+                points = [
+                    self._data_to_screen(xv, yv, lane_rect=rect, y_min=y_min, y_max=y_max)
+                    for xv, yv in zip(draw_x, draw_y)
+                    if isinstance(xv, (int, float)) and isinstance(yv, (int, float)) and math.isfinite(xv) and math.isfinite(yv)
+                ]
+                if not points:
+                    return
+                if len(points) > 120:
+                    polygon = QPolygonF(points)
+                    is_path = False
+                else:
+                    path = QPainterPath()
+                    self._append_smooth_path(path, points)
+                    polygon = path
+                    is_path = True
+
+            trace.cache_key = cache_key
+            trace.cache_polygon = polygon
+
+            if is_path:
+                painter.drawPath(polygon)
+            else:
+                painter.drawPolyline(polygon)
+        except Exception:
+            pass
+
+    def _vectorized_line_render(self, np_x: np.ndarray, np_y: np.ndarray, x_min: float, x_max: float, y_min: float, y_max: float, rect: QRectF):
+        n = min(len(np_x), len(np_y))
+        if n == 0:
+            return QPolygonF(), False
+
+        is_sorted = (n <= 1) or (np_x[0] <= np_x[n - 1])
+        if is_sorted:
+            i0 = max(0, int(np.searchsorted(np_x, x_min, side='left')) - 1)
+            i1 = min(n, int(np.searchsorted(np_x, x_max, side='right')) + 1)
+        else:
+            i0 = 0
+            i1 = n
+
+        if i0 >= i1:
+            i0 = 0
+            i1 = n
+
+        n_vis = i1 - i0
+        width_px = max(200, int(rect.width()))
+        target_bins = width_px * 2
+
+        if n_vis <= target_bins:
+            x_sub = np_x[i0:i1]
+            y_sub = np_y[i0:i1]
+        else:
+            bin_len = n_vis // target_bins
+            if bin_len < 1:
+                x_sub = np_x[i0:i1]
+                y_sub = np_y[i0:i1]
+            else:
+                tot = target_bins * bin_len
+                x_g = np_x[i0:i0 + tot].reshape(target_bins, bin_len)
+                y_g = np_y[i0:i0 + tot].reshape(target_bins, bin_len)
+
+                min_i = np.argmin(y_g, axis=1)
+                max_i = np.argmax(y_g, axis=1)
+                rows = np.arange(target_bins)
+
+                idx1 = np.minimum(min_i, max_i)
+                idx2 = np.maximum(min_i, max_i)
+
+                x_sub = np.empty(target_bins * 2, dtype=np.float64)
+                y_sub = np.empty(target_bins * 2, dtype=np.float64)
+
+                x_sub[0::2] = x_g[rows, idx1]
+                x_sub[1::2] = x_g[rows, idx2]
+                y_sub[0::2] = y_g[rows, idx1]
+                y_sub[1::2] = y_g[rows, idx2]
+
+        dx = (x_max - x_min) or 1.0
+        dy = (y_max - y_min) or 1.0
+
+        sx = rect.left() + ((x_sub - x_min) / dx) * rect.width()
+        sy = rect.bottom() - ((y_sub - y_min) / dy) * rect.height()
+
+        valid = np.isfinite(sx) & np.isfinite(sy)
+        if not np.all(valid):
+            sx = sx[valid]
+            sy = sy[valid]
+
+        points = [QPointF(float(px), float(py)) for px, py in zip(sx, sy)]
+        if len(points) <= 120:
+            path = QPainterPath()
+            self._append_smooth_path(path, points)
+            return path, True
+        return QPolygonF(points), False
 
     @staticmethod
-    def _line_render_samples(x_data: list[float], y_data: list[float], target: int) -> tuple[list[float], list[float]]:
-        finite_x: list[float] = []
-        finite_y: list[float] = []
-        for xv, yv in zip(x_data, y_data):
-            if (
-                isinstance(xv, (int, float)) and isinstance(yv, (int, float)) and
-                math.isfinite(xv) and math.isfinite(yv)
-            ):
-                finite_x.append(float(xv))
-                finite_y.append(float(yv))
-        if len(finite_x) <= target:
-            return finite_x, finite_y
+    def _line_render_samples(x_data: list[float], y_data: list[float], x_min: float, x_max: float, width_px: int) -> tuple[list[float], list[float]]:
         try:
-            return lttb_decimate(finite_x, finite_y, target_points=target)
+            n = min(len(x_data), len(y_data))
+            if n == 0:
+                return [], []
+
+            is_sorted = (n <= 1) or (x_data[0] <= x_data[n - 1])
+            if is_sorted:
+                i_start = bisect_left(x_data, x_min, 0, n)
+                if i_start > 0:
+                    i_start -= 1
+                i_end = bisect_right(x_data, x_max, 0, n)
+                if i_end < n:
+                    i_end += 1
+            else:
+                i_start = 0
+                i_end = n
+
+            if i_start >= i_end:
+                i_start = 0
+                i_end = n
+
+            n_vis = i_end - i_start
+            target_bins = max(300, width_px * 2)
+
+            if n_vis <= target_bins:
+                sub_x = x_data[i_start:i_end]
+                sub_y = y_data[i_start:i_end]
+                return [float(x) for x in sub_x], [float(y) for y in sub_y]
+
+            bin_size = max(1.0, n_vis / target_bins)
+            out_x: list[float] = []
+            out_y: list[float] = []
+
+            for b in range(target_bins):
+                b0 = i_start + int(b * bin_size)
+                b1 = min(n, i_start + int((b + 1) * bin_size))
+                if b0 >= b1 or b0 >= n:
+                    continue
+
+                sub_y = y_data[b0:b1]
+                if not sub_y:
+                    continue
+
+                min_idx = 0
+                max_idx = 0
+                min_val = float("inf")
+                max_val = float("-inf")
+                has_finite = False
+
+                for k, v in enumerate(sub_y):
+                    if isinstance(v, (int, float)) and math.isfinite(v):
+                        has_finite = True
+                        if v < min_val:
+                            min_val = v
+                            min_idx = k
+                        if v > max_val:
+                            max_val = v
+                            max_idx = k
+
+                if not has_finite:
+                    continue
+
+                idx1, idx2 = (min_idx, max_idx) if min_idx <= max_idx else (max_idx, min_idx)
+
+                pos1 = b0 + idx1
+                if 0 <= pos1 < n:
+                    x1, y1 = x_data[pos1], y_data[pos1]
+                    if isinstance(x1, (int, float)) and isinstance(y1, (int, float)) and math.isfinite(x1) and math.isfinite(y1):
+                        out_x.append(float(x1))
+                        out_y.append(float(y1))
+
+                if idx1 != idx2:
+                    pos2 = b0 + idx2
+                    if 0 <= pos2 < n:
+                        x2, y2 = x_data[pos2], y_data[pos2]
+                        if isinstance(x2, (int, float)) and isinstance(y2, (int, float)) and math.isfinite(x2) and math.isfinite(y2):
+                            out_x.append(float(x2))
+                            out_y.append(float(y2))
+
+            return out_x, out_y
         except Exception:
-            stride = max(1, int(len(finite_x) / max(target, 1)))
-            return finite_x[::stride], finite_y[::stride]
+            target = max(600, width_px * 2)
+            stride = max(1, len(x_data) // target) if len(x_data) > 0 else 1
+            return [float(x) for x in x_data[::stride]], [float(y) for y in y_data[::stride]]
 
     @staticmethod
     def _append_smooth_path(path: QPainterPath, points: list[QPointF]) -> None:
@@ -896,29 +1100,51 @@ class WaveformCanvas(QWidget):
             path.cubicTo(c1, c2, p2)
 
     def _draw_trace_points(self, painter: QPainter, trace: TraceRecord, rect: QRectF, y_min: float, y_max: float):
-        x_data = trace.x_data
-        y_data = trace.y_data
-        n = min(len(x_data), len(y_data))
-        if n < 1:
-            return
-        target_points = max(300, int(rect.width()) * 3)
-        stride = max(1, int(n / target_points))
-        radius = 3.0 if trace.name == self.selected_trace_name else 2.2
-        fill = QColor(trace.color)
-        fill.setAlpha(220)
-        painter.setPen(QPen(trace.color, 1))
-        painter.setBrush(fill)
-        for idx in range(0, n, stride):
-            xv = x_data[idx]
-            yv = y_data[idx]
-            if not (
-                isinstance(xv, (int, float)) and isinstance(yv, (int, float)) and
-                math.isfinite(xv) and math.isfinite(yv)
-            ):
-                continue
-            pp = self._data_to_screen(xv, yv, lane_rect=rect, y_min=y_min, y_max=y_max)
-            if rect.left() - radius <= pp.x() <= rect.right() + radius and rect.top() - radius <= pp.y() <= rect.bottom() + radius:
-                painter.drawEllipse(pp, radius, radius)
+        try:
+            x_data = trace.x_data
+            y_data = trace.y_data
+            n = min(len(x_data), len(y_data))
+            if n < 1:
+                return
+
+            is_sorted = (n <= 1) or (x_data[0] <= x_data[n - 1])
+            if is_sorted:
+                i_start = bisect_left(x_data, self.x_min, 0, n)
+                if i_start > 0:
+                    i_start -= 1
+                i_end = bisect_right(x_data, self.x_max, 0, n)
+                if i_end < n:
+                    i_end += 1
+            else:
+                i_start = 0
+                i_end = n
+
+            if i_start >= i_end:
+                i_start = 0
+                i_end = n
+
+            n_vis = i_end - i_start
+            target_points = max(300, int(rect.width()) * 3)
+            stride = max(1, int(n_vis / target_points))
+            radius = 3.0 if trace.name == self.selected_trace_name else 2.2
+            fill = QColor(trace.color)
+            fill.setAlpha(220)
+            painter.setPen(QPen(trace.color, 1))
+            painter.setBrush(fill)
+            for idx in range(i_start, i_end, stride):
+                if 0 <= idx < n:
+                    xv = x_data[idx]
+                    yv = y_data[idx]
+                    if not (
+                        isinstance(xv, (int, float)) and isinstance(yv, (int, float)) and
+                        math.isfinite(xv) and math.isfinite(yv)
+                    ):
+                        continue
+                    pp = self._data_to_screen(xv, yv, lane_rect=rect, y_min=y_min, y_max=y_max)
+                    if rect.left() - radius <= pp.x() <= rect.right() + radius and rect.top() - radius <= pp.y() <= rect.bottom() + radius:
+                        painter.drawEllipse(pp, radius, radius)
+        except Exception:
+            pass
 
     def _draw_grid(self, painter: QPainter, rect: QRectF, x0: float, x1: float, y0: float, y1: float, light: bool = False):
         grid_color = QColor("#232a31" if light else "#2a3038")

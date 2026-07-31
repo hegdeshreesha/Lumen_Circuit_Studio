@@ -609,10 +609,13 @@ class SchematicCanvas(QGraphicsView):
             self._zoom_band.deleteLater()
             self._zoom_band = None
             if band_rect.width() < 8 and band_rect.height() < 8:
-                editor = self.parent()
-                if hasattr(editor, "show_context_menu"):
+                editor = self
+                while editor is not None and not hasattr(editor, "show_context_menu"):
+                    editor = editor.parent()
+                if editor is not None and hasattr(editor, "show_context_menu"):
                     scene_pos = self.mapToScene(event.position().toPoint())
-                    editor.show_context_menu(scene_pos, event.globalPosition().toPoint())
+                    g_pos = event.globalPosition().toPoint() if hasattr(event, "globalPosition") else QCursor.pos()
+                    editor.show_context_menu(scene_pos, g_pos)
             else:
                 self.zoom_to_view_rect(band_rect)
             event.accept()
@@ -1054,7 +1057,7 @@ class SchematicEditor(QWidget):
 
     def _wire_net_names_by_geometry(self) -> dict[int, str]:
         """Map visible wires to canonical net names using netlist connectivity."""
-        data = self.get_data()
+        data = self.to_data()
         gen = NetlistGenerator(self.db)
         try:
             gen._build_net_map_connectivity(data)
@@ -1261,6 +1264,10 @@ class SchematicEditor(QWidget):
             "labels": label_data,
             "pins": pin_data
         }
+
+    def get_data(self) -> dict:
+        """Return the current schematic state dictionary (alias for to_data)."""
+        return self.to_data()
 
     # ── Mode Management ───────────────────────────────────────
 
@@ -1846,60 +1853,71 @@ class SchematicEditor(QWidget):
 
     def show_context_menu(self, scene_pos: QPointF, global_pos):
         """Show schematic object actions at the clicked scene position."""
-        item = self.scene.itemAt(scene_pos, QTransform())
-        top = item
-        while top is not None and top.parentItem():
-            top = top.parentItem()
+        try:
+            item = self.scene.itemAt(scene_pos, QTransform())
+            top = item
+            while top is not None and top.parentItem():
+                top = top.parentItem()
 
-        if top is not None:
-            try:
-                top.setSelected(True)
-            except Exception:
-                pass
+            if top is not None:
+                try:
+                    top.setSelected(True)
+                except Exception:
+                    pass
 
-        net = self._pick_net_at(scene_pos)
-        inst = top if isinstance(top, InstanceItem) else self.selected_instance()
+            net = self._pick_net_at(scene_pos)
+            inst = top if isinstance(top, InstanceItem) else self.selected_instance()
 
-        menu = QMenu(self)
-        title_text = "Schematic"
-        if isinstance(inst, InstanceItem):
-            title_text = inst.instance_name
-        elif net:
-            title_text = net
-        title = QAction(title_text, self)
-        title.setEnabled(False)
-        menu.addAction(title)
-        menu.addSeparator()
+            menu = QMenu(self)
+            title_text = "Schematic"
+            if isinstance(inst, InstanceItem):
+                title_text = inst.instance_name
+            elif net:
+                title_text = net
+            title = QAction(title_text, self)
+            title.setEnabled(False)
+            menu.addAction(title)
+            menu.addSeparator()
 
-        if net:
-            act_node = QAction("Annotate DC Node Voltage", self)
-            act_node.triggered.connect(
-                lambda _=False, n=net, p=QPointF(scene_pos): self.dc_annotation_requested.emit(
-                    "node_voltage", {"net": n, "x": p.x(), "y": p.y()}
+            if net:
+                act_node = QAction("Annotate DC Node Voltage", self)
+                act_node.triggered.connect(
+                    lambda _=False, n=net, p=QPointF(scene_pos): self.dc_annotation_requested.emit(
+                        "node_voltage", {"net": n, "x": p.x(), "y": p.y()}
+                    )
                 )
-            )
-            menu.addAction(act_node)
+                menu.addAction(act_node)
 
-        if isinstance(inst, InstanceItem):
-            act_op = QAction("Annotate DC Operating Point", self)
-            act_op.triggered.connect(
-                lambda _=False, i=inst.instance_name: self.dc_annotation_requested.emit(
-                    "operating_point", {"instance": i}
+            if isinstance(inst, InstanceItem):
+                act_op = QAction("Annotate DC Operating Point", self)
+                act_op.triggered.connect(
+                    lambda _=False, i=inst.instance_name: self.dc_annotation_requested.emit(
+                        "operating_point", {"instance": i}
+                    )
                 )
+                menu.addAction(act_op)
+
+            act_all_nodes = QAction("Annotate All DC Node Voltages", self)
+            act_all_nodes.triggered.connect(
+                lambda _=False: self.dc_annotation_requested.emit("all_node_voltages", {})
             )
-            menu.addAction(act_op)
+            menu.addAction(act_all_nodes)
 
-        act_all_nodes = QAction("Annotate All DC Node Voltages", self)
-        act_all_nodes.triggered.connect(
-            lambda _=False: self.dc_annotation_requested.emit("all_node_voltages", {})
-        )
-        menu.addAction(act_all_nodes)
+            menu.addSeparator()
+            act_clear = QAction("Clear DC Annotations", self)
+            act_clear.triggered.connect(self.clear_dc_annotations)
+            menu.addAction(act_clear)
 
-        menu.addSeparator()
-        act_clear = QAction("Clear DC Annotations", self)
-        act_clear.triggered.connect(self.clear_dc_annotations)
-        menu.addAction(act_clear)
-        menu.exec(global_pos)
+            if isinstance(global_pos, QPointF):
+                exec_pos = global_pos.toPoint()
+            elif isinstance(global_pos, QPoint):
+                exec_pos = global_pos
+            else:
+                exec_pos = QCursor.pos()
+
+            menu.exec(exec_pos)
+        except Exception as exc:
+            print(f"[SchematicEditor] Context menu error: {exc}")
 
     def keyPressEvent(self, event: QKeyEvent):
         """Handle keyboard shortcuts."""
@@ -2034,7 +2052,7 @@ class SchematicEditor(QWidget):
             if resolved:
                 return resolved
 
-        data = self.get_data()
+        data = self.to_data()
         gen = NetlistGenerator(self.db)
         try:
             gen._build_net_map_connectivity(data)

@@ -1195,7 +1195,7 @@ class SchematicEditorWindow(QMainWindow):
                 continue
             if isinstance(values, (int, float)):
                 return True
-            if isinstance(values, (list, tuple)) and values:
+            if hasattr(values, "__len__") and len(values) > 0:
                 return True
         return False
 
@@ -1305,17 +1305,31 @@ class SchematicEditorWindow(QMainWindow):
 
     @staticmethod
     def _last_finite_scalar(values) -> float | None:
-        if isinstance(values, (int, float)):
-            return float(values) if math.isfinite(float(values)) else None
-        if not isinstance(values, (list, tuple)):
+        if values is None:
             return None
-        for raw in reversed(values):
+        if isinstance(values, (int, float)):
+            val = float(values)
+            return val if math.isfinite(val) else None
+        try:
+            val = float(values)
+            if math.isfinite(val):
+                return val
+        except (TypeError, ValueError):
+            pass
+        if hasattr(values, "__len__") and hasattr(values, "__getitem__"):
             try:
-                value = float(raw)
-            except (TypeError, ValueError):
-                continue
-            if math.isfinite(value):
-                return value
+                n = len(values)
+                if n == 0:
+                    return None
+                for i in range(n - 1, -1, -1):
+                    try:
+                        val = float(values[i])
+                        if math.isfinite(val):
+                            return val
+                    except (TypeError, ValueError, IndexError):
+                        continue
+            except Exception:
+                pass
         return None
 
     def _on_descend(self):
