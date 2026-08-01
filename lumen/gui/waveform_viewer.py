@@ -71,7 +71,6 @@ from lumen.gui.branding import apply_window_branding
 from lumen.gui.icons import editor_icon
 from lumen.core.simulator import SimulatorBridge
 from lumen.core.waveform_calculator import WaveformCalculator
-from lumen.core.decimation import lttb_decimate
 from lumen.gui.calculator_window import CalculatorWindow
 
 
@@ -542,10 +541,10 @@ class WaveformCanvas(QWidget):
         self.update()
 
     def zoom_in(self):
-        self.zoom_by(0.78)
+        self.zoom_by(0.78, y_axis=False)
 
     def zoom_out(self):
-        self.zoom_by(1.0 / 0.78)
+        self.zoom_by(1.0 / 0.78, y_axis=False)
 
     def zoom_by(self, factor: float, center: QPointF | None = None, x_axis: bool = True, y_axis: bool = True):
         if not self.traces or factor <= 0:
@@ -564,6 +563,8 @@ class WaveformCanvas(QWidget):
         if y_axis and not self.stacked_mode:
             self.y_min = cy + (self.y_min - cy) * factor
             self.y_max = cy + (self.y_max - cy) * factor
+        elif x_axis and not self.stacked_mode:
+            self._fit_y_to_visible_x()
         self._normalize_ranges()
         self.update()
         self._emit_cursor_text()
@@ -585,6 +586,43 @@ class WaveformCanvas(QWidget):
         self._normalize_ranges()
         self.update()
         self._emit_cursor_text()
+
+    def _fit_y_to_visible_x(self):
+        y_lo = float("inf")
+        y_hi = float("-inf")
+        for trace in self.traces:
+            if not trace.visible or not trace.x_data or not trace.y_data:
+                continue
+            n = min(len(trace.x_data), len(trace.y_data))
+            lo, hi = self._visible_index_bounds(trace.x_data, self.x_min, self.x_max, n)
+            if hi <= lo:
+                continue
+            for idx in range(lo, hi):
+                v = trace.y_data[idx]
+                if isinstance(v, (int, float)) and math.isfinite(v):
+                    y_lo = min(y_lo, v)
+                    y_hi = max(y_hi, v)
+        if not math.isfinite(y_lo) or not math.isfinite(y_hi):
+            return
+        self.y_min = y_lo
+        self.y_max = y_hi
+        margin = (self.y_max - self.y_min) * 0.08 or 0.1
+        self.y_min -= margin
+        self.y_max += margin
+
+    @staticmethod
+    def _visible_index_bounds(x_data: list[float], x_min: float, x_max: float, n: int) -> tuple[int, int]:
+        if n <= 0:
+            return 0, 0
+        if n <= 1 or x_data[0] <= x_data[n - 1]:
+            i_start = bisect_left(x_data, x_min, 0, n)
+            if i_start > 0:
+                i_start -= 1
+            i_end = bisect_right(x_data, x_max, 0, n)
+            if i_end < n:
+                i_end += 1
+            return max(0, i_start), min(n, i_end)
+        return 0, n
 
     def _normalize_ranges(self):
         if self.x_max == self.x_min:
@@ -787,8 +825,11 @@ class WaveformCanvas(QWidget):
     def _paint_overlay(self, painter: QPainter, plot: QRectF, traces: list[TraceRecord]):
         if self.show_grid:
             self._draw_grid(painter, plot, self.x_min, self.x_max, self.y_min, self.y_max)
+        painter.save()
+        painter.setClipRect(plot.adjusted(0, 0, 1, 1))
         for trace in traces:
             self._draw_trace(painter, trace, plot, self.y_min, self.y_max)
+        painter.restore()
 
     def _paint_stacked(self, painter: QPainter, plot: QRectF, traces: list[TraceRecord]):
         count = len(traces)
@@ -809,7 +850,10 @@ class WaveformCanvas(QWidget):
             if self.show_grid:
                 self._draw_grid(painter, lane, self.x_min, self.x_max, y0, y1, light=True)
 
+            painter.save()
+            painter.setClipRect(lane.adjusted(0, 0, 1, 1))
             self._draw_trace(painter, trace, lane, y0, y1)
+            painter.restore()
             painter.setPen(QPen(QColor("#8f9daa"), 1))
             painter.setFont(QFont("Consolas", 8))
             painter.drawText(int(lane.left() + 6), int(lane.top() + 14), trace.name)
@@ -919,7 +963,7 @@ class WaveformCanvas(QWidget):
 
         n_vis = i1 - i0
         width_px = max(200, int(rect.width()))
-        target_bins = width_px * 2
+        target_bins = width_px
 
         if n_vis <= target_bins:
             x_sub = np_x[i0:i1]
@@ -991,7 +1035,7 @@ class WaveformCanvas(QWidget):
                 i_end = n
 
             n_vis = i_end - i_start
-            target_bins = max(300, width_px * 2)
+            target_bins = max(300, width_px)
 
             if n_vis <= target_bins:
                 sub_x = x_data[i_start:i_end]
@@ -1050,7 +1094,7 @@ class WaveformCanvas(QWidget):
 
             return out_x, out_y
         except Exception:
-            target = max(600, width_px * 2)
+            target = max(600, width_px)
             stride = max(1, len(x_data) // target) if len(x_data) > 0 else 1
             return [float(x) for x in x_data[::stride]], [float(y) for y in y_data[::stride]]
 
@@ -1280,12 +1324,11 @@ class WaveformCanvas(QWidget):
         factor = 0.86 if event.angleDelta().y() > 0 else 1.0 / 0.86
         modifiers = event.modifiers()
         y_only = bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
-        x_only = bool(modifiers & Qt.KeyboardModifier.ControlModifier)
         self.zoom_by(
             factor,
             center=event.position(),
             x_axis=not y_only,
-            y_axis=not x_only,
+            y_axis=y_only,
         )
         event.accept()
 
