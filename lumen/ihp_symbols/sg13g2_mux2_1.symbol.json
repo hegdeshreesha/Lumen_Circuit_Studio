@@ -1,0 +1,252 @@
+{
+  "cdf": {
+    "display": {
+      "interpreted_labels": true
+    },
+    "parameters": [],
+    "sim_info": {
+      "spice": {
+        "component_name": "sg13g2_mux2_1",
+        "format": "@name @@X @@A0 @@A1 @@S @VDD @VSS @prefix\\\\\\\\mux2_1",
+        "prefix": "X"
+      }
+    },
+    "term_order": [
+      "A0",
+      "A1",
+      "S",
+      "X"
+    ]
+  },
+  "component_name": "sg13g2_mux2_1",
+  "library": "pdk:ihp_sg13g2",
+  "name": "sg13g2_mux2_1",
+  "parameters": [],
+  "pin_style": "terminal",
+  "pins": [
+    {
+      "bbox": [
+        -42.5,
+        -22.5,
+        -37.5,
+        -17.5
+      ],
+      "direction": "in",
+      "name": "A0",
+      "net_name": null,
+      "sim_pinnumber": null,
+      "x": -40.0,
+      "y": -20.0
+    },
+    {
+      "bbox": [
+        -42.5,
+        17.5,
+        -37.5,
+        22.5
+      ],
+      "direction": "in",
+      "name": "A1",
+      "net_name": null,
+      "sim_pinnumber": null,
+      "x": -40.0,
+      "y": 20.0
+    },
+    {
+      "bbox": [
+        -42.5,
+        57.5,
+        -37.5,
+        62.5
+      ],
+      "direction": "in",
+      "name": "S",
+      "net_name": null,
+      "sim_pinnumber": null,
+      "x": -40.0,
+      "y": 60.0
+    },
+    {
+      "bbox": [
+        37.5,
+        -2.5,
+        42.5,
+        2.5
+      ],
+      "direction": "out",
+      "name": "X",
+      "net_name": null,
+      "sim_pinnumber": null,
+      "x": 40.0,
+      "y": 0.0
+    }
+  ],
+  "prefix": "X",
+  "provenance": {
+    "source": "bundled_ihp_xschem_cache",
+    "xschem_group": "sg13g2_stdcells"
+  },
+  "render_options": {
+    "draw_pin_markers": true,
+    "pin_marker_size": 5,
+    "pin_marker_style": "xschem_box",
+    "use_text_shapes_for_labels": true
+  },
+  "shapes": [
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 17.5,
+      "x2": 40.0,
+      "y1": 0.0,
+      "y2": 0.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -40.0,
+      "x2": -20.0,
+      "y1": -20.0,
+      "y2": -20.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -40.0,
+      "x2": -20.0,
+      "y1": 20.0,
+      "y2": 20.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -40.0,
+      "x2": 0.0,
+      "y1": 60.0,
+      "y2": 60.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -20.0,
+      "x2": -20.0,
+      "y1": -30.0,
+      "y2": 30.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -20.0,
+      "x2": 17.5,
+      "y1": 30.0,
+      "y2": 15.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 17.5,
+      "x2": 17.5,
+      "y1": -15.0,
+      "y2": 15.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -20.0,
+      "x2": 17.5,
+      "y1": -30.0,
+      "y2": -15.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 0.0,
+      "x2": 0.0,
+      "y1": 22.5,
+      "y2": 60.0
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "A0",
+      "type": "text",
+      "x": -35.0,
+      "y": -34.0
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "A1",
+      "type": "text",
+      "x": -35.0,
+      "y": 6.0
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 1.0,
+      "size": 6,
+      "source": "xschem",
+      "text": "X",
+      "type": "text",
+      "x": 35.0,
+      "y": -14.0
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "@name",
+      "type": "text",
+      "x": -18.75,
+      "y": -5.0
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "@symname",
+      "type": "text",
+      "x": -15.0,
+      "y": -45.0
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "S",
+      "type": "text",
+      "x": -35.0,
+      "y": 46.0
+    }
+  ],
+  "source_format": "xschem",
+  "spice_model": "sg13g2_mux2_1",
+  "type": "symbol",
+  "xschem_format": "@name @@X @@A0 @@A1 @@S @VDD @VSS @prefix\\\\\\\\mux2_1",
+  "xschem_metadata": {
+    "VDD": "VDD",
+    "VSS": "VSS",
+    "dir": "out",
+    "extra": "VDD VSS prefix",
+    "goto": "3",
+    "highlight": "true",
+    "name": "X",
+    "prefix": "sg13g2_",
+    "propag": "3",
+    "type": "primitive"
+  },
+  "xschem_template": "name=x1 VDD=VDD VSS=VSS prefix=sg13g2_ "
+}

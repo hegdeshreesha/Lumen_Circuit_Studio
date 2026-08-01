@@ -1,0 +1,220 @@
+{
+  "cdf": {
+    "display": {
+      "interpreted_labels": true
+    },
+    "parameters": [],
+    "sim_info": {
+      "spice": {
+        "component_name": "sg13g2_ebufn_8",
+        "format": "@name @@Z @@A @@TE_B @VDD @VSS @prefix\\\\\\\\ebufn_8",
+        "prefix": "X"
+      }
+    },
+    "term_order": [
+      "A",
+      "TE_B",
+      "Z"
+    ]
+  },
+  "component_name": "sg13g2_ebufn_8",
+  "library": "pdk:ihp_sg13g2",
+  "name": "sg13g2_ebufn_8",
+  "parameters": [],
+  "pin_style": "terminal",
+  "pins": [
+    {
+      "bbox": [
+        -42.5,
+        -2.5,
+        -37.5,
+        2.5
+      ],
+      "direction": "in",
+      "name": "A",
+      "net_name": null,
+      "sim_pinnumber": null,
+      "x": -40.0,
+      "y": 0.0
+    },
+    {
+      "bbox": [
+        -42.5,
+        37.5,
+        -37.5,
+        42.5
+      ],
+      "direction": "in",
+      "name": "TE_B",
+      "net_name": null,
+      "sim_pinnumber": null,
+      "x": -40.0,
+      "y": 40.0
+    },
+    {
+      "bbox": [
+        37.5,
+        -2.5,
+        42.5,
+        2.5
+      ],
+      "direction": "out",
+      "name": "Z",
+      "net_name": null,
+      "sim_pinnumber": null,
+      "x": 40.0,
+      "y": 0.0
+    }
+  ],
+  "prefix": "X",
+  "provenance": {
+    "source": "bundled_ihp_xschem_cache",
+    "xschem_group": "sg13g2_stdcells"
+  },
+  "render_options": {
+    "draw_pin_markers": true,
+    "pin_marker_size": 5,
+    "pin_marker_style": "xschem_box",
+    "use_text_shapes_for_labels": true
+  },
+  "shapes": [
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -20.0,
+      "x2": -20.0,
+      "y1": -20.0,
+      "y2": 20.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -20.0,
+      "x2": 20.0,
+      "y1": -20.0,
+      "y2": 0.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -20.0,
+      "x2": 20.0,
+      "y1": 20.0,
+      "y2": 0.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 20.0,
+      "x2": 40.0,
+      "y1": 0.0,
+      "y2": 0.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -40.0,
+      "x2": -20.0,
+      "y1": 0.0,
+      "y2": 0.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -40.0,
+      "x2": 0.0,
+      "y1": 40.0,
+      "y2": 40.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 0.0,
+      "x2": 0.0,
+      "y1": 20.625,
+      "y2": 40.0
+    },
+    {
+      "cx": 0.0,
+      "cy": 15.625,
+      "rx": 5.0,
+      "ry": 5.0,
+      "source": "xschem",
+      "span": 360.0,
+      "start": 0.0,
+      "type": "arc"
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "A",
+      "type": "text",
+      "x": -35.0,
+      "y": -14.0
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "TE_B",
+      "type": "text",
+      "x": -35.0,
+      "y": 26.0
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 1.0,
+      "size": 6,
+      "source": "xschem",
+      "text": "Z",
+      "type": "text",
+      "x": 35.0,
+      "y": -14.0
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "@name",
+      "type": "text",
+      "x": 7.5,
+      "y": 15.0
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "@symname",
+      "type": "text",
+      "x": -7.5,
+      "y": -30.0
+    }
+  ],
+  "source_format": "xschem",
+  "spice_model": "sg13g2_ebufn_8",
+  "type": "symbol",
+  "xschem_format": "@name @@Z @@A @@TE_B @VDD @VSS @prefix\\\\\\\\ebufn_8",
+  "xschem_metadata": {
+    "VDD": "VDD",
+    "VSS": "VSS",
+    "dir": "out",
+    "extra": "VDD VSS prefix",
+    "goto": "2",
+    "highlight": "true",
+    "name": "Z",
+    "prefix": "sg13g2_",
+    "propag": "2",
+    "type": "primitive"
+  },
+  "xschem_template": "name=x1 VDD=VDD VSS=VSS prefix=sg13g2_ "
+}

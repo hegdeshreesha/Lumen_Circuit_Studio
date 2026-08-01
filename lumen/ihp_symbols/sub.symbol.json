@@ -1,0 +1,120 @@
+{
+  "cdf": {
+    "display": {
+      "interpreted_labels": true
+    },
+    "parameters": [
+      {
+        "default": "sub!",
+        "description": "IHP/xschem parameter lab",
+        "name": "lab"
+      }
+    ],
+    "sim_info": {
+      "spice": {
+        "component_name": "sub",
+        "format": "*.alias @lab",
+        "prefix": "X"
+      }
+    },
+    "term_order": [
+      "p"
+    ]
+  },
+  "component_name": "sub",
+  "library": "pdk:ihp_sg13g2",
+  "name": "sub",
+  "parameters": [
+    {
+      "default": "sub!",
+      "description": "IHP/xschem parameter lab",
+      "name": "lab"
+    }
+  ],
+  "pin_style": "terminal",
+  "pins": [
+    {
+      "bbox": [
+        -2.5,
+        -2.5,
+        2.5,
+        2.5
+      ],
+      "direction": "inout",
+      "name": "p",
+      "net_name": null,
+      "sim_pinnumber": null,
+      "x": 0.0,
+      "y": 0.0
+    }
+  ],
+  "prefix": "X",
+  "provenance": {
+    "source": "bundled_ihp_xschem_cache",
+    "xschem_group": "sg13g2_pr"
+  },
+  "render_options": {
+    "draw_pin_markers": true,
+    "pin_marker_size": 5,
+    "pin_marker_style": "xschem_box",
+    "use_text_shapes_for_labels": true
+  },
+  "shapes": [
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 0.0,
+      "x2": 0.0,
+      "y1": 0.0,
+      "y2": 12.5
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -5.0,
+      "x2": 5.0,
+      "y1": 12.5,
+      "y2": 12.5
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 0.0,
+      "x2": 5.0,
+      "y1": 17.5,
+      "y2": 12.5
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -5.0,
+      "x2": 0.0,
+      "y1": 12.5,
+      "y2": 17.5
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "@lab",
+      "type": "text",
+      "x": 7.5,
+      "y": 5.0
+    }
+  ],
+  "source_format": "xschem",
+  "spice_model": "sub",
+  "type": "symbol",
+  "xschem_format": "*.alias @lab",
+  "xschem_metadata": {
+    "dir": "inout",
+    "global": "true",
+    "goto": "0",
+    "lab": "sub!",
+    "name": "p",
+    "type": "label"
+  },
+  "xschem_template": "name=l1 lab=sub!"
+}

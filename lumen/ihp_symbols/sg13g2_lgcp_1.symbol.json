@@ -1,0 +1,206 @@
+{
+  "cdf": {
+    "display": {
+      "interpreted_labels": true
+    },
+    "parameters": [],
+    "sim_info": {
+      "spice": {
+        "component_name": "sg13g2_lgcp_1",
+        "format": "@name @@GCLK @@CLK @@GATE @VDD @VSS @prefix\\\\\\\\lgcp_1",
+        "prefix": "X"
+      }
+    },
+    "term_order": [
+      "CLK",
+      "GATE",
+      "GCLK"
+    ]
+  },
+  "component_name": "sg13g2_lgcp_1",
+  "library": "pdk:ihp_sg13g2",
+  "name": "sg13g2_lgcp_1",
+  "parameters": [],
+  "pin_style": "terminal",
+  "pins": [
+    {
+      "bbox": [
+        -92.5,
+        -12.5,
+        -87.5,
+        -7.5
+      ],
+      "direction": "in",
+      "name": "CLK",
+      "net_name": null,
+      "sim_pinnumber": null,
+      "x": -90.0,
+      "y": -10.0
+    },
+    {
+      "bbox": [
+        -92.5,
+        7.5,
+        -87.5,
+        12.5
+      ],
+      "direction": "in",
+      "name": "GATE",
+      "net_name": null,
+      "sim_pinnumber": null,
+      "x": -90.0,
+      "y": 10.0
+    },
+    {
+      "bbox": [
+        87.5,
+        -12.5,
+        92.5,
+        -7.5
+      ],
+      "direction": "out",
+      "name": "GCLK",
+      "net_name": null,
+      "sim_pinnumber": null,
+      "x": 90.0,
+      "y": -10.0
+    }
+  ],
+  "prefix": "X",
+  "provenance": {
+    "source": "bundled_ihp_xschem_cache",
+    "xschem_group": "sg13g2_stdcells"
+  },
+  "render_options": {
+    "draw_pin_markers": true,
+    "pin_marker_size": 5,
+    "pin_marker_style": "xschem_box",
+    "use_text_shapes_for_labels": true
+  },
+  "shapes": [
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -70.0,
+      "x2": 70.0,
+      "y1": -20.0,
+      "y2": -20.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -70.0,
+      "x2": 70.0,
+      "y1": 20.0,
+      "y2": 20.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -70.0,
+      "x2": -70.0,
+      "y1": -20.0,
+      "y2": 20.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 70.0,
+      "x2": 70.0,
+      "y1": -20.0,
+      "y2": 20.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -90.0,
+      "x2": -70.0,
+      "y1": -10.0,
+      "y2": -10.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -90.0,
+      "x2": -70.0,
+      "y1": 10.0,
+      "y2": 10.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 70.0,
+      "x2": 90.0,
+      "y1": -10.0,
+      "y2": -10.0
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "@symname",
+      "type": "text",
+      "x": 0.0,
+      "y": -6.0
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "@name",
+      "type": "text",
+      "x": 75.0,
+      "y": -32.0
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "CLK",
+      "type": "text",
+      "x": -65.0,
+      "y": -14.0
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "GATE",
+      "type": "text",
+      "x": -65.0,
+      "y": 6.0
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 1.0,
+      "size": 6,
+      "source": "xschem",
+      "text": "GCLK",
+      "type": "text",
+      "x": 65.0,
+      "y": -14.0
+    }
+  ],
+  "source_format": "xschem",
+  "spice_model": "sg13g2_lgcp_1",
+  "type": "symbol",
+  "xschem_format": "@name @@GCLK @@CLK @@GATE @VDD @VSS @prefix\\\\\\\\lgcp_1",
+  "xschem_metadata": {
+    "VDD": "VDD",
+    "VSS": "VSS",
+    "extra": "VDD VSS prefix",
+    "name": "x1",
+    "prefix": "sg13g2_",
+    "type": "primitive"
+  },
+  "xschem_template": "name=x1 VDD=VDD VSS=VSS prefix=sg13g2_ "
+}

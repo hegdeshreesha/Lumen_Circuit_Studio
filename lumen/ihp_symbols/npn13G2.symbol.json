@@ -1,107 +1,223 @@
 {
-  "type": "symbol",
+  "cdf": {
+    "display": {
+      "interpreted_labels": true
+    },
+    "parameters": [
+      {
+        "default": "1",
+        "description": "IHP/xschem parameter Nx",
+        "name": "Nx"
+      }
+    ],
+    "sim_info": {
+      "spice": {
+        "component_name": "npn13G2",
+        "format": "Q@name @pinlist @model le=900e-9 we=70.0n m=@Nx",
+        "prefix": "X"
+      }
+    },
+    "term_order": [
+      "C",
+      "B",
+      "E",
+      "S"
+    ]
+  },
+  "component_name": "npn13G2",
+  "library": "pdk:ihp_sg13g2",
   "name": "npn13G2",
-  "library": "ihp_primitives",
-  "prefix": "Q",
-  "spice_model": "npn13G2",
-  "pins": [
-    {
-      "name": "C",
-      "x": 0,
-      "y": -30,
-      "direction": "input"
-    },
-    {
-      "name": "B",
-      "x": -20,
-      "y": 0,
-      "direction": "input"
-    },
-    {
-      "name": "E",
-      "x": 0,
-      "y": 30,
-      "direction": "output"
-    },
-    {
-      "name": "S",
-      "x": 20,
-      "y": 0,
-      "direction": "inout"
-    }
-  ],
-  "shapes": [
-    {
-      "type": "line",
-      "x1": 0,
-      "y1": -20,
-      "x2": 0,
-      "y2": 20
-    },
-    {
-      "type": "line",
-      "x1": 0,
-      "y1": -30,
-      "x2": 0,
-      "y2": -20
-    },
-    {
-      "type": "line",
-      "x1": 0,
-      "y1": 20,
-      "x2": 0,
-      "y2": 30
-    },
-    {
-      "type": "line",
-      "x1": 0,
-      "y1": 0,
-      "x2": -20,
-      "y2": 0
-    },
-    {
-      "type": "polygon",
-      "points": [
-        [
-          0,
-          5
-        ],
-        [
-          -5,
-          10
-        ],
-        [
-          0,
-          15
-        ]
-      ]
-    },
-    {
-      "type": "circle",
-      "cx": 0,
-      "cy": 0,
-      "r": 20
-    }
-  ],
   "parameters": [
     {
-      "name": "Nx",
       "default": "1",
-      "description": "Emitter stripes"
+      "description": "IHP/xschem parameter Nx",
+      "name": "Nx"
     }
   ],
-  "layout": {
-    "technology": "sg13g2",
-    "library": "SG13_dev",
-    "pcell": "npn13G2",
-    "parameter_map": {
-      "Nx": "Nx"
+  "pin_style": "terminal",
+  "pins": [
+    {
+      "bbox": [
+        17.5,
+        -32.5,
+        22.5,
+        -27.5
+      ],
+      "direction": "inout",
+      "name": "C",
+      "net_name": null,
+      "sim_pinnumber": "1",
+      "x": 20.0,
+      "y": -30.0
     },
-    "forced_parameters": {}
+    {
+      "bbox": [
+        -22.5,
+        -2.5,
+        -17.5,
+        2.5
+      ],
+      "direction": "in",
+      "name": "B",
+      "net_name": null,
+      "sim_pinnumber": "2",
+      "x": -20.0,
+      "y": 0.0
+    },
+    {
+      "bbox": [
+        17.5,
+        27.5,
+        22.5,
+        32.5
+      ],
+      "direction": "inout",
+      "name": "E",
+      "net_name": null,
+      "sim_pinnumber": "3",
+      "x": 20.0,
+      "y": 30.0
+    },
+    {
+      "bbox": [
+        17.5,
+        -2.5,
+        22.5,
+        2.5
+      ],
+      "direction": "in",
+      "name": "S",
+      "net_name": null,
+      "sim_pinnumber": "4",
+      "x": 20.0,
+      "y": 0.0
+    }
+  ],
+  "prefix": "X",
+  "provenance": {
+    "source": "bundled_ihp_xschem_cache",
+    "xschem_group": "sg13g2_pr"
   },
-  "label": {
-    "text": "@name",
-    "x": 5,
-    "y": -25
-  }
+  "render_options": {
+    "draw_pin_markers": true,
+    "pin_marker_size": 5,
+    "pin_marker_style": "xschem_box",
+    "use_text_shapes_for_labels": true
+  },
+  "shapes": [
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 0.0,
+      "x2": 0.0,
+      "y1": -30.0,
+      "y2": 30.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -20.0,
+      "x2": 0.0,
+      "y1": 0.0,
+      "y2": 0.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 0.0,
+      "x2": 8.75,
+      "y1": 10.0,
+      "y2": 18.75
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 0.0,
+      "x2": 20.0,
+      "y1": -10.0,
+      "y2": -30.0
+    },
+    {
+      "fill": true,
+      "points": [
+        [
+          20.0,
+          30.0
+        ],
+        [
+          13.75,
+          13.75
+        ],
+        [
+          3.75,
+          23.75
+        ],
+        [
+          20.0,
+          30.0
+        ]
+      ],
+      "source": "xschem",
+      "type": "polygon"
+    },
+    {
+      "bold": false,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "Nx=@Nx",
+      "type": "text",
+      "x": 22.5,
+      "y": 11.25
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "@model",
+      "type": "text",
+      "x": 22.5,
+      "y": -15.0
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "S",
+      "type": "text",
+      "x": 10.0,
+      "y": -5.0
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "@name",
+      "type": "text",
+      "x": 22.5,
+      "y": -27.5
+    }
+  ],
+  "source_format": "xschem",
+  "spice_model": "npn13G2",
+  "type": "symbol",
+  "xschem_format": "Q@name @pinlist @model le=900e-9 we=70.0n m=@Nx",
+  "xschem_metadata": {
+    "Nx": "1",
+    "le": "900e-9",
+    "m": "@Nx",
+    "model": "npn13G2",
+    "name": "Q1",
+    "spiceprefix": "X",
+    "type": "vertical_npn",
+    "we": "70.0n"
+  },
+  "xschem_template": "name=Q1\nmodel=npn13G2\nspiceprefix=X\nNx=1\n"
 }

@@ -1,0 +1,245 @@
+{
+  "cdf": {
+    "display": {
+      "interpreted_labels": true
+    },
+    "parameters": [
+      {
+        "default": "0.78e-6",
+        "description": "IHP/xschem parameter w",
+        "name": "w"
+      },
+      {
+        "default": "0.78e-6",
+        "description": "IHP/xschem parameter l",
+        "name": "l"
+      }
+    ],
+    "sim_info": {
+      "spice": {
+        "component_name": "ntap1",
+        "format": "tcleval(R@name @pinlist @model A=[ev \\{ @w * @l \\} ] P=[ev \\{ 2 * ( @w + @l ) \\} ] )",
+        "prefix": "X"
+      }
+    },
+    "term_order": [
+      "P",
+      "M"
+    ]
+  },
+  "component_name": "ntap1",
+  "library": "pdk:ihp_sg13g2",
+  "name": "ntap1",
+  "parameters": [
+    {
+      "default": "0.78e-6",
+      "description": "IHP/xschem parameter w",
+      "name": "w"
+    },
+    {
+      "default": "0.78e-6",
+      "description": "IHP/xschem parameter l",
+      "name": "l"
+    }
+  ],
+  "pin_style": "terminal",
+  "pins": [
+    {
+      "bbox": [
+        -2.5,
+        -32.5,
+        2.5,
+        -27.5
+      ],
+      "direction": "inout",
+      "name": "P",
+      "net_name": null,
+      "sim_pinnumber": null,
+      "x": 0.0,
+      "y": -30.0
+    },
+    {
+      "bbox": [
+        -2.5,
+        27.5,
+        2.5,
+        32.5
+      ],
+      "direction": "inout",
+      "name": "M",
+      "net_name": null,
+      "sim_pinnumber": null,
+      "x": 0.0,
+      "y": 30.0
+    }
+  ],
+  "prefix": "X",
+  "provenance": {
+    "source": "bundled_ihp_xschem_cache",
+    "xschem_group": "sg13g2_pr"
+  },
+  "render_options": {
+    "draw_pin_markers": true,
+    "pin_marker_size": 5,
+    "pin_marker_style": "xschem_box",
+    "use_text_shapes_for_labels": true
+  },
+  "shapes": [
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 0.0,
+      "x2": 0.0,
+      "y1": 20.0,
+      "y2": 30.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 0.0,
+      "x2": 7.5,
+      "y1": 20.0,
+      "y2": 17.5
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -7.5,
+      "x2": 7.5,
+      "y1": 12.5,
+      "y2": 17.5
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -7.5,
+      "x2": 7.5,
+      "y1": 12.5,
+      "y2": 7.5
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -7.5,
+      "x2": 7.5,
+      "y1": 2.5,
+      "y2": 7.5
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -7.5,
+      "x2": 7.5,
+      "y1": 2.5,
+      "y2": -2.5
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -7.5,
+      "x2": 7.5,
+      "y1": -7.5,
+      "y2": -2.5
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -7.5,
+      "x2": 7.5,
+      "y1": -7.5,
+      "y2": -12.5
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -7.5,
+      "x2": 7.5,
+      "y1": -17.5,
+      "y2": -12.5
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -7.5,
+      "x2": 0.0,
+      "y1": -17.5,
+      "y2": -20.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 0.0,
+      "x2": 0.0,
+      "y1": -30.0,
+      "y2": -20.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -10.0,
+      "x2": 10.0,
+      "y1": 20.0,
+      "y2": 20.0
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "@model",
+      "type": "text",
+      "x": 15.0,
+      "y": -16.25
+    },
+    {
+      "bold": false,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "w=@w",
+      "type": "text",
+      "x": 15.0,
+      "y": -3.75
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "@name",
+      "type": "text",
+      "x": 15.0,
+      "y": -28.75
+    },
+    {
+      "bold": false,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "l=@l",
+      "type": "text",
+      "x": 15.0,
+      "y": 6.25
+    }
+  ],
+  "source_format": "xschem",
+  "spice_model": "ntap1",
+  "type": "symbol",
+  "xschem_format": "tcleval(R@name @pinlist @model A=[ev \\{ @w * @l \\} ] P=[ev \\{ 2 * ( @w + @l ) \\} ] )",
+  "xschem_metadata": {
+    "A": "[ev",
+    "P": "[ev",
+    "R": "[ev",
+    "l": "0.78e-6",
+    "model": "ntap1",
+    "name": "R1",
+    "spiceprefix": "X",
+    "type": "res",
+    "w": "0.78e-6"
+  },
+  "xschem_template": "name=R1\nmodel=ntap1\nspiceprefix=X\nw=0.78e-6\nl=0.78e-6\n"
+}

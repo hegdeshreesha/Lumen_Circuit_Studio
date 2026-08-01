@@ -1,133 +1,312 @@
 {
-  "type": "symbol",
+  "cdf": {
+    "display": {
+      "interpreted_labels": true
+    },
+    "parameters": [
+      {
+        "default": "0.5e-6",
+        "description": "IHP/xschem parameter w",
+        "name": "w"
+      },
+      {
+        "default": "0.5e-6",
+        "description": "IHP/xschem parameter l",
+        "name": "l"
+      },
+      {
+        "default": "sub!",
+        "description": "IHP/xschem parameter body",
+        "name": "body"
+      },
+      {
+        "default": "0",
+        "description": "IHP/xschem parameter b",
+        "name": "b"
+      },
+      {
+        "default": "1",
+        "description": "IHP/xschem parameter m",
+        "name": "m"
+      },
+      {
+        "default": "\\\\",
+        "description": "IHP/xschem parameter value",
+        "name": "value"
+      }
+    ],
+    "sim_info": {
+      "spice": {
+        "component_name": "rsil",
+        "format": "R@name @pinlist @value \\\\$SUB=@body \\\\$[@model\\\\\\\\] w=@w l=@l b=@b m=@m",
+        "prefix": "X"
+      }
+    },
+    "term_order": [
+      "P",
+      "M"
+    ]
+  },
+  "component_name": "rsil",
+  "library": "pdk:ihp_sg13g2",
   "name": "rsil",
-  "library": "ihp_primitives",
-  "prefix": "R",
-  "spice_model": "rsil",
-  "pins": [
+  "parameters": [
     {
-      "name": "P",
-      "x": 0,
-      "y": -30,
-      "direction": "inout"
+      "default": "0.5e-6",
+      "description": "IHP/xschem parameter w",
+      "name": "w"
     },
     {
-      "name": "M",
-      "x": 0,
-      "y": 30,
-      "direction": "inout"
+      "default": "0.5e-6",
+      "description": "IHP/xschem parameter l",
+      "name": "l"
+    },
+    {
+      "default": "sub!",
+      "description": "IHP/xschem parameter body",
+      "name": "body"
+    },
+    {
+      "default": "0",
+      "description": "IHP/xschem parameter b",
+      "name": "b"
+    },
+    {
+      "default": "1",
+      "description": "IHP/xschem parameter m",
+      "name": "m"
+    },
+    {
+      "default": "\\\\",
+      "description": "IHP/xschem parameter value",
+      "name": "value"
     }
   ],
+  "pin_style": "terminal",
+  "pins": [
+    {
+      "bbox": [
+        -2.5,
+        -32.5,
+        2.5,
+        -27.5
+      ],
+      "direction": "inout",
+      "name": "P",
+      "net_name": null,
+      "sim_pinnumber": "1",
+      "x": 0.0,
+      "y": -30.0
+    },
+    {
+      "bbox": [
+        -2.5,
+        27.5,
+        2.5,
+        32.5
+      ],
+      "direction": "inout",
+      "name": "M",
+      "net_name": null,
+      "sim_pinnumber": "2",
+      "x": 0.0,
+      "y": 30.0
+    }
+  ],
+  "prefix": "X",
+  "provenance": {
+    "source": "bundled_ihp_xschem_cache",
+    "xschem_group": "sg13g2_pr"
+  },
+  "render_options": {
+    "draw_pin_markers": true,
+    "pin_marker_size": 5,
+    "pin_marker_style": "xschem_box",
+    "use_text_shapes_for_labels": true
+  },
   "shapes": [
     {
+      "source": "xschem",
       "type": "line",
-      "x1": 0,
-      "y1": -30,
-      "x2": 0,
-      "y2": -20
+      "x1": 0.0,
+      "x2": 0.0,
+      "y1": 20.0,
+      "y2": 30.0
     },
     {
+      "source": "xschem",
       "type": "line",
-      "x1": 0,
-      "y1": -20,
-      "x2": -7.5,
-      "y2": -17.5
-    },
-    {
-      "type": "line",
-      "x1": -7.5,
-      "y1": -17.5,
+      "x1": 0.0,
       "x2": 7.5,
-      "y2": -12.5
-    },
-    {
-      "type": "line",
-      "x1": 7.5,
-      "y1": -12.5,
-      "x2": -7.5,
-      "y2": -7.5
-    },
-    {
-      "type": "line",
-      "x1": -7.5,
-      "y1": -7.5,
-      "x2": 7.5,
-      "y2": -2.5
-    },
-    {
-      "type": "line",
-      "x1": 7.5,
-      "y1": -2.5,
-      "x2": -7.5,
-      "y2": 2.5
-    },
-    {
-      "type": "line",
-      "x1": -7.5,
-      "y1": 2.5,
-      "x2": 7.5,
-      "y2": 7.5
-    },
-    {
-      "type": "line",
-      "x1": 7.5,
-      "y1": 7.5,
-      "x2": -7.5,
-      "y2": 12.5
-    },
-    {
-      "type": "line",
-      "x1": -7.5,
-      "y1": 12.5,
-      "x2": 7.5,
+      "y1": 20.0,
       "y2": 17.5
     },
     {
+      "source": "xschem",
       "type": "line",
-      "x1": 7.5,
-      "y1": 17.5,
-      "x2": 0,
-      "y2": 20
+      "x1": -7.5,
+      "x2": 7.5,
+      "y1": 12.5,
+      "y2": 17.5
     },
     {
+      "source": "xschem",
       "type": "line",
-      "x1": 0,
-      "y1": 20,
-      "x2": 0,
-      "y2": 30
+      "x1": -7.5,
+      "x2": 7.5,
+      "y1": 12.5,
+      "y2": 7.5
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -7.5,
+      "x2": 7.5,
+      "y1": 2.5,
+      "y2": 7.5
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -7.5,
+      "x2": 7.5,
+      "y1": 2.5,
+      "y2": -2.5
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -7.5,
+      "x2": 7.5,
+      "y1": -7.5,
+      "y2": -2.5
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -7.5,
+      "x2": 7.5,
+      "y1": -7.5,
+      "y2": -12.5
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -7.5,
+      "x2": 7.5,
+      "y1": -17.5,
+      "y2": -12.5
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -7.5,
+      "x2": 0.0,
+      "y1": -17.5,
+      "y2": -20.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 0.0,
+      "x2": 0.0,
+      "y1": -30.0,
+      "y2": -20.0
+    },
+    {
+      "bold": false,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "w/l = @w / @l",
+      "type": "text",
+      "x": 15.0,
+      "y": -3.75
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "@model",
+      "type": "text",
+      "x": 15.0,
+      "y": -16.25
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "@name",
+      "type": "text",
+      "x": 15.0,
+      "y": -28.75
+    },
+    {
+      "bold": false,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "R=@value",
+      "type": "text",
+      "x": 15.0,
+      "y": 30.0
+    },
+    {
+      "bold": false,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "b=@b",
+      "type": "text",
+      "x": 15.0,
+      "y": 6.25
+    },
+    {
+      "bold": false,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "m=@m",
+      "type": "text",
+      "x": 15.0,
+      "y": 16.25
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 0.1,
+      "size": 5,
+      "source": "xschem",
+      "text": "@body",
+      "type": "text",
+      "x": -22.0,
+      "y": -2.0
     }
   ],
-  "parameters": [
-    {
-      "name": "w",
-      "default": "0.5e-6",
-      "description": "Width"
-    },
-    {
-      "name": "l",
-      "default": "0.5e-6",
-      "description": "Length"
-    },
-    {
-      "name": "m",
-      "default": "1",
-      "description": "Multiplier"
-    }
-  ],
-  "layout": {
-    "technology": "sg13g2",
-    "library": "SG13_dev",
-    "pcell": "rsil",
-    "parameter_map": {
-      "w": "w",
-      "l": "l"
-    },
-    "forced_parameters": {},
-    "multiplicity_parameter": "m"
+  "source_format": "xschem",
+  "spice_model": "rsil",
+  "type": "symbol",
+  "xschem_format": "R@name @pinlist @value \\\\$SUB=@body \\\\$[@model\\\\\\\\] w=@w l=@l b=@b m=@m",
+  "xschem_metadata": {
+    "SUB": "@body",
+    "b": "0",
+    "body": "sub!",
+    "l": "0.5e-6",
+    "m": "1",
+    "model": "rsil",
+    "name": "R1",
+    "spiceprefix": "X",
+    "type": "res",
+    "value": "\\\\",
+    "w": "0.5e-6"
   },
-  "label": {
-    "text": "@name",
-    "x": 15,
-    "y": 0
-  }
+  "xschem_template": "name=R1\nw=0.5e-6\nl=0.5e-6\nmodel=rsil\nbody=sub!\nspiceprefix=X\nb=0\nm=1\nvalue=\\\\"
 }

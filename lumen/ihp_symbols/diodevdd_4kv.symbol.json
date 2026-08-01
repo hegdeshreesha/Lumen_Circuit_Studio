@@ -1,0 +1,254 @@
+{
+  "cdf": {
+    "display": {
+      "interpreted_labels": true
+    },
+    "parameters": [
+      {
+        "default": "1",
+        "description": "IHP/xschem parameter m",
+        "name": "m"
+      }
+    ],
+    "sim_info": {
+      "spice": {
+        "component_name": "diodevdd_4kv",
+        "format": "D@name @pinlist @model m=@m",
+        "prefix": "X"
+      }
+    },
+    "term_order": [
+      "vdd",
+      "pad",
+      "vss"
+    ]
+  },
+  "component_name": "diodevdd_4kv",
+  "library": "pdk:ihp_sg13g2",
+  "name": "diodevdd_4kv",
+  "parameters": [
+    {
+      "default": "1",
+      "description": "IHP/xschem parameter m",
+      "name": "m"
+    }
+  ],
+  "pin_style": "terminal",
+  "pins": [
+    {
+      "bbox": [
+        -2.5,
+        -32.5,
+        2.5,
+        -27.5
+      ],
+      "direction": "inout",
+      "name": "vdd",
+      "net_name": null,
+      "sim_pinnumber": "1",
+      "x": 0.0,
+      "y": -30.0
+    },
+    {
+      "bbox": [
+        -2.5,
+        27.5,
+        2.5,
+        32.5
+      ],
+      "direction": "inout",
+      "name": "pad",
+      "net_name": null,
+      "sim_pinnumber": "2",
+      "x": 0.0,
+      "y": 30.0
+    },
+    {
+      "bbox": [
+        -32.5,
+        -2.5,
+        -27.5,
+        2.5
+      ],
+      "direction": "inout",
+      "name": "vss",
+      "net_name": null,
+      "sim_pinnumber": "3",
+      "x": -30.0,
+      "y": 0.0
+    }
+  ],
+  "prefix": "X",
+  "provenance": {
+    "source": "bundled_ihp_xschem_cache",
+    "xschem_group": "sg13g2_pr"
+  },
+  "render_options": {
+    "draw_pin_markers": true,
+    "pin_marker_size": 5,
+    "pin_marker_style": "xschem_box",
+    "use_text_shapes_for_labels": true
+  },
+  "shapes": [
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 0.0,
+      "x2": 0.0,
+      "y1": -30.0,
+      "y2": -5.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 0.0,
+      "x2": 0.0,
+      "y1": 5.0,
+      "y2": 30.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -10.0,
+      "x2": 10.0,
+      "y1": -5.0,
+      "y2": -5.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -30.0,
+      "x2": -20.0,
+      "y1": 0.0,
+      "y2": 0.0
+    },
+    {
+      "fill": true,
+      "points": [
+        [
+          0.0,
+          -5.0
+        ],
+        [
+          -10.0,
+          5.0
+        ],
+        [
+          10.0,
+          5.0
+        ],
+        [
+          0.0,
+          -5.0
+        ]
+      ],
+      "source": "xschem",
+      "type": "polygon"
+    },
+    {
+      "fill": false,
+      "points": [
+        [
+          -20.0,
+          -20.0
+        ],
+        [
+          20.0,
+          -20.0
+        ],
+        [
+          20.0,
+          20.0
+        ],
+        [
+          -20.0,
+          20.0
+        ],
+        [
+          -20.0,
+          -20.0
+        ]
+      ],
+      "source": "xschem",
+      "type": "polygon"
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 2.0,
+      "size": 6,
+      "source": "xschem",
+      "text": "@name",
+      "type": "text",
+      "x": 25.0,
+      "y": 2.5
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 2.0,
+      "size": 6,
+      "source": "xschem",
+      "text": "@model",
+      "type": "text",
+      "x": 25.0,
+      "y": -12.5
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 1.0,
+      "size": 5,
+      "source": "xschem",
+      "text": "vdd",
+      "type": "text",
+      "x": 20.0,
+      "y": -32.5
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 1.0,
+      "size": 5,
+      "source": "xschem",
+      "text": "pad",
+      "type": "text",
+      "x": 20.0,
+      "y": 22.5
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 1.0,
+      "size": 5,
+      "source": "xschem",
+      "text": "vss",
+      "type": "text",
+      "x": -25.0,
+      "y": -12.5
+    },
+    {
+      "bold": false,
+      "role": "interpreted_label",
+      "rotation": 2.0,
+      "size": 6,
+      "source": "xschem",
+      "text": "m=@m",
+      "type": "text",
+      "x": 25.0,
+      "y": 22.5
+    }
+  ],
+  "source_format": "xschem",
+  "spice_model": "diodevdd_4kv",
+  "type": "symbol",
+  "xschem_format": "D@name @pinlist @model m=@m",
+  "xschem_metadata": {
+    "m": "1",
+    "model": "diodevdd_4kv",
+    "name": "D1",
+    "spiceprefix": "X",
+    "type": "diode"
+  },
+  "xschem_template": "name=D1\nmodel=diodevdd_4kv\nm=1\nspiceprefix=X\n"
+}

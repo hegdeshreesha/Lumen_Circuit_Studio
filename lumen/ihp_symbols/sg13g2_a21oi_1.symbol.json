@@ -1,0 +1,326 @@
+{
+  "cdf": {
+    "display": {
+      "interpreted_labels": true
+    },
+    "parameters": [],
+    "sim_info": {
+      "spice": {
+        "component_name": "sg13g2_a21oi_1",
+        "format": "@name @@Y @@A1 @@A2 @@B1 @VDD @VSS @prefix\\\\\\\\a21oi_1",
+        "prefix": "X"
+      }
+    },
+    "term_order": [
+      "A1",
+      "A2",
+      "B1",
+      "Y"
+    ]
+  },
+  "component_name": "sg13g2_a21oi_1",
+  "library": "pdk:ihp_sg13g2",
+  "name": "sg13g2_a21oi_1",
+  "parameters": [],
+  "pin_style": "terminal",
+  "pins": [
+    {
+      "bbox": [
+        -82.5,
+        -42.5,
+        -77.5,
+        -37.5
+      ],
+      "direction": "in",
+      "name": "A1",
+      "net_name": null,
+      "sim_pinnumber": null,
+      "x": -80.0,
+      "y": -40.0
+    },
+    {
+      "bbox": [
+        -82.5,
+        -2.5,
+        -77.5,
+        2.5
+      ],
+      "direction": "in",
+      "name": "A2",
+      "net_name": null,
+      "sim_pinnumber": null,
+      "x": -80.0,
+      "y": 0.0
+    },
+    {
+      "bbox": [
+        -82.5,
+        37.5,
+        -77.5,
+        42.5
+      ],
+      "direction": "in",
+      "name": "B1",
+      "net_name": null,
+      "sim_pinnumber": null,
+      "x": -80.0,
+      "y": 40.0
+    },
+    {
+      "bbox": [
+        77.5,
+        -2.5,
+        82.5,
+        2.5
+      ],
+      "direction": "out",
+      "name": "Y",
+      "net_name": null,
+      "sim_pinnumber": null,
+      "x": 80.0,
+      "y": 0.0
+    }
+  ],
+  "prefix": "X",
+  "provenance": {
+    "source": "bundled_ihp_xschem_cache",
+    "xschem_group": "sg13g2_stdcells"
+  },
+  "render_options": {
+    "draw_pin_markers": true,
+    "pin_marker_size": 5,
+    "pin_marker_style": "xschem_box",
+    "use_text_shapes_for_labels": true
+  },
+  "shapes": [
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -80.0,
+      "x2": -50.0,
+      "y1": -40.0,
+      "y2": -40.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -80.0,
+      "x2": -50.0,
+      "y1": 0.0,
+      "y2": 0.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 5.0,
+      "x2": 12.5,
+      "y1": -30.0,
+      "y2": -30.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 5.0,
+      "x2": 12.5,
+      "y1": 30.0,
+      "y2": 30.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -50.0,
+      "x2": -40.0,
+      "y1": -50.0,
+      "y2": -50.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -50.0,
+      "x2": -50.0,
+      "y1": -50.0,
+      "y2": 10.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -50.0,
+      "x2": -40.0,
+      "y1": 10.0,
+      "y2": 10.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -80.0,
+      "x2": -10.0,
+      "y1": 40.0,
+      "y2": 40.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -12.5,
+      "x2": 10.0,
+      "y1": -20.0,
+      "y2": -20.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -10.0,
+      "x2": -10.0,
+      "y1": 20.0,
+      "y2": 40.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -10.0,
+      "x2": 10.0,
+      "y1": 20.0,
+      "y2": 20.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 67.5,
+      "x2": 80.0,
+      "y1": 0.0,
+      "y2": 0.0
+    },
+    {
+      "cx": -42.5,
+      "cy": 0.0,
+      "rx": 56.18051263561058,
+      "ry": 56.18051263561058,
+      "source": "xschem",
+      "span": 64.55128862915524,
+      "start": 327.7243556854224,
+      "type": "arc"
+    },
+    {
+      "cx": -42.5,
+      "cy": -20.0,
+      "rx": 30.0,
+      "ry": 30.0,
+      "source": "xschem",
+      "span": 180.0,
+      "start": 270.0,
+      "type": "arc"
+    },
+    {
+      "cx": 7.857142857142861,
+      "cy": 25.71428571428569,
+      "rx": 55.90740340153566,
+      "ry": 55.90740340153566,
+      "source": "xschem",
+      "span": 57.85285167050722,
+      "start": 27.38350663876661,
+      "type": "arc"
+    },
+    {
+      "cx": 7.857142857142861,
+      "cy": -25.71428571428569,
+      "rx": 55.90740340153566,
+      "ry": 55.90740340153566,
+      "source": "xschem",
+      "span": 57.85285167050722,
+      "start": 274.7636416907262,
+      "type": "arc"
+    },
+    {
+      "cx": 62.5,
+      "cy": 0.0,
+      "rx": 5.0,
+      "ry": 5.0,
+      "source": "xschem",
+      "span": 360.0,
+      "start": 0.0,
+      "type": "arc"
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "A1",
+      "type": "text",
+      "x": -75.0,
+      "y": -54.0
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "A2",
+      "type": "text",
+      "x": -75.0,
+      "y": -14.0
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "B1",
+      "type": "text",
+      "x": -75.0,
+      "y": 26.0
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 1.0,
+      "size": 6,
+      "source": "xschem",
+      "text": "Y",
+      "type": "text",
+      "x": 75.0,
+      "y": -14.0
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "@name",
+      "type": "text",
+      "x": 36.25,
+      "y": -35.0
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "@symname",
+      "type": "text",
+      "x": -11.25,
+      "y": -50.0
+    }
+  ],
+  "source_format": "xschem",
+  "spice_model": "sg13g2_a21oi_1",
+  "type": "symbol",
+  "xschem_format": "@name @@Y @@A1 @@A2 @@B1 @VDD @VSS @prefix\\\\\\\\a21oi_1",
+  "xschem_metadata": {
+    "VDD": "VDD",
+    "VSS": "VSS",
+    "dir": "out",
+    "extra": "VDD VSS prefix",
+    "goto": "3",
+    "highlight": "true",
+    "name": "Y",
+    "prefix": "sg13g2_",
+    "propag": "3",
+    "type": "primitive"
+  },
+  "xschem_template": "name=x1 VDD=VDD VSS=VSS prefix=sg13g2_ "
+}

@@ -1,0 +1,335 @@
+{
+  "cdf": {
+    "display": {
+      "interpreted_labels": true
+    },
+    "parameters": [],
+    "sim_info": {
+      "spice": {
+        "component_name": "sg13g2_sdfrbp_2",
+        "format": "",
+        "prefix": "X"
+      }
+    },
+    "term_order": [
+      "CLK",
+      "D",
+      "RESET_B",
+      "SCD",
+      "SCE",
+      "Q",
+      "Q_N"
+    ]
+  },
+  "component_name": "sg13g2_sdfrbp_2",
+  "library": "pdk:ihp_sg13g2",
+  "name": "sg13g2_sdfrbp_2",
+  "parameters": [],
+  "pin_style": "terminal",
+  "pins": [
+    {
+      "bbox": [
+        -92.5,
+        -42.5,
+        -87.5,
+        -37.5
+      ],
+      "direction": "in",
+      "name": "CLK",
+      "net_name": null,
+      "sim_pinnumber": null,
+      "x": -90.0,
+      "y": -40.0
+    },
+    {
+      "bbox": [
+        -92.5,
+        -22.5,
+        -87.5,
+        -17.5
+      ],
+      "direction": "in",
+      "name": "D",
+      "net_name": null,
+      "sim_pinnumber": null,
+      "x": -90.0,
+      "y": -20.0
+    },
+    {
+      "bbox": [
+        -92.5,
+        -2.5,
+        -87.5,
+        2.5
+      ],
+      "direction": "in",
+      "name": "RESET_B",
+      "net_name": null,
+      "sim_pinnumber": null,
+      "x": -90.0,
+      "y": 0.0
+    },
+    {
+      "bbox": [
+        -92.5,
+        17.5,
+        -87.5,
+        22.5
+      ],
+      "direction": "in",
+      "name": "SCD",
+      "net_name": null,
+      "sim_pinnumber": null,
+      "x": -90.0,
+      "y": 20.0
+    },
+    {
+      "bbox": [
+        -92.5,
+        37.5,
+        -87.5,
+        42.5
+      ],
+      "direction": "in",
+      "name": "SCE",
+      "net_name": null,
+      "sim_pinnumber": null,
+      "x": -90.0,
+      "y": 40.0
+    },
+    {
+      "bbox": [
+        87.5,
+        -42.5,
+        92.5,
+        -37.5
+      ],
+      "direction": "out",
+      "name": "Q",
+      "net_name": null,
+      "sim_pinnumber": null,
+      "x": 90.0,
+      "y": -40.0
+    },
+    {
+      "bbox": [
+        87.5,
+        -22.5,
+        92.5,
+        -17.5
+      ],
+      "direction": "out",
+      "name": "Q_N",
+      "net_name": null,
+      "sim_pinnumber": null,
+      "x": 90.0,
+      "y": -20.0
+    }
+  ],
+  "prefix": "X",
+  "provenance": {
+    "source": "bundled_ihp_xschem_cache",
+    "xschem_group": "sg13g2_stdcells"
+  },
+  "render_options": {
+    "draw_pin_markers": true,
+    "pin_marker_size": 5,
+    "pin_marker_style": "xschem_box",
+    "use_text_shapes_for_labels": true
+  },
+  "shapes": [
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -70.0,
+      "x2": 70.0,
+      "y1": -50.0,
+      "y2": -50.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -70.0,
+      "x2": 70.0,
+      "y1": 50.0,
+      "y2": 50.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -70.0,
+      "x2": -70.0,
+      "y1": -50.0,
+      "y2": 50.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 70.0,
+      "x2": 70.0,
+      "y1": -50.0,
+      "y2": 50.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -90.0,
+      "x2": -70.0,
+      "y1": -40.0,
+      "y2": -40.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -90.0,
+      "x2": -70.0,
+      "y1": -20.0,
+      "y2": -20.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -90.0,
+      "x2": -70.0,
+      "y1": 0.0,
+      "y2": 0.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -90.0,
+      "x2": -70.0,
+      "y1": 20.0,
+      "y2": 20.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -90.0,
+      "x2": -70.0,
+      "y1": 40.0,
+      "y2": 40.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 70.0,
+      "x2": 90.0,
+      "y1": -40.0,
+      "y2": -40.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 70.0,
+      "x2": 90.0,
+      "y1": -20.0,
+      "y2": -20.0
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "@symname",
+      "type": "text",
+      "x": 5.0,
+      "y": 14.0
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "@name",
+      "type": "text",
+      "x": 75.0,
+      "y": -62.0
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "CLK",
+      "type": "text",
+      "x": -65.0,
+      "y": -44.0
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "D",
+      "type": "text",
+      "x": -65.0,
+      "y": -24.0
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "RESET_B",
+      "type": "text",
+      "x": -65.0,
+      "y": -4.0
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "SCD",
+      "type": "text",
+      "x": -65.0,
+      "y": 16.0
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "SCE",
+      "type": "text",
+      "x": -65.0,
+      "y": 36.0
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 1.0,
+      "size": 6,
+      "source": "xschem",
+      "text": "Q",
+      "type": "text",
+      "x": 65.0,
+      "y": -44.0
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 1.0,
+      "size": 6,
+      "source": "xschem",
+      "text": "Q_N",
+      "type": "text",
+      "x": 65.0,
+      "y": -24.0
+    }
+  ],
+  "source_format": "xschem",
+  "spice_model": "sg13g2_sdfrbp_2",
+  "type": "symbol",
+  "xschem_format": "",
+  "xschem_metadata": {},
+  "xschem_template": ""
+}

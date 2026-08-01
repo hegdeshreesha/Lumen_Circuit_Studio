@@ -809,6 +809,7 @@ class PDKRegistry:
         root = Path(pdk.root_path) if pdk.root_path else Path(self.workspace) / "external" / "ihp_pdk" / "ihp-sg13g2"
         xschem_root = root / "libs.tech" / "xschem"
         if not xschem_root.exists():
+            self._enrich_ihp_from_symbol_cache(pdk)
             return
 
         symbol_dirs = [
@@ -896,6 +897,79 @@ class PDKRegistry:
             pdk.root_path = str(root)
             if "xschem-symbols" not in pdk.tags:
                 pdk.tags.append("xschem-symbols")
+
+    def _enrich_ihp_from_symbol_cache(self, pdk: PDKInfo) -> None:
+        """Use the committed IHP symbol cache when the PDK submodule is absent."""
+        symbol_root = Path(__file__).resolve().parents[1] / "ihp_symbols"
+        if not symbol_root.exists():
+            return
+
+        merged = {device.name: device for device in pdk.devices}
+        imported_count = 0
+        for symbol_file in sorted(symbol_root.glob("*.symbol.json"), key=lambda path: path.name.lower()):
+            try:
+                symbol_data = json.loads(symbol_file.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+
+            symbol_data["library"] = f"pdk:{pdk.name}"
+            pins = [
+                PDKPin(
+                    name=str(pin.get("name", "")),
+                    x=float(pin.get("x", 0.0) or 0.0),
+                    y=float(pin.get("y", 0.0) or 0.0),
+                    direction=str(pin.get("direction", "inout") or "inout"),
+                    net_name=pin.get("net_name"),
+                )
+                for pin in symbol_data.get("pins", [])
+                if pin.get("name")
+            ]
+            parameters = [
+                PDKParameter(
+                    name=str(param.get("name", "")),
+                    default=str(param.get("default", "")),
+                    description=str(param.get("description", "")),
+                )
+                for param in symbol_data.get("parameters", [])
+                if param.get("name")
+            ]
+            prefix = str(symbol_data.get("prefix") or "X")
+            model = str(symbol_data.get("spice_model") or symbol_file.stem.removesuffix(".symbol"))
+            name = str(symbol_data.get("name") or model)
+            category = self._ihp_category_from_symbol(name, symbol_data)
+
+            merged[name] = PDKDevice(
+                name=name,
+                category=category,
+                prefix=prefix,
+                model=model,
+                component_name=str(symbol_data.get("component_name") or model),
+                term_order=[pin.name for pin in pins],
+                inst_parameters=[param.name for param in parameters],
+                other_parameters=[],
+                netlist_kind="subckt" if prefix.upper() == "X" else "primitive",
+                description=f"IHP SG13G2 cached symbol",
+                pins=pins,
+                parameters=parameters,
+                symbol_style=category.name.lower(),
+                symbol_data=symbol_data,
+                is_primitive=prefix.upper() != "X",
+                priority=90,
+                provenance={"source": "bundled_ihp_symbol_cache", "path": str(symbol_file)},
+            )
+            imported_count += 1
+
+        if imported_count:
+            pdk.devices = sorted(
+                merged.values(),
+                key=lambda d: (self._ihp_category_sort_key(d.category), d.name.lower()),
+            )
+            pdk.symbols_path = str(symbol_root)
+            if not pdk.root_path:
+                pdk.root_path = str(symbol_root)
+            pdk.installed = True
+            if "bundled-symbol-cache" not in pdk.tags:
+                pdk.tags.append("bundled-symbol-cache")
 
     def _ihp_category_from_symbol(self, name: str, symbol_data: Dict) -> DeviceCategory:
         """Classify imported IHP symbols for the Library Manager tree."""
@@ -1368,27 +1442,17 @@ class PDKRegistry:
     def install_pdk(self, name: str) -> bool:
         """
         Compatibility install flow expected by legacy GUI.
-        Creates a local workspace skeleton and marks the PDK installed.
+        Uses bundled metadata only; never creates fake PDK skeletons.
         """
         pdk = self._pdks.get(name)
         if not pdk:
             return False
 
-        install_root = self.workspace / "pdks" / name
-        install_root.mkdir(parents=True, exist_ok=True)
-        (install_root / "models").mkdir(exist_ok=True)
-        (install_root / "tech").mkdir(exist_ok=True)
-        (install_root / "cells").mkdir(exist_ok=True)
+        if name == "ihp_sg13g2":
+            self._enrich_ihp_from_symbol_cache(pdk)
+            return pdk.installed
 
-        pdk.root_path = str(install_root)
-        if not pdk.models_path:
-            pdk.models_path = str(install_root / "models")
-        if not pdk.tech_path:
-            pdk.tech_path = str(install_root / "tech")
-        if not pdk.cells_path:
-            pdk.cells_path = str(install_root / "cells")
-        pdk.is_installed = True
-        return True
+        return pdk.installed
     
     def get_all_pdks(self) -> List[PDKInfo]:
         """Get all available PDKs."""

@@ -1,0 +1,180 @@
+{
+  "cdf": {
+    "display": {
+      "interpreted_labels": true
+    },
+    "parameters": [
+      {
+        "default": "10f",
+        "description": "IHP/xschem parameter C",
+        "name": "C"
+      }
+    ],
+    "sim_info": {
+      "spice": {
+        "component_name": "cparasitic",
+        "format": "@spiceprefix@name @pinlist @model C=@C",
+        "prefix": "X"
+      }
+    },
+    "term_order": [
+      "c0",
+      "c1"
+    ]
+  },
+  "component_name": "cparasitic",
+  "library": "pdk:ihp_sg13g2",
+  "name": "cap_cpara",
+  "parameters": [
+    {
+      "default": "10f",
+      "description": "IHP/xschem parameter C",
+      "name": "C"
+    }
+  ],
+  "pin_style": "terminal",
+  "pins": [
+    {
+      "bbox": [
+        -2.5,
+        -32.5,
+        2.5,
+        -27.5
+      ],
+      "direction": "inout",
+      "name": "c0",
+      "net_name": null,
+      "sim_pinnumber": null,
+      "x": 0.0,
+      "y": -30.0
+    },
+    {
+      "bbox": [
+        -2.5,
+        27.5,
+        2.5,
+        32.5
+      ],
+      "direction": "inout",
+      "name": "c1",
+      "net_name": null,
+      "sim_pinnumber": null,
+      "x": 0.0,
+      "y": 30.0
+    }
+  ],
+  "prefix": "X",
+  "provenance": {
+    "source": "bundled_ihp_xschem_cache",
+    "xschem_group": "sg13g2_pr"
+  },
+  "render_options": {
+    "draw_pin_markers": true,
+    "pin_marker_size": 5,
+    "pin_marker_style": "xschem_box",
+    "use_text_shapes_for_labels": true
+  },
+  "shapes": [
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 0.0,
+      "x2": 0.0,
+      "y1": 2.5,
+      "y2": 30.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 0.0,
+      "x2": 0.0,
+      "y1": -30.0,
+      "y2": -5.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -10.0,
+      "x2": 10.0,
+      "y1": -5.0,
+      "y2": -5.0
+    },
+    {
+      "cx": -0.0,
+      "cy": 23.75,
+      "rx": 21.25,
+      "ry": 21.25,
+      "source": "xschem",
+      "span": 56.14497387170592,
+      "start": 61.92751306414704,
+      "type": "arc"
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 0.15,
+      "size": 5,
+      "source": "xschem",
+      "text": "c0",
+      "type": "text",
+      "x": 5.0,
+      "y": -27.5
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 0.15,
+      "size": 5,
+      "source": "xschem",
+      "text": "c1",
+      "type": "text",
+      "x": 5.0,
+      "y": 18.75
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "@name",
+      "type": "text",
+      "x": 15.0,
+      "y": -28.75
+    },
+    {
+      "bold": false,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "C=@C",
+      "type": "text",
+      "x": 15.0,
+      "y": 6.25
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "@model",
+      "type": "text",
+      "x": 15.0,
+      "y": -11.25
+    }
+  ],
+  "source_format": "xschem",
+  "spice_model": "cparasitic",
+  "type": "symbol",
+  "xschem_format": "@spiceprefix@name @pinlist @model C=@C",
+  "xschem_metadata": {
+    "C": "10f",
+    "model": "cparasitic",
+    "name": "C1",
+    "spiceprefix": "X",
+    "type": "capacitor"
+  },
+  "xschem_template": "name=C1 model=cparasitic C=10f  spiceprefix=X"
+}

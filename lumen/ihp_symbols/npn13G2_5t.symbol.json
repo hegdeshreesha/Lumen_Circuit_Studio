@@ -1,0 +1,294 @@
+{
+  "cdf": {
+    "display": {
+      "interpreted_labels": true
+    },
+    "parameters": [
+      {
+        "default": "1",
+        "description": "IHP/xschem parameter Nx",
+        "name": "Nx"
+      }
+    ],
+    "sim_info": {
+      "spice": {
+        "component_name": "npn13G2_5t",
+        "format": "Q@name @pinlist @model le=900e-9 we=70.0n m=@Nx",
+        "prefix": "X"
+      }
+    },
+    "term_order": [
+      "C",
+      "B",
+      "E",
+      "S",
+      "T"
+    ]
+  },
+  "component_name": "npn13G2_5t",
+  "library": "pdk:ihp_sg13g2",
+  "name": "npn13G2_5t",
+  "parameters": [
+    {
+      "default": "1",
+      "description": "IHP/xschem parameter Nx",
+      "name": "Nx"
+    }
+  ],
+  "pin_style": "terminal",
+  "pins": [
+    {
+      "bbox": [
+        17.5,
+        -52.5,
+        22.5,
+        -47.5
+      ],
+      "direction": "inout",
+      "name": "C",
+      "net_name": null,
+      "sim_pinnumber": "1",
+      "x": 20.0,
+      "y": -50.0
+    },
+    {
+      "bbox": [
+        -42.5,
+        -2.5,
+        -37.5,
+        2.5
+      ],
+      "direction": "in",
+      "name": "B",
+      "net_name": null,
+      "sim_pinnumber": "2",
+      "x": -40.0,
+      "y": 0.0
+    },
+    {
+      "bbox": [
+        17.5,
+        47.5,
+        22.5,
+        52.5
+      ],
+      "direction": "inout",
+      "name": "E",
+      "net_name": null,
+      "sim_pinnumber": "3",
+      "x": 20.0,
+      "y": 50.0
+    },
+    {
+      "bbox": [
+        47.5,
+        47.5,
+        52.5,
+        52.5
+      ],
+      "direction": "in",
+      "name": "S",
+      "net_name": null,
+      "sim_pinnumber": "4",
+      "x": 50.0,
+      "y": 50.0
+    },
+    {
+      "bbox": [
+        67.5,
+        -2.5,
+        72.5,
+        2.5
+      ],
+      "direction": "in",
+      "name": "T",
+      "net_name": null,
+      "sim_pinnumber": "5",
+      "x": 70.0,
+      "y": 0.0
+    }
+  ],
+  "prefix": "X",
+  "provenance": {
+    "source": "bundled_ihp_xschem_cache",
+    "xschem_group": "sg13g2_pr"
+  },
+  "render_options": {
+    "draw_pin_markers": true,
+    "pin_marker_size": 5,
+    "pin_marker_style": "xschem_box",
+    "use_text_shapes_for_labels": true
+  },
+  "shapes": [
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 0.0,
+      "x2": 0.0,
+      "y1": -30.0,
+      "y2": 30.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -20.0,
+      "x2": 0.0,
+      "y1": 0.0,
+      "y2": 0.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 0.0,
+      "x2": 8.75,
+      "y1": 10.0,
+      "y2": 18.75
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 0.0,
+      "x2": 20.0,
+      "y1": -10.0,
+      "y2": -30.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -40.0,
+      "x2": -20.0,
+      "y1": -0.0,
+      "y2": -0.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 20.0,
+      "x2": 20.0,
+      "y1": -50.0,
+      "y2": -30.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 20.0,
+      "x2": 20.0,
+      "y1": 30.0,
+      "y2": 50.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 20.0,
+      "x2": 50.0,
+      "y1": -0.0,
+      "y2": 0.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 50.0,
+      "x2": 50.0,
+      "y1": 0.0,
+      "y2": 50.0
+    },
+    {
+      "fill": true,
+      "points": [
+        [
+          20.0,
+          30.0
+        ],
+        [
+          13.75,
+          13.75
+        ],
+        [
+          3.75,
+          23.75
+        ],
+        [
+          20.0,
+          30.0
+        ]
+      ],
+      "source": "xschem",
+      "type": "polygon"
+    },
+    {
+      "fill": false,
+      "points": [
+        [
+          -40.0,
+          -50.0
+        ],
+        [
+          70.0,
+          -50.0
+        ],
+        [
+          70.0,
+          50.0
+        ],
+        [
+          -40.0,
+          50.0
+        ],
+        [
+          -40.0,
+          -50.0
+        ]
+      ],
+      "source": "xschem",
+      "type": "polygon"
+    },
+    {
+      "bold": false,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "Nx=@Nx",
+      "type": "text",
+      "x": 22.5,
+      "y": 11.25
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "@model",
+      "type": "text",
+      "x": 22.5,
+      "y": -15.0
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "@name",
+      "type": "text",
+      "x": 22.5,
+      "y": -27.5
+    }
+  ],
+  "source_format": "xschem",
+  "spice_model": "npn13G2_5t",
+  "type": "symbol",
+  "xschem_format": "Q@name @pinlist @model le=900e-9 we=70.0n m=@Nx",
+  "xschem_metadata": {
+    "Nx": "1",
+    "le": "900e-9",
+    "m": "@Nx",
+    "model": "npn13G2_5t",
+    "name": "Q1",
+    "spiceprefix": "X",
+    "type": "vertical_npn",
+    "we": "70.0n"
+  },
+  "xschem_template": "name=Q1\nmodel=npn13G2_5t\nspiceprefix=X\nNx=1\n"
+}

@@ -1,0 +1,98 @@
+{
+  "cdf": {
+    "display": {
+      "interpreted_labels": true
+    },
+    "parameters": [],
+    "sim_info": {
+      "spice": {
+        "component_name": "gallery",
+        "format": "@name @pinlist @symname",
+        "prefix": "X"
+      }
+    },
+    "term_order": []
+  },
+  "component_name": "gallery",
+  "library": "pdk:ihp_sg13g2",
+  "name": "gallery",
+  "parameters": [],
+  "pin_style": "terminal",
+  "pins": [],
+  "prefix": "X",
+  "provenance": {
+    "source": "bundled_ihp_xschem_cache",
+    "xschem_group": "sg13g2_pr"
+  },
+  "render_options": {
+    "draw_pin_markers": true,
+    "pin_marker_size": 5,
+    "pin_marker_style": "xschem_box",
+    "use_text_shapes_for_labels": true
+  },
+  "shapes": [
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -130.0,
+      "x2": 130.0,
+      "y1": -10.0,
+      "y2": -10.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -130.0,
+      "x2": 130.0,
+      "y1": 10.0,
+      "y2": 10.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -130.0,
+      "x2": -130.0,
+      "y1": -10.0,
+      "y2": 10.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 130.0,
+      "x2": 130.0,
+      "y1": -10.0,
+      "y2": 10.0
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 0.3,
+      "size": 9,
+      "source": "xschem",
+      "text": "@symname",
+      "type": "text",
+      "x": -76.5,
+      "y": -6.0
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "@name",
+      "type": "text",
+      "x": 135.0,
+      "y": -22.0
+    }
+  ],
+  "source_format": "xschem",
+  "spice_model": "gallery",
+  "type": "symbol",
+  "xschem_format": "@name @pinlist @symname",
+  "xschem_metadata": {
+    "name": "x1",
+    "type": "subcircuit"
+  },
+  "xschem_template": "name=x1"
+}

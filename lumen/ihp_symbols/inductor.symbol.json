@@ -1,0 +1,347 @@
+{
+  "cdf": {
+    "display": {
+      "interpreted_labels": true
+    },
+    "parameters": [
+      {
+        "default": "1",
+        "description": "IHP/xschem parameter m",
+        "name": "m"
+      },
+      {
+        "default": "1n",
+        "description": "IHP/xschem parameter value",
+        "name": "value"
+      },
+      {
+        "default": "1206",
+        "description": "IHP/xschem parameter footprint",
+        "name": "footprint"
+      },
+      {
+        "default": "inductor",
+        "description": "IHP/xschem parameter device",
+        "name": "device"
+      },
+      {
+        "default": "10e-6",
+        "description": "IHP/xschem parameter w",
+        "name": "w"
+      },
+      {
+        "default": "10e-6",
+        "description": "IHP/xschem parameter s",
+        "name": "s"
+      },
+      {
+        "default": "222e-6",
+        "description": "IHP/xschem parameter d",
+        "name": "d"
+      },
+      {
+        "default": "2",
+        "description": "IHP/xschem parameter nr_r",
+        "name": "nr_r"
+      }
+    ],
+    "sim_info": {
+      "spice": {
+        "component_name": "inductor",
+        "format": "@spiceprefix@name @pinlist @device w=@w s=@s d=@d nr_r=@nr_r m=@m",
+        "prefix": "X"
+      }
+    },
+    "term_order": [
+      "p",
+      "m"
+    ]
+  },
+  "component_name": "inductor",
+  "library": "pdk:ihp_sg13g2",
+  "name": "inductor",
+  "parameters": [
+    {
+      "default": "1",
+      "description": "IHP/xschem parameter m",
+      "name": "m"
+    },
+    {
+      "default": "1n",
+      "description": "IHP/xschem parameter value",
+      "name": "value"
+    },
+    {
+      "default": "1206",
+      "description": "IHP/xschem parameter footprint",
+      "name": "footprint"
+    },
+    {
+      "default": "inductor",
+      "description": "IHP/xschem parameter device",
+      "name": "device"
+    },
+    {
+      "default": "10e-6",
+      "description": "IHP/xschem parameter w",
+      "name": "w"
+    },
+    {
+      "default": "10e-6",
+      "description": "IHP/xschem parameter s",
+      "name": "s"
+    },
+    {
+      "default": "222e-6",
+      "description": "IHP/xschem parameter d",
+      "name": "d"
+    },
+    {
+      "default": "2",
+      "description": "IHP/xschem parameter nr_r",
+      "name": "nr_r"
+    }
+  ],
+  "pin_style": "terminal",
+  "pins": [
+    {
+      "bbox": [
+        -2.5,
+        -32.5,
+        2.5,
+        -27.5
+      ],
+      "direction": "inout",
+      "name": "p",
+      "net_name": null,
+      "sim_pinnumber": "1",
+      "x": 0.0,
+      "y": -30.0
+    },
+    {
+      "bbox": [
+        -2.5,
+        27.5,
+        2.5,
+        32.5
+      ],
+      "direction": "inout",
+      "name": "m",
+      "net_name": null,
+      "sim_pinnumber": "2",
+      "x": 0.0,
+      "y": 30.0
+    }
+  ],
+  "prefix": "X",
+  "provenance": {
+    "source": "bundled_ihp_xschem_cache",
+    "xschem_group": "sg13g2_pr"
+  },
+  "render_options": {
+    "draw_pin_markers": true,
+    "pin_marker_size": 5,
+    "pin_marker_style": "xschem_box",
+    "use_text_shapes_for_labels": true
+  },
+  "shapes": [
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 7.5,
+      "x2": 7.5,
+      "y1": -26.25,
+      "y2": -21.25
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 5.0,
+      "x2": 10.0,
+      "y1": -23.75,
+      "y2": -23.75
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 0.0,
+      "x2": 0.0,
+      "y1": 22.5,
+      "y2": 30.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 0.0,
+      "x2": 0.0,
+      "y1": -30.0,
+      "y2": -22.5
+    },
+    {
+      "cx": 0.0,
+      "cy": 15.0,
+      "rx": 7.5,
+      "ry": 7.5,
+      "source": "xschem",
+      "span": 180.0,
+      "start": 90.0,
+      "type": "arc"
+    },
+    {
+      "cx": 0.0,
+      "cy": 0.0,
+      "rx": 7.5,
+      "ry": 7.5,
+      "source": "xschem",
+      "span": 180.0,
+      "start": 90.0,
+      "type": "arc"
+    },
+    {
+      "cx": 0.0,
+      "cy": -15.0,
+      "rx": 7.5,
+      "ry": 7.5,
+      "source": "xschem",
+      "span": 180.0,
+      "start": 90.0,
+      "type": "arc"
+    },
+    {
+      "h": 5.0,
+      "source": "xschem",
+      "type": "rect",
+      "w": 5.0,
+      "x": 27.5,
+      "y": 27.5
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 0.15,
+      "size": 5,
+      "source": "xschem",
+      "text": "@#0:net_name",
+      "type": "text",
+      "x": 5.0,
+      "y": -42.5
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 0.15,
+      "size": 5,
+      "source": "xschem",
+      "text": "@#1:net_name",
+      "type": "text",
+      "x": 5.0,
+      "y": 32.5
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 1.0,
+      "size": 6,
+      "source": "xschem",
+      "text": "@spice_get_current",
+      "type": "text",
+      "x": -12.5,
+      "y": 5.0
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "@name",
+      "type": "text",
+      "x": 15.0,
+      "y": -38.75
+    },
+    {
+      "bold": false,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "m=@m",
+      "type": "text",
+      "x": -25.0,
+      "y": -13.75
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 0.15,
+      "size": 5,
+      "source": "xschem",
+      "text": "@#2:net_name",
+      "type": "text",
+      "x": 45.0,
+      "y": 22.5
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 1.0,
+      "size": 5,
+      "source": "xschem",
+      "text": "B",
+      "type": "text",
+      "x": 40.0,
+      "y": 30.0
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "@device",
+      "type": "text",
+      "x": -55.0,
+      "y": -38.75
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 1.0,
+      "size": 5,
+      "source": "xschem",
+      "text": "LA",
+      "type": "text",
+      "x": -10.0,
+      "y": -30.0
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 1.0,
+      "size": 5,
+      "source": "xschem",
+      "text": "LB",
+      "type": "text",
+      "x": -10.0,
+      "y": 20.0
+    }
+  ],
+  "source_format": "xschem",
+  "spice_model": "inductor",
+  "type": "symbol",
+  "xschem_format": "@spiceprefix@name @pinlist @device w=@w s=@s d=@d nr_r=@nr_r m=@m",
+  "xschem_metadata": {
+    "d": "222e-6",
+    "device": "inductor",
+    "footprint": "1206",
+    "m": "1",
+    "name": "L1",
+    "nr_r": "2",
+    "s": "10e-6",
+    "spiceprefix": "X",
+    "type": "inductor",
+    "value": "1n",
+    "w": "10e-6"
+  },
+  "xschem_template": "name=L1\nm=1\nvalue=1n\nfootprint=1206\ndevice=inductor\nspiceprefix=X\nw=10e-6\ns=10e-6\nd=222e-6\nnr_r=2"
+}

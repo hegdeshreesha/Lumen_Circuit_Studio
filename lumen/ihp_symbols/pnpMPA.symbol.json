@@ -1,0 +1,266 @@
+{
+  "cdf": {
+    "display": {
+      "interpreted_labels": true
+    },
+    "parameters": [
+      {
+        "default": "1.0e-6",
+        "description": "IHP/xschem parameter w",
+        "name": "w"
+      },
+      {
+        "default": "2.0e-6",
+        "description": "IHP/xschem parameter l",
+        "name": "l"
+      },
+      {
+        "default": "1",
+        "description": "IHP/xschem parameter m",
+        "name": "m"
+      }
+    ],
+    "sim_info": {
+      "spice": {
+        "component_name": "pnpMPA",
+        "format": "tcleval(@spiceprefix@name @pinlist @model a=[ev \\{ @w * @l \\}] p=[ev \\{ ( @w + @l ) * 2 \\}] m=[ev \\{ @m \\}] )",
+        "prefix": "X"
+      }
+    },
+    "term_order": [
+      "collector",
+      "base",
+      "emitter"
+    ]
+  },
+  "component_name": "pnpMPA",
+  "library": "pdk:ihp_sg13g2",
+  "name": "pnpMPA",
+  "parameters": [
+    {
+      "default": "1.0e-6",
+      "description": "IHP/xschem parameter w",
+      "name": "w"
+    },
+    {
+      "default": "2.0e-6",
+      "description": "IHP/xschem parameter l",
+      "name": "l"
+    },
+    {
+      "default": "1",
+      "description": "IHP/xschem parameter m",
+      "name": "m"
+    }
+  ],
+  "pin_style": "terminal",
+  "pins": [
+    {
+      "bbox": [
+        17.5,
+        27.5,
+        22.5,
+        32.5
+      ],
+      "direction": "inout",
+      "name": "collector",
+      "net_name": null,
+      "sim_pinnumber": "1",
+      "x": 20.0,
+      "y": 30.0
+    },
+    {
+      "bbox": [
+        -22.5,
+        -2.5,
+        -17.5,
+        2.5
+      ],
+      "direction": "in",
+      "name": "base",
+      "net_name": null,
+      "sim_pinnumber": "2",
+      "x": -20.0,
+      "y": 0.0
+    },
+    {
+      "bbox": [
+        17.5,
+        -32.5,
+        22.5,
+        -27.5
+      ],
+      "direction": "inout",
+      "name": "emitter",
+      "net_name": null,
+      "sim_pinnumber": "3",
+      "x": 20.0,
+      "y": -30.0
+    }
+  ],
+  "prefix": "X",
+  "provenance": {
+    "source": "bundled_ihp_xschem_cache",
+    "xschem_group": "sg13g2_pr"
+  },
+  "render_options": {
+    "draw_pin_markers": true,
+    "pin_marker_size": 5,
+    "pin_marker_style": "xschem_box",
+    "use_text_shapes_for_labels": true
+  },
+  "shapes": [
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 0.0,
+      "x2": 0.0,
+      "y1": -30.0,
+      "y2": 30.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -20.0,
+      "x2": 0.0,
+      "y1": 0.0,
+      "y2": 0.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 10.0,
+      "x2": 20.0,
+      "y1": -20.0,
+      "y2": -30.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 0.0,
+      "x2": 20.0,
+      "y1": 10.0,
+      "y2": 30.0
+    },
+    {
+      "fill": true,
+      "points": [
+        [
+          0.0,
+          -10.0
+        ],
+        [
+          15.0,
+          -15.0
+        ],
+        [
+          5.0,
+          -25.0
+        ],
+        [
+          0.0,
+          -10.0
+        ]
+      ],
+      "source": "xschem",
+      "type": "polygon"
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "@model",
+      "type": "text",
+      "x": 22.5,
+      "y": 15.0
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "@name",
+      "type": "text",
+      "x": 22.5,
+      "y": -26.25
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 0.15,
+      "size": 5,
+      "source": "xschem",
+      "text": "e",
+      "type": "text",
+      "x": 10.0,
+      "y": -35.625
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 0.15,
+      "size": 5,
+      "source": "xschem",
+      "text": "c",
+      "type": "text",
+      "x": 10.0,
+      "y": 26.875
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 1.0,
+      "size": 5,
+      "source": "xschem",
+      "text": "b",
+      "type": "text",
+      "x": -10.625,
+      "y": -10.625
+    },
+    {
+      "bold": false,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "w=@w",
+      "type": "text",
+      "x": 22.5,
+      "y": -10.0
+    },
+    {
+      "bold": false,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "l=@l",
+      "type": "text",
+      "x": 22.5,
+      "y": 2.5
+    }
+  ],
+  "source_format": "xschem",
+  "spice_model": "pnpMPA",
+  "type": "symbol",
+  "xschem_format": "tcleval(@spiceprefix@name @pinlist @model a=[ev \\{ @w * @l \\}] p=[ev \\{ ( @w + @l ) * 2 \\}] m=[ev \\{ @m \\}] )",
+  "xschem_metadata": {
+    "a": "[ev",
+    "dir": "inout",
+    "fill": "true",
+    "l": "@l",
+    "layer": "13",
+    "m": "1",
+    "model": "pnpMPA",
+    "name": "emitter",
+    "p": "[ev",
+    "sim_pinnumber": "3",
+    "spiceprefix": "X",
+    "type": "pnp",
+    "w": "@w"
+  },
+  "xschem_template": "name=Q1\nmodel=pnpMPA\nspiceprefix=X\nw=1.0e-6\nl=2.0e-6\nm=1\n"
+}

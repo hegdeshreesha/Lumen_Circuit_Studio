@@ -1,0 +1,197 @@
+{
+  "cdf": {
+    "display": {
+      "interpreted_labels": true
+    },
+    "parameters": [],
+    "sim_info": {
+      "spice": {
+        "component_name": "sg13g2_antennanp",
+        "format": "@name @@A @VDD @VSS @prefix\\\\\\\\antennanp",
+        "prefix": "X"
+      }
+    },
+    "term_order": [
+      "A"
+    ]
+  },
+  "component_name": "sg13g2_antennanp",
+  "library": "pdk:ihp_sg13g2",
+  "name": "sg13g2_antennanp",
+  "parameters": [],
+  "pin_style": "terminal",
+  "pins": [
+    {
+      "bbox": [
+        -92.5,
+        -2.5,
+        -87.5,
+        2.5
+      ],
+      "direction": "in",
+      "name": "A",
+      "net_name": null,
+      "sim_pinnumber": null,
+      "x": -90.0,
+      "y": 0.0
+    }
+  ],
+  "prefix": "X",
+  "provenance": {
+    "source": "bundled_ihp_xschem_cache",
+    "xschem_group": "sg13g2_stdcells"
+  },
+  "render_options": {
+    "draw_pin_markers": true,
+    "pin_marker_size": 5,
+    "pin_marker_style": "xschem_box",
+    "use_text_shapes_for_labels": true
+  },
+  "shapes": [
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -70.0,
+      "x2": 70.0,
+      "y1": -10.0,
+      "y2": -10.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -70.0,
+      "x2": 70.0,
+      "y1": 10.0,
+      "y2": 10.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -70.0,
+      "x2": -70.0,
+      "y1": -10.0,
+      "y2": 10.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 70.0,
+      "x2": 70.0,
+      "y1": -10.0,
+      "y2": 10.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -90.0,
+      "x2": -70.0,
+      "y1": 0.0,
+      "y2": 0.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -70.0,
+      "x2": -60.0,
+      "y1": 0.0,
+      "y2": 0.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -60.0,
+      "x2": -60.0,
+      "y1": -5.0,
+      "y2": -0.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -60.0,
+      "x2": -50.0,
+      "y1": -5.0,
+      "y2": -0.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -60.0,
+      "x2": -60.0,
+      "y1": 0.0,
+      "y2": 5.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -60.0,
+      "x2": -50.0,
+      "y1": 5.0,
+      "y2": 0.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -50.0,
+      "x2": -50.0,
+      "y1": -5.0,
+      "y2": 5.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -50.0,
+      "x2": -45.0,
+      "y1": 0.0,
+      "y2": 0.0
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "@symname",
+      "type": "text",
+      "x": 15.0,
+      "y": -6.0
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "@name",
+      "type": "text",
+      "x": 75.0,
+      "y": -22.0
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "A",
+      "type": "text",
+      "x": -85.0,
+      "y": -14.0
+    }
+  ],
+  "source_format": "xschem",
+  "spice_model": "sg13g2_antennanp",
+  "type": "symbol",
+  "xschem_format": "@name @@A @VDD @VSS @prefix\\\\\\\\antennanp",
+  "xschem_metadata": {
+    "VDD": "VDD",
+    "VSS": "VSS",
+    "dir": "in",
+    "extra": "VDD VSS prefix",
+    "hcenter": "true",
+    "highlight": "true",
+    "name": "A",
+    "prefix": "sg13g2_",
+    "type": "primitive"
+  },
+  "xschem_template": "name=x1 VDD=VDD VSS=VSS prefix=sg13g2_ "
+}

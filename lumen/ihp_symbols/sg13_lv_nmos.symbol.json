@@ -1,157 +1,366 @@
 {
-  "type": "symbol",
+  "cdf": {
+    "display": {
+      "interpreted_labels": true
+    },
+    "parameters": [
+      {
+        "default": "0.13u",
+        "description": "IHP/xschem parameter l",
+        "name": "l"
+      },
+      {
+        "default": "0.15u",
+        "description": "IHP/xschem parameter w",
+        "name": "w"
+      },
+      {
+        "default": "1",
+        "description": "IHP/xschem parameter ng",
+        "name": "ng"
+      },
+      {
+        "default": "1",
+        "description": "IHP/xschem parameter m",
+        "name": "m"
+      }
+    ],
+    "sim_info": {
+      "spice": {
+        "component_name": "sg13_lv_nmos",
+        "format": "M@name @pinlist @model w=@w l=@l ng=@ng m=@m",
+        "prefix": "X"
+      }
+    },
+    "term_order": [
+      "D",
+      "G",
+      "S",
+      "B"
+    ]
+  },
+  "component_name": "sg13_lv_nmos",
+  "library": "pdk:ihp_sg13g2",
   "name": "sg13_lv_nmos",
-  "library": "ihp_primitives",
-  "prefix": "M",
-  "spice_model": "sg13_lv_nmos",
-  "pins": [
+  "parameters": [
     {
-      "name": "D",
-      "x": 20,
-      "y": -30,
-      "direction": "inout"
+      "default": "0.13u",
+      "description": "IHP/xschem parameter l",
+      "name": "l"
     },
     {
-      "name": "G",
-      "x": -20,
-      "y": 0,
-      "direction": "input"
+      "default": "0.15u",
+      "description": "IHP/xschem parameter w",
+      "name": "w"
     },
     {
-      "name": "S",
-      "x": 20,
-      "y": 30,
-      "direction": "inout"
+      "default": "1",
+      "description": "IHP/xschem parameter ng",
+      "name": "ng"
     },
     {
-      "name": "B",
-      "x": 20,
-      "y": 0,
-      "direction": "inout"
+      "default": "1",
+      "description": "IHP/xschem parameter m",
+      "name": "m"
     }
   ],
+  "pin_style": "terminal",
+  "pins": [
+    {
+      "bbox": [
+        17.5,
+        -32.5,
+        22.5,
+        -27.5
+      ],
+      "direction": "inout",
+      "name": "D",
+      "net_name": null,
+      "sim_pinnumber": null,
+      "x": 20.0,
+      "y": -30.0
+    },
+    {
+      "bbox": [
+        -22.5,
+        -2.5,
+        -17.5,
+        2.5
+      ],
+      "direction": "in",
+      "name": "G",
+      "net_name": null,
+      "sim_pinnumber": null,
+      "x": -20.0,
+      "y": 0.0
+    },
+    {
+      "bbox": [
+        17.5,
+        27.5,
+        22.5,
+        32.5
+      ],
+      "direction": "inout",
+      "name": "S",
+      "net_name": null,
+      "sim_pinnumber": null,
+      "x": 20.0,
+      "y": 30.0
+    },
+    {
+      "bbox": [
+        19.921875,
+        -0.078125,
+        20.078125,
+        0.078125
+      ],
+      "direction": "in",
+      "name": "B",
+      "net_name": null,
+      "sim_pinnumber": null,
+      "x": 20.0,
+      "y": 0.0
+    }
+  ],
+  "prefix": "X",
+  "provenance": {
+    "source": "bundled_ihp_xschem_cache",
+    "xschem_group": "sg13g2_pr"
+  },
+  "render_options": {
+    "draw_pin_markers": true,
+    "pin_marker_size": 5,
+    "pin_marker_style": "xschem_box",
+    "use_text_shapes_for_labels": true
+  },
   "shapes": [
     {
+      "source": "xschem",
       "type": "line",
       "x1": 7.5,
-      "y1": -22.5,
       "x2": 7.5,
+      "y1": -22.5,
       "y2": 22.5
     },
     {
+      "source": "xschem",
       "type": "line",
-      "x1": -20,
-      "y1": 0,
-      "x2": 2,
-      "y2": 0
-    },
-    {
-      "type": "line",
-      "x1": 20,
-      "y1": -30,
-      "x2": 20,
+      "x1": 20.0,
+      "x2": 20.0,
+      "y1": -30.0,
       "y2": -17.5
     },
     {
+      "source": "xschem",
       "type": "line",
-      "x1": 20,
+      "x1": 20.0,
+      "x2": 20.0,
       "y1": 17.5,
-      "x2": 20,
-      "y2": 30
+      "y2": 30.0
     },
     {
+      "source": "xschem",
       "type": "line",
       "x1": 2.5,
-      "y1": -15,
       "x2": 2.5,
-      "y2": 15
+      "y1": -15.0,
+      "y2": 15.0
     },
     {
+      "source": "xschem",
       "type": "line",
       "x1": 7.5,
-      "y1": -17.5,
-      "x2": 20,
-      "y2": -17.5
-    },
-    {
-      "type": "line",
-      "x1": 7.5,
+      "x2": 20.0,
       "y1": 17.5,
-      "x2": 20,
       "y2": 17.5
     },
     {
-      "type": "polygon",
+      "source": "xschem",
+      "type": "line",
+      "x1": 7.5,
+      "x2": 20.0,
+      "y1": -17.5,
+      "y2": -17.5
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -20.0,
+      "x2": 2.0,
+      "y1": -0.0,
+      "y2": -0.0
+    },
+    {
+      "fill": true,
       "points": [
         [
-          15,
-          20
+          15.0,
+          20.0
         ],
         [
-          20,
+          20.0,
           17.5
         ],
         [
-          15,
-          15
+          15.0,
+          15.0
+        ],
+        [
+          15.0,
+          20.0
         ]
-      ]
+      ],
+      "source": "xschem",
+      "type": "polygon"
     },
     {
-      "type": "polygon",
+      "fill": true,
       "points": [
         [
-          20,
+          20.0,
           2.5
         ],
         [
-          15,
-          0
+          15.0,
+          0.0
         ],
         [
-          20,
+          20.0,
           -2.5
+        ],
+        [
+          20.0,
+          2.5
         ]
-      ]
+      ],
+      "source": "xschem",
+      "type": "polygon"
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 1.0,
+      "size": 6,
+      "source": "xschem",
+      "text": "@name",
+      "type": "text",
+      "x": 5.0,
+      "y": -30.0
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 1.0,
+      "size": 5,
+      "source": "xschem",
+      "text": "G",
+      "type": "text",
+      "x": -10.0,
+      "y": -10.0
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 2.0,
+      "size": 6,
+      "source": "xschem",
+      "text": "@model",
+      "type": "text",
+      "x": 30.0,
+      "y": 31.25
+    },
+    {
+      "bold": false,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "m=@m",
+      "type": "text",
+      "x": 31.25,
+      "y": 6.25
+    },
+    {
+      "bold": false,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "ng=@ng",
+      "type": "text",
+      "x": 31.25,
+      "y": -2.5
+    },
+    {
+      "bold": false,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "l=@l",
+      "type": "text",
+      "x": 31.25,
+      "y": -15.0
+    },
+    {
+      "bold": false,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "w=@w",
+      "type": "text",
+      "x": 31.25,
+      "y": -26.25
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 0.15,
+      "size": 5,
+      "source": "xschem",
+      "text": "S",
+      "type": "text",
+      "x": 22.5,
+      "y": 17.5
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 2.0,
+      "size": 5,
+      "source": "xschem",
+      "text": "D",
+      "type": "text",
+      "x": 22.5,
+      "y": -17.5
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 0.15,
+      "size": 5,
+      "source": "xschem",
+      "text": "B",
+      "type": "text",
+      "x": 20.0,
+      "y": -10.0
     }
   ],
-  "parameters": [
-    {
-      "name": "w",
-      "default": "0.15u",
-      "description": "Width"
-    },
-    {
-      "name": "l",
-      "default": "0.13u",
-      "description": "Length"
-    },
-    {
-      "name": "ng",
-      "default": "1",
-      "description": "Number of gate fingers"
-    },
-    {
-      "name": "m",
-      "default": "1",
-      "description": "Multiplier"
-    }
-  ],
-  "layout": {
-    "technology": "sg13g2",
-    "library": "SG13_dev",
-    "pcell": "nmos",
-    "parameter_map": {
-      "w": "w",
-      "l": "l",
-      "ng": "ng"
-    },
-    "forced_parameters": {},
-    "multiplicity_parameter": "m"
+  "source_format": "xschem",
+  "spice_model": "sg13_lv_nmos",
+  "type": "symbol",
+  "xschem_format": "M@name @pinlist @model w=@w l=@l ng=@ng m=@m",
+  "xschem_metadata": {
+    "l": "0.13u",
+    "m": "1",
+    "model": "sg13_lv_nmos",
+    "name": "M1",
+    "ng": "1",
+    "spiceprefix": "X",
+    "type": "nmos",
+    "w": "0.15u"
   },
-  "label": {
-    "text": "@name",
-    "x": 5,
-    "y": -30
-  }
+  "xschem_template": "name=M1\nl=0.13u\nw=0.15u\nng=1\nm=1\nmodel=sg13_lv_nmos\nspiceprefix=X\n"
 }

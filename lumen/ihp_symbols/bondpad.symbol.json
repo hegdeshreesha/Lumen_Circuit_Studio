@@ -1,0 +1,219 @@
+{
+  "cdf": {
+    "display": {
+      "interpreted_labels": true
+    },
+    "parameters": [
+      {
+        "default": "80u",
+        "description": "IHP/xschem parameter size",
+        "name": "size"
+      },
+      {
+        "default": "0",
+        "description": "IHP/xschem parameter shape",
+        "name": "shape"
+      },
+      {
+        "default": "0",
+        "description": "IHP/xschem parameter padtype",
+        "name": "padtype"
+      }
+    ],
+    "sim_info": {
+      "spice": {
+        "component_name": "bondpad",
+        "format": "@spiceprefix@name @pinlist @model",
+        "prefix": "X"
+      }
+    },
+    "term_order": [
+      "pad"
+    ]
+  },
+  "component_name": "bondpad",
+  "library": "pdk:ihp_sg13g2",
+  "name": "bondpad",
+  "parameters": [
+    {
+      "default": "80u",
+      "description": "IHP/xschem parameter size",
+      "name": "size"
+    },
+    {
+      "default": "0",
+      "description": "IHP/xschem parameter shape",
+      "name": "shape"
+    },
+    {
+      "default": "0",
+      "description": "IHP/xschem parameter padtype",
+      "name": "padtype"
+    }
+  ],
+  "pin_style": "terminal",
+  "pins": [
+    {
+      "bbox": [
+        -2.5,
+        37.5,
+        2.5,
+        42.5
+      ],
+      "direction": "inout",
+      "name": "pad",
+      "net_name": null,
+      "sim_pinnumber": null,
+      "x": 0.0,
+      "y": 40.0
+    }
+  ],
+  "prefix": "X",
+  "provenance": {
+    "source": "bundled_ihp_xschem_cache",
+    "xschem_group": "sg13g2_pr"
+  },
+  "render_options": {
+    "draw_pin_markers": true,
+    "pin_marker_size": 5,
+    "pin_marker_style": "xschem_box",
+    "use_text_shapes_for_labels": true
+  },
+  "shapes": [
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -20.0,
+      "x2": 20.0,
+      "y1": -30.0,
+      "y2": -30.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -20.0,
+      "x2": 20.0,
+      "y1": 30.0,
+      "y2": 30.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -30.0,
+      "x2": -30.0,
+      "y1": -20.0,
+      "y2": 20.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 30.0,
+      "x2": 30.0,
+      "y1": -20.0,
+      "y2": 20.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -30.0,
+      "x2": -20.0,
+      "y1": -20.0,
+      "y2": -30.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 20.0,
+      "x2": 30.0,
+      "y1": -30.0,
+      "y2": -20.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 20.0,
+      "x2": 30.0,
+      "y1": 30.0,
+      "y2": 20.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -30.0,
+      "x2": -20.0,
+      "y1": 20.0,
+      "y2": 30.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -25.0,
+      "x2": 25.0,
+      "y1": 25.0,
+      "y2": -25.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -25.0,
+      "x2": 25.0,
+      "y1": -25.0,
+      "y2": 25.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 0.0,
+      "x2": 0.0,
+      "y1": 30.0,
+      "y2": 40.0
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 2.0,
+      "size": 6,
+      "source": "xschem",
+      "text": "@name",
+      "type": "text",
+      "x": -15.0,
+      "y": -27.5
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 2.0,
+      "size": 6,
+      "source": "xschem",
+      "text": "@model",
+      "type": "text",
+      "x": -25.0,
+      "y": 7.5
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 2.0,
+      "size": 5,
+      "source": "xschem",
+      "text": "pad",
+      "type": "text",
+      "x": 20.0,
+      "y": 41.25
+    }
+  ],
+  "source_format": "xschem",
+  "spice_model": "bondpad",
+  "type": "symbol",
+  "xschem_format": "@spiceprefix@name @pinlist @model",
+  "xschem_metadata": {
+    "model": "bondpad",
+    "name": "X1",
+    "padtype": "0",
+    "shape": "0",
+    "size": "80u",
+    "spiceprefix": "X",
+    "type": "pad"
+  },
+  "xschem_template": "name=X1\nmodel=bondpad\nspiceprefix=X\nsize=80u\nshape=0\npadtype=0\n"
+}

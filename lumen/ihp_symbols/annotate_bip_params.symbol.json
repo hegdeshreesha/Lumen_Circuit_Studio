@@ -1,0 +1,97 @@
+{
+  "cdf": {
+    "display": {
+      "interpreted_labels": true
+    },
+    "parameters": [
+      {
+        "default": "Q1",
+        "description": "IHP/xschem parameter ref",
+        "name": "ref"
+      }
+    ],
+    "sim_info": {
+      "spice": {
+        "component_name": "annotate_bip_params",
+        "format": "",
+        "prefix": "X"
+      }
+    },
+    "term_order": []
+  },
+  "component_name": "annotate_bip_params",
+  "library": "pdk:ihp_sg13g2",
+  "name": "annotate_bip_params",
+  "parameters": [
+    {
+      "default": "Q1",
+      "description": "IHP/xschem parameter ref",
+      "name": "ref"
+    }
+  ],
+  "pin_style": "terminal",
+  "pins": [],
+  "prefix": "X",
+  "provenance": {
+    "source": "bundled_ihp_xschem_cache",
+    "xschem_group": "sg13g2_pr"
+  },
+  "render_options": {
+    "draw_pin_markers": true,
+    "pin_marker_size": 5,
+    "pin_marker_style": "xschem_box",
+    "use_text_shapes_for_labels": true
+  },
+  "shapes": [
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 0.0,
+      "x2": 0.0,
+      "y1": -0.0,
+      "y2": 10.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -0.0,
+      "x2": 10.0,
+      "y1": -0.0,
+      "y2": -0.0
+    },
+    {
+      "bold": false,
+      "role": "interpreted_label",
+      "rotation": 0.2,
+      "size": 6,
+      "source": "xschem",
+      "text": "tcleval([display_bip_params @ref ])",
+      "type": "text",
+      "x": 5.0,
+      "y": 5.0
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 2.0,
+      "size": 6,
+      "source": "xschem",
+      "text": "@ref",
+      "type": "text",
+      "x": 0.0,
+      "y": 0.0
+    }
+  ],
+  "source_format": "xschem",
+  "spice_model": "annotate_bip_params",
+  "type": "symbol",
+  "xschem_format": "",
+  "xschem_metadata": {
+    "font": "Monospace",
+    "layer": "4",
+    "name": "annot1",
+    "ref": "Q1",
+    "type": "annotator"
+  },
+  "xschem_template": "name=annot1 ref=Q1"
+}

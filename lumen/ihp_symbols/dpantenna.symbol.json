@@ -1,0 +1,215 @@
+{
+  "cdf": {
+    "display": {
+      "interpreted_labels": true
+    },
+    "parameters": [
+      {
+        "default": "0.78u",
+        "description": "IHP/xschem parameter l",
+        "name": "l"
+      },
+      {
+        "default": "0.78u",
+        "description": "IHP/xschem parameter w",
+        "name": "w"
+      }
+    ],
+    "sim_info": {
+      "spice": {
+        "component_name": "dpantenna",
+        "format": "D@name @pinlist @model l=@l w=@w",
+        "prefix": "X"
+      }
+    },
+    "term_order": [
+      "d0",
+      "d1"
+    ]
+  },
+  "component_name": "dpantenna",
+  "library": "pdk:ihp_sg13g2",
+  "name": "dpantenna",
+  "parameters": [
+    {
+      "default": "0.78u",
+      "description": "IHP/xschem parameter l",
+      "name": "l"
+    },
+    {
+      "default": "0.78u",
+      "description": "IHP/xschem parameter w",
+      "name": "w"
+    }
+  ],
+  "pin_style": "terminal",
+  "pins": [
+    {
+      "bbox": [
+        -2.5,
+        27.5,
+        2.5,
+        32.5
+      ],
+      "direction": "inout",
+      "name": "d0",
+      "net_name": null,
+      "sim_pinnumber": "1",
+      "x": 0.0,
+      "y": 30.0
+    },
+    {
+      "bbox": [
+        -2.5,
+        -32.5,
+        2.5,
+        -27.5
+      ],
+      "direction": "inout",
+      "name": "d1",
+      "net_name": null,
+      "sim_pinnumber": "2",
+      "x": 0.0,
+      "y": -30.0
+    }
+  ],
+  "prefix": "X",
+  "provenance": {
+    "source": "bundled_ihp_xschem_cache",
+    "xschem_group": "sg13g2_pr"
+  },
+  "render_options": {
+    "draw_pin_markers": true,
+    "pin_marker_size": 5,
+    "pin_marker_style": "xschem_box",
+    "use_text_shapes_for_labels": true
+  },
+  "shapes": [
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 0.0,
+      "x2": 0.0,
+      "y1": -30.0,
+      "y2": -5.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": 0.0,
+      "x2": 0.0,
+      "y1": 5.0,
+      "y2": 30.0
+    },
+    {
+      "source": "xschem",
+      "type": "line",
+      "x1": -10.0,
+      "x2": 10.0,
+      "y1": -5.0,
+      "y2": -5.0
+    },
+    {
+      "fill": true,
+      "points": [
+        [
+          0.0,
+          -5.0
+        ],
+        [
+          -10.0,
+          5.0
+        ],
+        [
+          10.0,
+          5.0
+        ],
+        [
+          0.0,
+          -5.0
+        ]
+      ],
+      "source": "xschem",
+      "type": "polygon"
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 2.0,
+      "size": 6,
+      "source": "xschem",
+      "text": "@name",
+      "type": "text",
+      "x": 15.0,
+      "y": 22.5
+    },
+    {
+      "bold": true,
+      "role": "interpreted_label",
+      "rotation": 2.0,
+      "size": 6,
+      "source": "xschem",
+      "text": "@model",
+      "type": "text",
+      "x": 15.0,
+      "y": -12.5
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 2.0,
+      "size": 5,
+      "source": "xschem",
+      "text": "d0",
+      "type": "text",
+      "x": -5.0,
+      "y": 26.25
+    },
+    {
+      "bold": false,
+      "role": "pin_label",
+      "rotation": 2.0,
+      "size": 5,
+      "source": "xschem",
+      "text": "d1",
+      "type": "text",
+      "x": -5.0,
+      "y": -17.5
+    },
+    {
+      "bold": false,
+      "role": "interpreted_label",
+      "rotation": 2.0,
+      "size": 6,
+      "source": "xschem",
+      "text": "l=@l",
+      "type": "text",
+      "x": -15.0,
+      "y": 0.0
+    },
+    {
+      "bold": false,
+      "role": "interpreted_label",
+      "rotation": 2.0,
+      "size": 6,
+      "source": "xschem",
+      "text": "w=@w",
+      "type": "text",
+      "x": -15.0,
+      "y": 12.5
+    }
+  ],
+  "source_format": "xschem",
+  "spice_model": "dpantenna",
+  "type": "symbol",
+  "xschem_format": "D@name @pinlist @model l=@l w=@w",
+  "xschem_metadata": {
+    "l": "0.78u",
+    "model": "dpantenna",
+    "name": "D1",
+    "spiceprefix": "X",
+    "type": "diode",
+    "w": "0.78u"
+  },
+  "xschem_template": "name=D1\nmodel=dpantenna\nl=0.78u\nw=0.78u\nspiceprefix=X\n"
+}
