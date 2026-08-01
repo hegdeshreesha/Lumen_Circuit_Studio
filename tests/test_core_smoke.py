@@ -117,6 +117,24 @@ class ConnectivitySmokeTest(unittest.TestCase):
 
         self.assertEqual(engine.get_net_map(), {"VDD": ["__top__.VDD", "X1.S"]})
 
+    def test_repeated_rail_splits_keep_later_taps_connected(self):
+        engine = ConnectivityEngine()
+        engine.build_from_schematic({
+            "wires": [
+                {"x1": 0, "y1": 0, "x2": 100, "y2": 0},
+                {"x1": 20, "y1": 10, "x2": 20, "y2": 0},
+                {"x1": 80, "y1": 10, "x2": 80, "y2": 0},
+            ],
+            "labels": [{"text": "VDD", "x": 10, "y": 0}],
+            "pins": [],
+            "instances": [],
+        })
+        engine.normalize_wires()
+        engine.add_instance_pins("A", "work", "tap", 20, 10, [{"name": "P", "x": 0, "y": 0}])
+        engine.add_instance_pins("B", "work", "tap", 80, 10, [{"name": "P", "x": 0, "y": 0}])
+
+        self.assertEqual(engine.get_net_map(), {"VDD": ["A.P", "B.P"]})
+
     def test_top_level_pin_names_net(self):
         engine = ConnectivityEngine()
         engine.build_from_schematic({

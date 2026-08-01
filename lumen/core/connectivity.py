@@ -462,8 +462,11 @@ class ConnectivityEngine:
                     intersection = self._segments_intersect(seg1, seg2)
                     if intersection:
                         ix, iy = intersection
+                        segment_count = len(self.segments)
                         jid1 = self._ensure_segment_junction(sid1, ix, iy)
                         jid2 = self._ensure_segment_junction(sid2, ix, iy)
+                        if len(self.segments) != segment_count:
+                            changed = True
                         if jid1 and jid2 and jid1 != jid2:
                             self._merge_junctions(jid1, jid2)
                             changes.append(f"Connected segments at ({ix},{iy})")
