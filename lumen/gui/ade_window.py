@@ -1403,6 +1403,7 @@ class ADEWindow(QMainWindow):
         self._result_all_waveforms_by_row: dict[int, dict] = {}
         self._result_section_rows: set[int] = set()
         self._result_section_corners: set[str] = set()
+        self._corner_result_rows: dict[str, list[int]] = {}
         self._sim_thread: QThread | None = None
         self._sim_worker: SimEnvSimulationWorker | None = None
         self._sim_jobs_total = 0
@@ -1689,6 +1690,11 @@ class ADEWindow(QMainWindow):
                 if editor is not None:
                     return editor, win
         return None, None
+
+    def _clear_schematic_dc_annotations_for_run(self):
+        editor, _win = self._find_schematic_editor()
+        if editor is not None and hasattr(editor, "clear_dc_annotations"):
+            editor.clear_dc_annotations()
 
     def _collect_output_targets(self) -> dict:
         """Collect net and terminal targets for output/save convenience pickers."""
@@ -2805,9 +2811,7 @@ class ADEWindow(QMainWindow):
 
     def _on_close_analysis_tab(self, index):
         name = self.analysis_setup_tabs.tabText(index)
-        self.analysis_setup_tabs.removeTab(index)
-        self._analysis_tabs.pop(name, None)
-        self._refresh_run_plan()
+        self._remove_analysis(name)
 
     def _build_corners_tab(self):
         widget = QWidget()
@@ -3064,10 +3068,24 @@ class ADEWindow(QMainWindow):
         self.btn_export_results_csv = QPushButton("💾 Export Matrix (CSV)")
         self.btn_export_results_csv.setText("Export CSV")
         self.btn_export_results_csv.setToolTip("Export Corner Results Matrix to CSV")
-        self.btn_export_results_csv.clicked.connect(self._export_results_to_csv)
+        self.btn_export_results_csv.clicked.connect(self._export_corner_matrix_to_csv)
         toolbar.addWidget(self.btn_export_results_csv)
 
         toolbar.addStretch()
+        layout.addLayout(toolbar)
+
+        self.corner_matrix_table = QTableWidget(5, 0)
+        self.corner_matrix_table.setVerticalHeaderLabels(["Status", "Plots", "Runs", "Process", "Conditions"])
+        self.corner_matrix_table.verticalHeader().setVisible(True)
+        self.corner_matrix_table.setMaximumHeight(156)
+        self.corner_matrix_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectColumns)
+        self.corner_matrix_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.corner_matrix_table.customContextMenuRequested.connect(self._on_corner_matrix_context_menu)
+        matrix_header = self.corner_matrix_table.horizontalHeader()
+        matrix_header.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        matrix_header.customContextMenuRequested.connect(self._on_corner_matrix_header_menu)
+        layout.addWidget(self.corner_matrix_table)
+
         self.results_table = QTableWidget(0, 7)
         self.results_table.setHorizontalHeaderLabels([
             "Corner / Run",
@@ -3096,12 +3114,206 @@ class ADEWindow(QMainWindow):
 
         self.results_table.verticalHeader().setVisible(False)
         self.results_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.results_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.results_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.results_table.customContextMenuRequested.connect(self._on_results_context_menu)
         self.results_table.itemDoubleClicked.connect(self._on_result_double_click)
 
         layout.addWidget(self.results_table)
         self.main_tabs.addTab(widget, "Results")
+
+    def _refresh_corner_matrix(self):
+        if not hasattr(self, "corner_matrix_table"):
+            return
+        corners = sorted(self._corner_result_rows.keys())
+        self.corner_matrix_table.setColumnCount(len(corners))
+        self.corner_matrix_table.setHorizontalHeaderLabels(corners)
+        for col, corner in enumerate(corners):
+            rows = self._corner_result_rows.get(corner, [])
+            ok = 0
+            plottable = 0
+            for row in rows:
+                item = self.results_table.item(row, 6)
+                if item and "PASS" in item.text():
+                    ok += 1
+                if self._result_waveforms_by_row.get(row) or self._result_all_waveforms_by_row.get(row):
+                    plottable += 1
+            values = [
+                f"{ok}/{len(rows)} PASS",
+                f"{plottable} plot",
+                str(len(rows)),
+                self._corner_matrix_value(corner, 1),
+                f"{self._corner_matrix_value(corner, 2)}, {self._corner_matrix_value(corner, 3)}",
+            ]
+            for row_idx, text in enumerate(values):
+                cell = QTableWidgetItem(text)
+                cell.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                cell.setData(Qt.ItemDataRole.UserRole, corner)
+                if row_idx == 0:
+                    if ok == len(rows):
+                        cell.setForeground(QColor("#74c69d"))
+                        cell.setBackground(QColor("#173524"))
+                    elif ok:
+                        cell.setForeground(QColor("#ffd166"))
+                        cell.setBackground(QColor("#3a3117"))
+                    else:
+                        cell.setForeground(QColor("#ff8fa3"))
+                        cell.setBackground(QColor("#401820"))
+                self.corner_matrix_table.setItem(row_idx, col, cell)
+        self.corner_matrix_table.resizeColumnsToContents()
+
+    def _corner_matrix_value(self, corner: str, result_col: int) -> str:
+        rows = self._corner_result_rows.get(corner, [])
+        if rows:
+            item = self.results_table.item(rows[-1], result_col)
+            return item.text() if item else ""
+        return ""
+
+    def _corner_from_matrix_pos(self, pos) -> str:
+        if not hasattr(self, "corner_matrix_table"):
+            return ""
+        col = self.corner_matrix_table.columnAt(pos.x())
+        if col < 0:
+            col = self.corner_matrix_table.currentColumn()
+        item = self.corner_matrix_table.horizontalHeaderItem(col) if col >= 0 else None
+        return item.text() if item else ""
+
+    def _on_corner_matrix_header_menu(self, pos):
+        col = self.corner_matrix_table.horizontalHeader().logicalIndexAt(pos)
+        item = self.corner_matrix_table.horizontalHeaderItem(col) if col >= 0 else None
+        self._show_corner_matrix_menu(item.text() if item else "", pos, on_header=True)
+
+    def _on_corner_matrix_context_menu(self, pos):
+        self._show_corner_matrix_menu(self._corner_from_matrix_pos(pos), pos, on_header=False)
+
+    def _show_corner_matrix_menu(self, corner: str, pos, on_header: bool):
+        if not corner:
+            return
+        rows = self._corner_result_rows.get(corner, [])
+        menu = QMenu(self)
+        title = QAction(f"Corner: {corner}", self)
+        title.setEnabled(False)
+        menu.addAction(title)
+        menu.addSeparator()
+
+        act_main = QAction("Main Form...", self)
+        act_main.setEnabled(bool(rows))
+        act_main.triggered.connect(lambda: self._show_corner_main_form(corner))
+        menu.addAction(act_main)
+
+        act_plot = QAction("Plot All", self)
+        act_plot.setEnabled(any(self._result_waveforms_by_row.get(r) or self._result_all_waveforms_by_row.get(r) for r in rows))
+        act_plot.triggered.connect(lambda: self._plot_corner_results(corner))
+        menu.addAction(act_plot)
+
+        act_plot_outputs = QAction("Plot Selected Outputs", self)
+        act_plot_outputs.setEnabled(any(self._result_waveforms_by_row.get(r) for r in rows))
+        act_plot_outputs.triggered.connect(lambda: self._plot_corner_results(corner, selected_only=True))
+        menu.addAction(act_plot_outputs)
+
+        signal_menu = menu.addMenu("Plot Signal")
+        signals = self._corner_signal_names(corner)
+        signal_menu.setEnabled(bool(signals))
+        for signal in signals[:80]:
+            action = QAction(signal, self)
+            action.triggered.connect(lambda _checked=False, sig=signal: self._plot_corner_results(corner, signals=[sig]))
+            signal_menu.addAction(action)
+        if len(signals) > 80:
+            more = QAction(f"... {len(signals) - 80} more signal(s)", self)
+            more.setEnabled(False)
+            signal_menu.addAction(more)
+
+        act_select = QAction("Select Runs", self)
+        act_select.setEnabled(bool(rows))
+        act_select.triggered.connect(lambda: self._select_corner_result_rows(corner))
+        menu.addAction(act_select)
+
+        menu.addSeparator()
+        act_export = QAction("Export Corner Matrix CSV...", self)
+        act_export.triggered.connect(self._export_corner_matrix_to_csv)
+        menu.addAction(act_export)
+
+        widget = self.corner_matrix_table.horizontalHeader() if on_header else self.corner_matrix_table.viewport()
+        menu.exec(widget.mapToGlobal(pos))
+
+    def _select_corner_result_rows(self, corner: str):
+        rows = self._corner_result_rows.get(corner, [])
+        if not rows:
+            return
+        self.results_table.clearSelection()
+        for row in rows:
+            self.results_table.selectRow(row)
+        self.results_table.scrollToItem(self.results_table.item(rows[0], 0))
+
+    def _corner_signal_names(self, corner: str) -> list[str]:
+        names: set[str] = set()
+        for row in self._corner_result_rows.get(corner, []):
+            waveforms = self._result_all_waveforms_by_row.get(row) or self._result_waveforms_by_row.get(row, {})
+            names.update(self._plottable_signal_names(waveforms))
+        return sorted(names, key=lambda s: s.lower())
+
+    def _plot_corner_results(self, corner: str, selected_only: bool = False, signals: list[str] | None = None):
+        merged: dict = {}
+        for row in self._corner_result_rows.get(corner, []):
+            waveforms = self._result_waveforms_by_row.get(row, {}) if selected_only else (
+                self._result_all_waveforms_by_row.get(row) or self._result_waveforms_by_row.get(row, {})
+            )
+            if signals:
+                waveforms = self._waveforms_for_signals(waveforms, signals)
+            if waveforms:
+                run = self.results_table.item(row, 0).text() if self.results_table.item(row, 0) else corner
+                self._merge_corner_waveforms(merged, run, waveforms)
+        if not merged:
+            self.statusBar().showMessage(f"No plottable waveforms for {corner}", 5000)
+            return
+        self._last_sigview_waveforms = dict(merged)
+        self._show_waveforms(self._sigview_payload_for_waveforms(merged))
+        self.statusBar().showMessage(f"Plotted all waveforms for {corner}", 4000)
+
+    def _show_corner_main_form(self, corner: str):
+        rows = self._corner_result_rows.get(corner, [])
+        if not rows:
+            self.statusBar().showMessage(f"No result rows for {corner}", 5000)
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Corner Main Form - {corner}")
+        dlg.resize(760, 420)
+        layout = QVBoxLayout(dlg)
+        title = QLabel(self._results_corner_section_title(corner))
+        title.setObjectName("adePanelTitle")
+        layout.addWidget(title)
+        table = QTableWidget(len(rows), 5)
+        table.setHorizontalHeaderLabels(["Run", "Analysis", "Measurements / Outputs", "Status", "Signals"])
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        for idx, row in enumerate(rows):
+            waveforms = self._result_all_waveforms_by_row.get(row) or self._result_waveforms_by_row.get(row, {})
+            values = [
+                self.results_table.item(row, 0).text() if self.results_table.item(row, 0) else "",
+                self.results_table.item(row, 4).text() if self.results_table.item(row, 4) else "",
+                self.results_table.item(row, 5).text() if self.results_table.item(row, 5) else "",
+                self.results_table.item(row, 6).text() if self.results_table.item(row, 6) else "",
+                str(len(self._plottable_signal_names(waveforms))),
+            ]
+            for col, value in enumerate(values):
+                table.setItem(idx, col, QTableWidgetItem(value))
+        layout.addWidget(table)
+        buttons = QHBoxLayout()
+        plot = QPushButton("Plot All")
+        plot.clicked.connect(lambda _checked=False: self._plot_corner_results(corner))
+        buttons.addWidget(plot)
+        select = QPushButton("Select Runs")
+        select.clicked.connect(lambda _checked=False: self._select_corner_result_rows(corner))
+        buttons.addWidget(select)
+        close = QPushButton("Close")
+        close.clicked.connect(dlg.accept)
+        buttons.addWidget(close)
+        buttons.addStretch()
+        layout.addLayout(buttons)
+        dlg.exec()
 
     def _show_results_tab(self):
         if not hasattr(self, "main_tabs"):
@@ -3115,6 +3327,9 @@ class ADEWindow(QMainWindow):
         filename, _ = QFileDialog.getSaveFileName(self, "Export Corner Results Matrix", "", "CSV Files (*.csv);;All Files (*)")
         if not filename:
             return
+        self._export_results_rows_to_csv(filename)
+
+    def _export_results_rows_to_csv(self, filename: str):
         try:
             with open(filename, "w", newline="", encoding="utf-8") as fh:
                 writer = csv.writer(fh)
@@ -3132,6 +3347,26 @@ class ADEWindow(QMainWindow):
             self.statusBar().showMessage(f"Exported Corner Matrix to {filename}", 5000)
         except Exception as exc:
             QMessageBox.critical(self, "Export CSV", f"Could not export CSV:\n{exc}")
+
+    def _export_corner_matrix_to_csv(self, filename: str = ""):
+        if not filename:
+            filename, _ = QFileDialog.getSaveFileName(self, "Export Corner Matrix", "", "CSV Files (*.csv);;All Files (*)")
+            if not filename:
+                return
+        try:
+            headers = ["Metric"] + [self.corner_matrix_table.horizontalHeaderItem(c).text() for c in range(self.corner_matrix_table.columnCount())]
+            with open(filename, "w", newline="", encoding="utf-8") as fh:
+                writer = csv.writer(fh)
+                writer.writerow(headers)
+                for r in range(self.corner_matrix_table.rowCount()):
+                    row_name = self.corner_matrix_table.verticalHeaderItem(r).text()
+                    writer.writerow([row_name] + [
+                        self.corner_matrix_table.item(r, c).text() if self.corner_matrix_table.item(r, c) else ""
+                        for c in range(self.corner_matrix_table.columnCount())
+                    ])
+            self.statusBar().showMessage(f"Exported Corner Matrix to {filename}", 5000)
+        except Exception as exc:
+            QMessageBox.critical(self, "Export Corner Matrix", f"Could not export CSV:\n{exc}")
 
     def _output_save_lines(self) -> list[str]:
         mode = str(self._sim_save_mode or "all").lower()
@@ -3191,69 +3426,152 @@ class ADEWindow(QMainWindow):
     def _add_analysis(self, name: str):
         if name in self._analysis_tabs:
             # Focus existing tab
-            for i in range(self.analysis_setup_tabs.count()):
-                if self.analysis_setup_tabs.tabText(i) == name:
-                    self.analysis_setup_tabs.setCurrentIndex(i)
-                    return
+            self._show_analysis_setup(name)
+            return
         widget = AnalysisSetupWidget(name)
+        self._connect_analysis_widget(widget)
         self._analysis_tabs[name] = widget
         self.analysis_setup_tabs.addTab(widget, name)
         self.analysis_setup_tabs.setCurrentWidget(widget)
+        self._show_main_tab("Analyses")
         self._log(f"Added test: {name}")
         self._refresh_run_plan()
+
+    def _connect_analysis_widget(self, widget: AnalysisSetupWidget):
+        def changed():
+            self._refresh_run_plan()
+            self._save_simenv_view_silent()
+        for field in getattr(widget, "_fields", {}).values():
+            if isinstance(field, QCheckBox):
+                field.stateChanged.connect(lambda _state, fn=changed: fn())
+            elif isinstance(field, QComboBox):
+                field.currentTextChanged.connect(lambda _text, fn=changed: fn())
+            elif isinstance(field, QLineEdit):
+                field.editingFinished.connect(changed)
+
+    def _remove_analysis(self, name: str):
+        if name not in self._analysis_tabs:
+            return
+        for i in range(self.analysis_setup_tabs.count()):
+            if self.analysis_setup_tabs.tabText(i) == name:
+                self.analysis_setup_tabs.removeTab(i)
+                break
+        self._analysis_tabs.pop(name, None)
+        self._log(f"Disabled test: {name}")
+        self._refresh_run_plan()
+
+    def _show_analysis_setup(self, name: str):
+        for i in range(self.analysis_setup_tabs.count()):
+            if self.analysis_setup_tabs.tabText(i) == name:
+                self.analysis_setup_tabs.setCurrentIndex(i)
+                for idx in range(self.main_tabs.count()):
+                    if self.main_tabs.tabText(idx) == "Analyses":
+                        self.main_tabs.setCurrentIndex(idx)
+                        break
+                return
+
+    def _show_main_tab(self, name: str):
+        for idx in range(self.main_tabs.count()):
+            if self.main_tabs.tabText(idx) == name:
+                self.main_tabs.setCurrentIndex(idx)
+                break
 
     # ── Menus & Toolbar ───────────────────────────────────────
 
     def _create_menus(self):
         menubar = self.menuBar()
-        sim_menu = menubar.addMenu("&SimENV")
-
-        act_run = QAction("Run All", self)
-        act_run.setShortcut("F5")
-        act_run.triggered.connect(self._on_run)
-        sim_menu.addAction(act_run)
-
-        act_netlist = QAction("View Netlist", self)
-        act_netlist.triggered.connect(self._on_view_netlist)
-        sim_menu.addAction(act_netlist)
-
-        act_sigview = QAction("Open SigView", self)
-        act_sigview.triggered.connect(self._on_open_waveform)
-        sim_menu.addAction(act_sigview)
-
-        act_calc = QAction("Open SigView Calculator", self)
-        act_calc.triggered.connect(self._on_open_waveform_calculator)
-        sim_menu.addAction(act_calc)
-
-        sim_menu.addSeparator()
-
-        act_save_view = QAction("Save", self)
+        session_menu = menubar.addMenu("&Session")
+        act_save_view = QAction("Save State", self)
         act_save_view.setShortcut(QKeySequence("Ctrl+S"))
         act_save_view.triggered.connect(self._on_save_view)
-        sim_menu.addAction(act_save_view)
+        session_menu.addAction(act_save_view)
 
-        act_save = QAction("Export SimENV Setup...", self)
+        act_save = QAction("Save State As...", self)
         act_save.triggered.connect(self._on_save_setup)
-        sim_menu.addAction(act_save)
+        session_menu.addAction(act_save)
 
-        act_load = QAction("Import SimENV Setup...", self)
+        act_load = QAction("Load State...", self)
         act_load.triggered.connect(self._on_load_setup)
-        sim_menu.addAction(act_load)
-
-        act_dump = QAction("Simulation Dump Settings...", self)
-        act_dump.triggered.connect(self._on_set_sim_dump_dir)
-        sim_menu.addAction(act_dump)
-        act_open_dump = QAction("Open Dump Folder", self)
-        act_open_dump.triggered.connect(self._on_open_sim_dump_dir)
-        sim_menu.addAction(act_open_dump)
-        act_sim_mgr = QAction("Simulator Manager...", self)
-        act_sim_mgr.triggered.connect(self._on_open_simulator_manager)
-        sim_menu.addAction(act_sim_mgr)
-
-        sim_menu.addSeparator()
+        session_menu.addAction(act_load)
+        session_menu.addSeparator()
         act_close = QAction("Close", self)
         act_close.triggered.connect(self.close)
-        sim_menu.addAction(act_close)
+        session_menu.addAction(act_close)
+
+        setup_menu = menubar.addMenu("&Setup")
+        for title, tab_name in (
+            ("Variables...", "Setup"),
+            ("Outputs...", "Setup"),
+            ("Measurements...", "Setup"),
+            ("Stimuli...", "Setup"),
+            ("Convergence Aids...", "Setup"),
+            ("Corners...", "Corners"),
+        ):
+            action = QAction(title, self)
+            action.triggered.connect(lambda _checked=False, name=tab_name: self._show_main_tab(name))
+            setup_menu.addAction(action)
+
+        analyses_menu = menubar.addMenu("&Analyses")
+        act_choose = QAction("Choose...", self)
+        act_choose.triggered.connect(lambda: self._show_main_tab("Analyses"))
+        analyses_menu.addAction(act_choose)
+        analyses_menu.addSeparator()
+        categories: dict[str, QMenu] = {}
+        for name, info in ANALYSES.items():
+            category = info["category"]
+            menu = categories.get(category)
+            if menu is None:
+                menu = analyses_menu.addMenu(category)
+                categories[category] = menu
+            action = QAction(name, self)
+            action.triggered.connect(lambda _checked=False, analysis=name: self._add_analysis(analysis))
+            menu.addAction(action)
+
+        simulation_menu = menubar.addMenu("&Simulation")
+        act_run = QAction("Netlist and Run", self)
+        act_run.setShortcut("F5")
+        act_run.triggered.connect(self._on_run)
+        simulation_menu.addAction(act_run)
+
+        act_stop = QAction("Stop", self)
+        act_stop.triggered.connect(self._on_stop_simulation)
+        simulation_menu.addAction(act_stop)
+
+        act_netlist = QAction("Create Netlist", self)
+        act_netlist.triggered.connect(self._on_view_netlist)
+        simulation_menu.addAction(act_netlist)
+        simulation_menu.addSeparator()
+        act_dump = QAction("Simulation Dump Settings...", self)
+        act_dump.triggered.connect(self._on_set_sim_dump_dir)
+        simulation_menu.addAction(act_dump)
+        act_open_dump = QAction("Open Dump Folder", self)
+        act_open_dump.triggered.connect(self._on_open_sim_dump_dir)
+        simulation_menu.addAction(act_open_dump)
+
+        results_menu = menubar.addMenu("&Results")
+        act_results = QAction("Results Browser...", self)
+        act_results.triggered.connect(lambda: self._show_main_tab("Results"))
+        results_menu.addAction(act_results)
+        act_sigview = QAction("Direct Plot...", self)
+        act_sigview.triggered.connect(self._on_open_waveform)
+        results_menu.addAction(act_sigview)
+        act_calc = QAction("Calculator...", self)
+        act_calc.triggered.connect(self._on_open_waveform_calculator)
+        results_menu.addAction(act_calc)
+        act_export = QAction("Export Corner Matrix CSV...", self)
+        act_export.triggered.connect(self._export_corner_matrix_to_csv)
+        results_menu.addAction(act_export)
+
+        tools_menu = menubar.addMenu("&Tools")
+        act_sim_mgr = QAction("Simulator Manager...", self)
+        act_sim_mgr.triggered.connect(self._on_open_simulator_manager)
+        tools_menu.addAction(act_sim_mgr)
+
+        window_menu = menubar.addMenu("&Window")
+        for tab_name in ("Setup", "Analyses", "Corners", "Run Plan", "Results"):
+            action = QAction(tab_name, self)
+            action.triggered.connect(lambda _checked=False, name=tab_name: self._show_main_tab(name))
+            window_menu.addAction(action)
 
     def _create_toolbar(self):
         tb = QToolBar("SimENV")
@@ -3524,6 +3842,7 @@ class ADEWindow(QMainWindow):
         self._last_sigview_waveforms = {}
         self._last_sigview_payload = {}
         self._sim_merged_waveforms = {}
+        self._clear_schematic_dc_annotations_for_run()
         if not self._ensure_selected_analysis_for_run():
             QMessageBox.warning(self, "No Test", "Add at least one SimENV test first.")
             return
@@ -4047,6 +4366,9 @@ class ADEWindow(QMainWindow):
             self._result_waveforms_by_row[r] = stored_waveforms
         if result.success and getattr(result, "waveforms", None):
             self._result_all_waveforms_by_row[r] = dict(getattr(result, "waveforms", {}) or {})
+        matrix_corner = corner_name or run_name or "single"
+        self._corner_result_rows.setdefault(matrix_corner, []).append(r)
+        self._refresh_corner_matrix()
         if result.success:
             self._log(f"[{run_name}] Simulation completed successfully")
             if plot_waveforms:
@@ -4157,7 +4479,7 @@ class ADEWindow(QMainWindow):
             menu.addAction(title)
             menu.addSeparator()
             act_export = QAction("Export Matrix CSV...", self)
-            act_export.triggered.connect(self._export_results_to_csv)
+            act_export.triggered.connect(self._export_corner_matrix_to_csv)
             menu.addAction(act_export)
             act_dump = QAction("Open Dump Folder", self)
             act_dump.triggered.connect(self._on_open_sim_dump_dir)
@@ -4210,7 +4532,7 @@ class ADEWindow(QMainWindow):
 
         menu.addSeparator()
         act_export = QAction("Export Matrix CSV...", self)
-        act_export.triggered.connect(self._export_results_to_csv)
+        act_export.triggered.connect(self._export_corner_matrix_to_csv)
         menu.addAction(act_export)
 
         annotate_menu = menu.addMenu("Annotate Schematic")
@@ -4523,8 +4845,8 @@ class ADEWindow(QMainWindow):
             QMessageBox.information(self, "Corner Results", f"Corner section: {corner}")
             return
         run = self.results_table.item(row, 0).text() if self.results_table.item(row, 0) else f"Run {row + 1}"
-        analysis = self.results_table.item(row, 1).text() if self.results_table.item(row, 1) else ""
-        status = self.results_table.item(row, 2).text() if self.results_table.item(row, 2) else ""
+        analysis = self.results_table.item(row, 4).text() if self.results_table.item(row, 4) else ""
+        status = self.results_table.item(row, 6).text() if self.results_table.item(row, 6) else ""
         waveforms = self._result_all_waveforms_by_row.get(row) or self._result_waveforms_by_row.get(row, {})
         signals = self._plottable_signal_names(waveforms)
         QMessageBox.information(
