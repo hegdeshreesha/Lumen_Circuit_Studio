@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -9,6 +10,7 @@ try:
     from PyQt6.QtWidgets import QApplication
 
     from lumen.core.database import LibraryDatabase
+    from lumen.core.xschem_symbol_import import XschemSymbolParser
     from lumen.gui.schematic_editor import (
         InstanceItem,
         NetLabelItem,
@@ -111,21 +113,29 @@ class SchematicClipboardTest(unittest.TestCase):
 
     def test_instance_refresh_keeps_position_and_transform(self):
         _ = _app()
-        symbol = {
-            "name": "sg13_lv_nmos",
-            "library": "pdk:ihp_sg13g2",
-            "parameters": [{"name": "w", "default": "0.5u"}],
-            "shapes": [{"type": "text", "text": "w=@w", "x": 0, "y": 0}],
-            "pins": [],
-        }
-        inst = InstanceItem(symbol, "M1", 120, -40, {"w": "0.5u"})
+        symbol_path = Path("external/ihp_pdk/ihp-sg13g2/libs.tech/xschem/sg13g2_pr/sg13_lv_nmos.sym")
+        if symbol_path.exists():
+            symbol = XschemSymbolParser().parse_file(str(symbol_path)).to_lumen_json()
+        else:
+            symbol = {
+                "name": "sg13_lv_nmos",
+                "library": "pdk:ihp_sg13g2",
+                "parameters": [{"name": "m", "default": "1"}],
+                "shapes": [{"type": "text", "text": "m=@m", "x": 0, "y": 0}],
+                "pins": [],
+            }
+        inst = InstanceItem(symbol, "M1", 120, -40, {"m": "1"})
         inst.setRotation(90)
-        inst.parameters["w"] = "2u"
+        child_count = len(inst.childItems())
+        pin_positions = dict(inst.pin_positions)
+        inst.parameters["m"] = "2"
         inst.refresh_graphics()
 
         self.assertEqual(inst.pos().x(), 120)
         self.assertEqual(inst.pos().y(), -40)
         self.assertEqual(inst.rotation(), 90)
+        self.assertEqual(len(inst.childItems()), child_count)
+        self.assertEqual(inst.pin_positions, pin_positions)
 
     def test_property_edit_saves_updated_instance_params(self):
         _ = _app()

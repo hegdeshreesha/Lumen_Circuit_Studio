@@ -356,6 +356,7 @@ class InstanceItem(QGraphicsItemGroup):
                 if not text:
                     continue
                 item = QGraphicsTextItem(text)
+                item.setData(0, shape.get("text", ""))
                 item.setPos(shape.get("x", 0), shape.get("y", 0))
                 default_color = "#8fd7e8" if xschem_symbol else "#90e0ef"
                 item.setDefaultTextColor(QColor(shape.get("color", default_color)))
@@ -425,6 +426,7 @@ class InstanceItem(QGraphicsItemGroup):
         lx = label_data.get("x", 15)
         ly = label_data.get("y", -10)
         text_item = QGraphicsTextItem(label_text)
+        text_item.setData(0, label_data.get("text", "@name"))
         text_item.setPos(lx, ly - 10)
         text_item.setDefaultTextColor(QColor("#90e0ef"))
         text_item.setFont(QFont("Consolas", 7))
@@ -440,13 +442,11 @@ class InstanceItem(QGraphicsItemGroup):
     def refresh_graphics(self):
         """Refresh symbol text/labels after parameter changes."""
         was_selected = self.isSelected()
-        pos = QPointF(self.pos())
-        rotation = self.rotation()
-        transform = QTransform(self.transform())
-        self._build_graphics()
-        self.setTransform(transform)
-        self.setRotation(rotation)
-        self.setPos(pos)
+        for child in self.childItems():
+            if isinstance(child, QGraphicsTextItem):
+                raw = child.data(0)
+                if raw:
+                    child.setPlainText(self._substitute_display_text(str(raw)))
         self.setSelected(was_selected)
         self.update()
 
