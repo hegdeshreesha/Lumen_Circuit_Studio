@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from typing import Optional
 import math
 
+PIN_WIRE_SNAP_TOLERANCE = 6.0
+
 
 def _coerce_float(value: object, default: float = 0.0) -> float:
     try:
@@ -234,7 +236,7 @@ class ConnectivityEngine:
 
             # If a pin lands on the middle of a wire, split that wire so the
             # pin participates in the same electrical net.
-            jid = self._get_or_create_wire_junction(px, py)
+            jid = self._get_or_create_wire_junction(px, py, PIN_WIRE_SNAP_TOLERANCE)
 
             self._add_pin_to_junction(jid, instance_name, pin.get("name", "?"), library_name)
             if pin.get("net_name"):
@@ -304,7 +306,7 @@ class ConnectivityEngine:
                 return jid
         return None
 
-    def _get_or_create_wire_junction(self, x: float, y: float) -> str:
+    def _get_or_create_wire_junction(self, x: float, y: float, tolerance: float = 0.0) -> str:
         """Get a junction, splitting a segment if the point lies on a wire."""
         existing = self._find_junction_at(x, y)
         if existing:
@@ -314,7 +316,33 @@ class ConnectivityEngine:
         for sid, seg in list(self.segments.items()):
             if self._point_on_segment(rx, ry, seg):
                 return self._split_segment_at(sid, rx, ry)
+        if tolerance > 0:
+            nearest = self._nearest_point_on_segment(rx, ry, tolerance)
+            if nearest:
+                sid, sx, sy = nearest
+                return self._split_segment_at(sid, sx, sy)
         return self._get_or_create_junction(rx, ry)
+
+    def _nearest_point_on_segment(self, x: float, y: float, tolerance: float) -> Optional[tuple[str, int, int]]:
+        best: tuple[str, int, int, float] | None = None
+        tol2 = tolerance * tolerance
+        for sid, seg in self.segments.items():
+            dx = seg.x2 - seg.x1
+            dy = seg.y2 - seg.y1
+            length2 = dx * dx + dy * dy
+            if length2 <= 0:
+                continue
+            t = ((x - seg.x1) * dx + (y - seg.y1) * dy) / length2
+            if t < 0.0 or t > 1.0:
+                continue
+            px = seg.x1 + t * dx
+            py = seg.y1 + t * dy
+            dist2 = (x - px) * (x - px) + (y - py) * (y - py)
+            if dist2 <= tol2 and (best is None or dist2 < best[3]):
+                best = (sid, self._as_coord(px), self._as_coord(py), dist2)
+        if best is None:
+            return None
+        return best[0], best[1], best[2]
 
     def _point_on_segment(self, x: float, y: float, seg: WireSegment) -> bool:
         """Return True when a point lies on a segment, excluding endpoints."""
