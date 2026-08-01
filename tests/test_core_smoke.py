@@ -3,6 +3,7 @@ import unittest
 
 from lumen.core.connectivity import ConnectivityEngine
 from lumen.core.database import LibraryDatabase
+from lumen.core.netlist import NetlistGenerator
 from lumen.pdk.registry import DeviceCategory, PDKDevice, PDKParameter, PDKPin
 from lumen.pdk.symbols import generate_device_symbol
 
@@ -168,6 +169,34 @@ class ConnectivitySmokeTest(unittest.TestCase):
         net_map = engine.get_net_map()
         self.assertEqual(net_map["H"], ["RH.PLUS"])
         self.assertEqual(net_map["V"], ["RV.PLUS"])
+
+
+class NetlistSmokeTest(unittest.TestCase):
+    def test_anonymous_ihp_mos_bulk_ties_to_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = LibraryDatabase(tmp)
+            gen = NetlistGenerator(db)
+            nets = gen._tie_floating_ihp_mos_bulk_to_source(
+                "sg13_lv_pmos",
+                ["D", "G", "S", "B"],
+                ["OUT", "IN", "VDD", "net0"],
+                "X0",
+            )
+
+        self.assertEqual(nets, ["OUT", "IN", "VDD", "VDD"])
+
+    def test_named_ihp_mos_bulk_is_preserved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = LibraryDatabase(tmp)
+            gen = NetlistGenerator(db)
+            nets = gen._tie_floating_ihp_mos_bulk_to_source(
+                "sg13_lv_pmos",
+                ["D", "G", "S", "B"],
+                ["OUT", "IN", "VDD", "NWELL_BIAS"],
+                "X0",
+            )
+
+        self.assertEqual(nets, ["OUT", "IN", "VDD", "NWELL_BIAS"])
 
 
 if __name__ == "__main__":

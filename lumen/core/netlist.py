@@ -10,6 +10,7 @@ Supports two connectivity models:
 """
 import os
 import math
+import re
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional, Any
@@ -886,6 +887,7 @@ class NetlistGenerator:
                 if component_name in ("gnd", "vdd", "0", "VDD"):
                     continue
 
+                nets = self._tie_floating_ihp_mos_bulk_to_source(component_name, pin_order, nets, iname)
                 net_str = " ".join(nets)
                 param_str = self._pdk_param_string(pdk_device, params)
                 prefix = getattr(pdk_device, "prefix", "") or ""
@@ -1206,6 +1208,34 @@ class NetlistGenerator:
                     lines.append(f"{iname} {net_str} {model_name}")
 
         return lines
+
+    def _tie_floating_ihp_mos_bulk_to_source(
+        self,
+        component_name: str,
+        pin_order: list[str],
+        nets: list[str],
+        instance_name: str,
+    ) -> list[str]:
+        model = str(component_name or "").lower()
+        if not (model.startswith("sg13_") and ("nmos" in model or "pmos" in model)):
+            return nets
+        lower_pins = [str(pin).lower() for pin in pin_order]
+        try:
+            source_idx = lower_pins.index("s")
+            bulk_idx = lower_pins.index("b")
+        except ValueError:
+            return nets
+        if source_idx >= len(nets) or bulk_idx >= len(nets):
+            return nets
+        bulk_net = str(nets[bulk_idx])
+        if re.fullmatch(r"net\d+", bulk_net) and nets.count(bulk_net) == 1:
+            fixed = list(nets)
+            fixed[bulk_idx] = fixed[source_idx]
+            self._warnings.append(
+                f"{instance_name}: tied anonymous IHP MOS bulk net {bulk_net} to source {fixed[source_idx]}."
+            )
+            return fixed
+        return nets
 
     def _parse_dbm(self, raw: Any, default_dbm: float = 0.0) -> float:
         text = str(raw if raw is not None else "").strip()
