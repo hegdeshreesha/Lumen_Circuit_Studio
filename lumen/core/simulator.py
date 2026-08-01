@@ -579,6 +579,7 @@ class SimulatorBridge:
             if stderr:
                 result.log += "\n[stderr]\n" + stderr
             result.success = (return_code == 0 and not self._cancelled)
+            crash_safe_notes_used: list[str] = []
 
             # Some GSPICE builds can crash in multi-thread mode on specific decks.
             # Auto-retry once with --threads 1 for stability.
@@ -615,6 +616,7 @@ class SimulatorBridge:
             ):
                 crash_safe_netlist, crash_safe_notes = self._build_crash_safe_netlist(sim_netlist)
                 if crash_safe_notes:
+                    crash_safe_notes_used.extend(crash_safe_notes)
                     for note in crash_safe_notes:
                         result.log += f"{note}\n"
                         result.warnings.append(note)
@@ -699,6 +701,13 @@ class SimulatorBridge:
             result.warnings.extend(warning_lines)
             backend_notes = self._backend_specific_diagnostics(stdout, stderr, sim_netlist)
             result.errors.extend(backend_notes)
+            quality_errors = self._gspice_result_quality_errors(
+                stdout,
+                sim_netlist,
+                transient_point_estimate,
+                crash_safe_notes_used,
+            )
+            result.errors.extend(quality_errors)
             model_status_lines = self._collect_model_status(stdout, stderr)
             if model_status_lines:
                 result.warnings.extend([f"[Model Status] {line}" for line in model_status_lines])
@@ -709,6 +718,8 @@ class SimulatorBridge:
                 result.errors.extend(fatal_lines)
                 result.success = False
             if backend_notes:
+                result.success = False
+            if quality_errors:
                 result.success = False
 
             if result.success:
@@ -886,11 +897,12 @@ class SimulatorBridge:
         if self.simulator != "GSPICE":
             return netlist, []
 
-        allowed_prefixes = {"R", "C", "L", "V", "I", "D", "Q", "M"}
+        allowed_prefixes = {"R", "C", "L", "V", "I", "D", "Q", "M", "X"}
         allowed_directives = {
             ".OP", ".TRAN", ".AC", ".DC", ".NOISE",
             ".TEMP", ".OPTIONS", ".OPTION", ".PARAM",
             ".PRINT", ".MEASURE", ".MEAS", ".IC", ".NODESET",
+            ".LIB", ".INCLUDE", ".INC", ".SAVE",
             ".END",
         }
         risky_tokens = (
@@ -1060,6 +1072,76 @@ class SimulatorBridge:
                 statuses.append(payload)
         return statuses
 
+    def _gspice_result_quality_errors(
+        self,
+        stdout: str,
+        netlist: str,
+        transient_point_estimate: int = 0,
+        crash_safe_notes: list[str] | None = None,
+    ) -> list[str]:
+        if self.simulator != "GSPICE":
+            return []
+
+        errors: list[str] = []
+        notes = crash_safe_notes or []
+        if any("Stripped" in note for note in notes):
+            errors.append(
+                "GSPICE crash-safe retry stripped part of the deck, so the waveform is not trusted. "
+                "The result is marked failed instead of plotting a simplified circuit."
+            )
+
+        has_tran = bool(re.search(r"(?im)^\s*\.TRAN\b", netlist or ""))
+        if not has_tran:
+            return errors
+
+        psp_deck = bool(re.search(r"(?i)\bsg13_lv_[np]mos\b|\bpsp(?:nqs)?103va\b", netlist or ""))
+        accuracy = self._parse_gspice_accuracy_summary(stdout)
+        reltol = accuracy.get("reltol")
+        lte_reltol = accuracy.get("lte_reltol")
+        if reltol is not None and reltol >= 0.1:
+            errors.append(
+                f"GSPICE reported RELTOL={reltol:g}, which is too loose for a trustworthy transient result."
+            )
+        if lte_reltol is not None and lte_reltol >= 0.1:
+            errors.append(
+                f"GSPICE reported LTE_RELTOL={lte_reltol:g}, which is too loose for a trustworthy transient result."
+            )
+
+        summary = self._parse_gspice_transient_summary(stdout)
+        accepted = summary.get("accepted")
+        output_points = summary.get("output_points") or transient_point_estimate
+        if psp_deck and output_points and output_points >= 10_000 and accepted is not None and accepted < 100:
+            errors.append(
+                f"GSPICE accepted only {accepted} internal transient step(s) for {output_points} output point(s) "
+                "on an IHP PSP deck; this is likely a trivialized or numerically invalid oscillator result."
+            )
+        return errors
+
+    @staticmethod
+    def _parse_gspice_accuracy_summary(stdout: str) -> dict[str, float]:
+        match = re.search(r"(?im)^Accuracy summary:\s*(.*)$", stdout or "")
+        if not match:
+            return {}
+        return SimulatorBridge._parse_key_value_numbers(match.group(1))
+
+    @staticmethod
+    def _parse_gspice_transient_summary(stdout: str) -> dict[str, float]:
+        match = re.search(r"(?im)^Transient summary:\s*(.*)$", stdout or "")
+        if not match:
+            return {}
+        return SimulatorBridge._parse_key_value_numbers(match.group(1))
+
+    @staticmethod
+    def _parse_key_value_numbers(text: str) -> dict[str, float]:
+        values: dict[str, float] = {}
+        for key, raw_value in re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)=([-+0-9.eE]+)", text or ""):
+            try:
+                parsed = float(raw_value)
+            except ValueError:
+                continue
+            values[key.lower()] = parsed
+        return values
+
     def _backend_specific_diagnostics(self, stdout: str, stderr: str, netlist: str) -> list[str]:
         """Add actionable messages for backend-specific failure modes."""
         combined = f"{stdout}\n{stderr}"
@@ -1076,7 +1158,60 @@ class SimulatorBridge:
                     "psp103va.osdi and pspnqs103va.osdi, or use GSPICE with its OSDI "
                     "loader for this IHP PSP simulation."
                 )
+        elif self.simulator == "GSPICE":
+            dc_op_fail = bool(
+                re.search(
+                    r"(?is)DC operating point did not converge.*(?:PTC final|Calculating DC Operating Point)",
+                    combined,
+                )
+            )
+            if dc_op_fail:
+                notes.append(
+                    "GSPICE could not find a DC operating point before transient. "
+                    "Free-running ring oscillators often need an explicit startup path: enable UIC with "
+                    "deliberate initial conditions on every storage node, or add a startup perturbation "
+                    "instead of relying on the DC solve."
+                )
+                if re.search(r"(?im)^\s*\.PSS\s+\S+\s+\S+\s+DRIVEN\b", netlist or "") and not re.search(
+                    r"(?im)^\s*[VI]\S+\s+\S+\s+\S+.*\b(?:SIN|PULSE|PWL)\s*\(",
+                    netlist or "",
+                ):
+                    notes.append(
+                        "This deck uses driven PSS but has no periodic independent source. "
+                        "For an autonomous ring oscillator, set PSS mode to Oscillator so Lumen emits "
+                        "OSCILLATOR=YES."
+                    )
+            transient_min_step_fail = bool(
+                re.search(
+                    r"(?is)Transient step failed to converge at minimum timestep.*(?:update_error=inf|residual_error=inf)",
+                    combined,
+                )
+            )
+            if transient_min_step_fail:
+                notes.append(
+                    "GSPICE transient reached the minimum timestep with infinite update/residual error. "
+                    "For IHP PSP ring oscillators, clear any loose tolerance override, use the accuracy preset "
+                    "tolerances, and avoid UIC unless all storage nodes have deliberate initial conditions."
+                )
+            options = self._parse_netlist_options(netlist)
+            for key in ("reltol", "lte_reltol"):
+                value = options.get(key)
+                if value is not None and value >= 0.1:
+                    notes.append(
+                        f"GSPICE deck requests {key.upper()}={value:g}; this is too loose for a trustworthy "
+                        "compact-model transient and can hide or destabilize oscillator startup."
+                    )
         return notes
+
+    @staticmethod
+    def _parse_netlist_options(netlist: str) -> dict[str, float]:
+        values: dict[str, float] = {}
+        for raw in str(netlist or "").splitlines():
+            line = raw.strip()
+            if not re.match(r"(?i)^\.OPTIONS?\b", line):
+                continue
+            values.update(SimulatorBridge._parse_key_value_numbers(line))
+        return values
 
     def _safe_sim_name(self, sim_name: str) -> str:
         """Return a filesystem-safe simulation deck basename."""
@@ -1205,6 +1340,12 @@ class SimulatorBridge:
         if self.simulator != "GSPICE":
             return netlist, []
         notes = []
+        netlist, sanitize_note = self._sanitize_gspice_netlist(netlist)
+        if sanitize_note:
+            notes.append(sanitize_note)
+        netlist, method_note = self._stabilize_gspice_psp_uic_method(netlist)
+        if method_note:
+            notes.append(method_note)
         netlist, ac_note = self._ensure_ac_operating_point(netlist)
         if ac_note:
             notes.append(ac_note)
@@ -1216,6 +1357,38 @@ class SimulatorBridge:
             if tran_note:
                 notes.append(tran_note)
         return netlist, notes
+
+    @staticmethod
+    def _sanitize_gspice_netlist(netlist: str) -> tuple[str, str]:
+        lines = str(netlist or "").splitlines()
+        cleaned = [line for line in lines if line.strip() not in {"-", "--", "---"}]
+        removed = len(lines) - len(cleaned)
+        if not removed:
+            return str(netlist or ""), ""
+        suffix = "s" if removed != 1 else ""
+        return "\n".join(cleaned) + ("\n" if str(netlist or "").endswith("\n") else ""), (
+            f"[GSPICE syntax] Removed {removed} standalone markdown separator line{suffix}."
+        )
+
+    @staticmethod
+    def _stabilize_gspice_psp_uic_method(netlist: str) -> tuple[str, str]:
+        text = str(netlist or "")
+        if not re.search(r"(?i)\bsg13_lv_[np]mos\b|\bpsp(?:nqs)?103va\b", text):
+            return text, ""
+        if not re.search(r"(?im)^\s*\.TRAN\b", text):
+            return text, ""
+        if re.search(r"(?im)^\s*\.OPTIONS?\b[^\n]*\bMETHOD\s*=\s*BE\b", text):
+            return text, ""
+        if re.search(r"(?im)^\s*\.OPTIONS?\b[^\n]*\bMETHOD\s*=", text):
+            updated = re.sub(r"(?im)(^\s*\.OPTIONS?\b[^\n]*\bMETHOD\s*=\s*)\S+", r"\1BE", text, count=1)
+        elif re.search(r"(?im)^\s*\.OPTIONS?\b", text):
+            updated = re.sub(r"(?im)(^\s*\.OPTIONS?\b[^\n]*)", r"\1 METHOD=BE", text, count=1)
+        else:
+            updated = SimulatorBridge._insert_before_end(text, ".OPTIONS METHOD=BE")
+        return updated, (
+            "[GSPICE PSP transient] METHOD=BE selected for IHP PSP transient stability; "
+            "Auto/Trapezoidal can crash this PSP deck during startup."
+        )
 
     def _ensure_ac_operating_point(self, netlist: str) -> tuple[str, str]:
         """Make AC decks explicit about their DC bias solve.

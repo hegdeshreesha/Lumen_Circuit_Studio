@@ -65,6 +65,7 @@ ANALYSIS_DEFAULTS = {
         "tstab_periods": "",
         "pss_adaptive": False,
         "pss_continuation": False,
+        "pss_use_ic": False,
         "pss_continuation_steps": "",
         "pss_residual_goal": "",
     },

@@ -486,14 +486,12 @@ class ConnectivityEngine:
         if -eps <= t <= 1 + eps and -eps <= u <= 1 + eps:
             ix = px1 + t * (px2 - px1)
             iy = py1 + t * (py2 - py1)
-            # Only return if not at endpoints of either segment
-            # (those are handled by junction connections)
             tol = 1e-6
             on_seg1_end = (abs(ix - px1) < tol and abs(iy - py1) < tol) or \
                          (abs(ix - px2) < tol and abs(iy - py2) < tol)
             on_seg2_end = (abs(ix - qx1) < tol and abs(iy - qy1) < tol) or \
                          (abs(ix - qx2) < tol and abs(iy - qy2) < tol)
-            if not (on_seg1_end and on_seg2_end):
+            if on_seg1_end or on_seg2_end:
                 return (round(ix), round(iy))
 
         return None

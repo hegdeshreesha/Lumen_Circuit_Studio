@@ -66,12 +66,8 @@ class SchematicEditorWindow(QMainWindow):
         self._create_toolbars()
         self._create_dock_panels()
         self._create_status_bar()
-        self.editor.scene.selectionChanged.connect(self._on_layout_selection_changed)
-        self._layout_event_sequence = self._current_layout_event_sequence()
-        self._layout_event_timer = QTimer(self)
-        self._layout_event_timer.setInterval(300)
-        self._layout_event_timer.timeout.connect(self._poll_klayout_selection)
-        self._layout_event_timer.start()
+        self._layout_event_sequence = ""
+        self._layout_event_timer = None
 
     # ── Actions ───────────────────────────────────────────────
 
@@ -283,7 +279,6 @@ class SchematicEditorWindow(QMainWindow):
             self.act_zoom_out: "zoom_out",
             self.act_zoom_fit: "zoom_fit",
             self.act_netlist: "netlist",
-            self.act_simulate: "run",
             self.act_waveform: "wave",
             self.act_open_layout: "open",
             self.act_health_check: "health",
@@ -370,28 +365,11 @@ class SchematicEditorWindow(QMainWindow):
         hier_menu.addSeparator()
         hier_menu.addAction(self.act_symbol)
 
-        layout_menu = menubar.addMenu("&Layout")
-        layout_menu.addAction(self.act_open_layout)
-        layout_menu.addAction(self.act_import_from_source)
-        layout_menu.addAction(self.act_update_layout)
-        layout_menu.addSeparator()
-        layout_menu.addAction(self.act_highlight_layout_device)
-        layout_menu.addAction(self.act_layout_highlight_sync)
-        layout_menu.addSeparator()
-        layout_menu.addAction(self.act_import_layout_stream)
-        layout_menu.addAction(self.act_export_layout_stream)
-        layout_menu.addSeparator()
-        layout_menu.addAction(self.act_run_drc)
-        layout_menu.addAction(self.act_run_lvs)
-        layout_menu.addSeparator()
-        layout_menu.addAction(self.act_layout_runtime)
-
         # Simulation
         sim_menu = menubar.addMenu("&Simulation")
         sim_menu.addAction(self.act_check_save)
         sim_menu.addSeparator()
         sim_menu.addAction(self.act_netlist)
-        sim_menu.addAction(self.act_simulate)
         sim_menu.addSeparator()
         act_ade = QAction("SimENV - Simulation Environment", self)
         act_ade.triggered.connect(self._on_open_ade)
@@ -449,20 +427,8 @@ class SchematicEditorWindow(QMainWindow):
         sim_tb = QToolBar("Simulation")
         sim_tb.setIconSize(QSize(18, 18))
         sim_tb.addAction(self.act_netlist)
-        sim_tb.addAction(self.act_simulate)
         sim_tb.addAction(self.act_waveform)
         self.addToolBar(sim_tb)
-
-        layout_tb = QToolBar("Layout")
-        layout_tb.setIconSize(QSize(18, 18))
-        layout_tb.addAction(self.act_open_layout)
-        layout_tb.addAction(self.act_import_from_source)
-        layout_tb.addAction(self.act_highlight_layout_device)
-        layout_tb.addAction(self.act_import_layout_stream)
-        layout_tb.addAction(self.act_export_layout_stream)
-        layout_tb.addAction(self.act_run_drc)
-        layout_tb.addAction(self.act_run_lvs)
-        self.addToolBar(layout_tb)
 
         smart_tb = QToolBar("Lumen")
         smart_tb.setIconSize(QSize(18, 18))
@@ -1195,7 +1161,7 @@ class SchematicEditorWindow(QMainWindow):
                 continue
             if isinstance(values, (int, float)):
                 return True
-            if isinstance(values, (list, tuple)) and values:
+            if hasattr(values, "__len__") and len(values) > 0:
                 return True
         return False
 
@@ -1305,17 +1271,31 @@ class SchematicEditorWindow(QMainWindow):
 
     @staticmethod
     def _last_finite_scalar(values) -> float | None:
-        if isinstance(values, (int, float)):
-            return float(values) if math.isfinite(float(values)) else None
-        if not isinstance(values, (list, tuple)):
+        if values is None:
             return None
-        for raw in reversed(values):
+        if isinstance(values, (int, float)):
+            val = float(values)
+            return val if math.isfinite(val) else None
+        try:
+            val = float(values)
+            if math.isfinite(val):
+                return val
+        except (TypeError, ValueError):
+            pass
+        if hasattr(values, "__len__") and hasattr(values, "__getitem__"):
             try:
-                value = float(raw)
-            except (TypeError, ValueError):
-                continue
-            if math.isfinite(value):
-                return value
+                n = len(values)
+                if n == 0:
+                    return None
+                for i in range(n - 1, -1, -1):
+                    try:
+                        val = float(values[i])
+                        if math.isfinite(val):
+                            return val
+                    except (TypeError, ValueError, IndexError):
+                        continue
+            except Exception:
+                pass
         return None
 
     def _on_descend(self):
@@ -1400,7 +1380,7 @@ class SchematicEditorWindow(QMainWindow):
         commands = [
             "Wire (W)", "Bus (B)", "Instance (I)", "Pin (P)", "Label (L)",
             "Find / Select (Ctrl+F)", "Object Properties (Q)",
-            "Generate Netlist (Ctrl+Shift+N)", "Run Simulation (F5)",
+            "Generate Netlist (Ctrl+Shift+N)", "Open SimENV",
             "Zoom Fit (F)", "Right-drag zoom window",
         ]
         QMessageBox.information(self, "Command Palette", "\n".join(commands))

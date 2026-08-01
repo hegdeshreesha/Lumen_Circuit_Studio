@@ -13,7 +13,6 @@ import math
 import copy
 import json
 import re
-from collections import defaultdict
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QGraphicsView, QGraphicsScene,
     QGraphicsLineItem, QGraphicsRectItem, QGraphicsTextItem,
@@ -609,10 +608,13 @@ class SchematicCanvas(QGraphicsView):
             self._zoom_band.deleteLater()
             self._zoom_band = None
             if band_rect.width() < 8 and band_rect.height() < 8:
-                editor = self.parent()
-                if hasattr(editor, "show_context_menu"):
+                editor = self
+                while editor is not None and not hasattr(editor, "show_context_menu"):
+                    editor = editor.parent()
+                if editor is not None and hasattr(editor, "show_context_menu"):
                     scene_pos = self.mapToScene(event.position().toPoint())
-                    editor.show_context_menu(scene_pos, event.globalPosition().toPoint())
+                    g_pos = event.globalPosition().toPoint() if hasattr(event, "globalPosition") else QCursor.pos()
+                    editor.show_context_menu(scene_pos, g_pos)
             else:
                 self.zoom_to_view_rect(band_rect)
             event.accept()
@@ -1054,7 +1056,7 @@ class SchematicEditor(QWidget):
 
     def _wire_net_names_by_geometry(self) -> dict[int, str]:
         """Map visible wires to canonical net names using netlist connectivity."""
-        data = self.get_data()
+        data = self.to_data()
         gen = NetlistGenerator(self.db)
         try:
             gen._build_net_map_connectivity(data)
@@ -1262,6 +1264,10 @@ class SchematicEditor(QWidget):
             "pins": pin_data
         }
 
+    def get_data(self) -> dict:
+        """Return the current schematic state dictionary (alias for to_data)."""
+        return self.to_data()
+
     # ── Mode Management ───────────────────────────────────────
 
     def set_mode(self, mode: str):
@@ -1400,6 +1406,22 @@ class SchematicEditor(QWidget):
             (abs(p[0] - b[0]) < 1e-6 and abs(p[1] - b[1]) < 1e-6)
         )
 
+    def _wire_branch_dirs(
+        self,
+        p: tuple[float, float],
+        a: tuple[float, float],
+        b: tuple[float, float],
+    ) -> set[tuple[int, int]]:
+        dirs: set[tuple[int, int]] = set()
+        for q in (a, b):
+            dx = q[0] - p[0]
+            dy = q[1] - p[1]
+            if abs(dx) < 1e-6 and abs(dy) < 1e-6:
+                continue
+            dirs.add((0 if abs(dx) < 1e-6 else (1 if dx > 0 else -1),
+                      0 if abs(dy) < 1e-6 else (1 if dy > 0 else -1)))
+        return dirs
+
     def _segment_intersection(
         self,
         a1: tuple[float, float],
@@ -1425,7 +1447,11 @@ class SchematicEditor(QWidget):
         h1, h2 = (b1, b2) if a_vertical else (a1, a2)
         x = v1[0]
         y = h1[1]
-        if self._point_on_segment(x, y, v1, v2) and self._point_on_segment(x, y, h1, h2):
+        if (
+            self._point_on_segment(x, y, v1, v2)
+            and self._point_on_segment(x, y, h1, h2)
+            and (self._is_endpoint((x, y), v1, v2) or self._is_endpoint((x, y), h1, h2))
+        ):
             return (x, y)
         return None
 
@@ -1447,19 +1473,17 @@ class SchematicEditor(QWidget):
                 if ip is not None:
                     candidates.add(self._norm_point(*ip))
 
-        contributions: dict[tuple[int, int], int] = defaultdict(int)
         for nx, ny in candidates:
             px, py = float(nx), float(ny)
-            count = 0
+            branches: set[tuple[int, int]] = set()
             for a, b in segments:
                 if not self._point_on_segment(px, py, a, b):
                     continue
-                count += 1 if self._is_endpoint((px, py), a, b) else 2
-            if count >= 3:
-                contributions[(nx, ny)] = count
+                branches.update(self._wire_branch_dirs((px, py), a, b))
+            if len(branches) < 3:
+                continue
 
-        for (x, y) in contributions.keys():
-            dot = JunctionDot(float(x), float(y))
+            dot = JunctionDot(float(nx), float(ny))
             self.scene.addItem(dot)
             self.junction_dots.append(dot)
 
@@ -1774,12 +1798,36 @@ class SchematicEditor(QWidget):
 
     def name_selected_wires(self, net_name: str, as_bus: bool = False):
         """Assign a net or bus name to selected wires."""
-        for item in self.scene.selectedItems():
-            if isinstance(item, WireItem):
-                item.net_name = net_name
-                item.wire_kind = "bus" if as_bus else "wire"
-                if as_bus:
-                    item.setPen(QPen(QColor("#2dd4bf"), WIRE_WIDTH + 1))
+        selected = {item for item in self.scene.selectedItems() if isinstance(item, WireItem)}
+        if not selected:
+            return
+
+        segments_by_wire = {}
+        for wire in self.wires:
+            line = wire.line()
+            pos = wire.pos()
+            a = (line.x1() + pos.x(), line.y1() + pos.y())
+            b = (line.x2() + pos.x(), line.y2() + pos.y())
+            if self._norm_point(*a) != self._norm_point(*b):
+                segments_by_wire[wire] = (a, b)
+        named = set(selected)
+        queue = list(selected)
+        while queue:
+            wire = queue.pop(0)
+            a1, a2 = segments_by_wire.get(wire, ((0, 0), (0, 0)))
+            for other, (b1, b2) in segments_by_wire.items():
+                if other in named:
+                    continue
+                if self._segment_intersection(a1, a2, b1, b2) is not None:
+                    named.add(other)
+                    queue.append(other)
+
+        pen = QPen(QColor("#2dd4bf"), WIRE_WIDTH + 1) if as_bus else QPen(WIRE_COLOR, WIRE_WIDTH)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        for item in named:
+            item.net_name = net_name
+            item.wire_kind = "bus" if as_bus else "wire"
+            item.setPen(pen)
 
     def add_bus_tap(self, name: str):
         """Create a named tap label at the midpoint of the first selected wire."""
@@ -1846,60 +1894,71 @@ class SchematicEditor(QWidget):
 
     def show_context_menu(self, scene_pos: QPointF, global_pos):
         """Show schematic object actions at the clicked scene position."""
-        item = self.scene.itemAt(scene_pos, QTransform())
-        top = item
-        while top is not None and top.parentItem():
-            top = top.parentItem()
+        try:
+            item = self.scene.itemAt(scene_pos, QTransform())
+            top = item
+            while top is not None and top.parentItem():
+                top = top.parentItem()
 
-        if top is not None:
-            try:
-                top.setSelected(True)
-            except Exception:
-                pass
+            if top is not None:
+                try:
+                    top.setSelected(True)
+                except Exception:
+                    pass
 
-        net = self._pick_net_at(scene_pos)
-        inst = top if isinstance(top, InstanceItem) else self.selected_instance()
+            net = self._pick_net_at(scene_pos)
+            inst = top if isinstance(top, InstanceItem) else self.selected_instance()
 
-        menu = QMenu(self)
-        title_text = "Schematic"
-        if isinstance(inst, InstanceItem):
-            title_text = inst.instance_name
-        elif net:
-            title_text = net
-        title = QAction(title_text, self)
-        title.setEnabled(False)
-        menu.addAction(title)
-        menu.addSeparator()
+            menu = QMenu(self)
+            title_text = "Schematic"
+            if isinstance(inst, InstanceItem):
+                title_text = inst.instance_name
+            elif net:
+                title_text = net
+            title = QAction(title_text, self)
+            title.setEnabled(False)
+            menu.addAction(title)
+            menu.addSeparator()
 
-        if net:
-            act_node = QAction("Annotate DC Node Voltage", self)
-            act_node.triggered.connect(
-                lambda _=False, n=net, p=QPointF(scene_pos): self.dc_annotation_requested.emit(
-                    "node_voltage", {"net": n, "x": p.x(), "y": p.y()}
+            if net:
+                act_node = QAction("Annotate DC Node Voltage", self)
+                act_node.triggered.connect(
+                    lambda _=False, n=net, p=QPointF(scene_pos): self.dc_annotation_requested.emit(
+                        "node_voltage", {"net": n, "x": p.x(), "y": p.y()}
+                    )
                 )
-            )
-            menu.addAction(act_node)
+                menu.addAction(act_node)
 
-        if isinstance(inst, InstanceItem):
-            act_op = QAction("Annotate DC Operating Point", self)
-            act_op.triggered.connect(
-                lambda _=False, i=inst.instance_name: self.dc_annotation_requested.emit(
-                    "operating_point", {"instance": i}
+            if isinstance(inst, InstanceItem):
+                act_op = QAction("Annotate DC Operating Point", self)
+                act_op.triggered.connect(
+                    lambda _=False, i=inst.instance_name: self.dc_annotation_requested.emit(
+                        "operating_point", {"instance": i}
+                    )
                 )
+                menu.addAction(act_op)
+
+            act_all_nodes = QAction("Annotate All DC Node Voltages", self)
+            act_all_nodes.triggered.connect(
+                lambda _=False: self.dc_annotation_requested.emit("all_node_voltages", {})
             )
-            menu.addAction(act_op)
+            menu.addAction(act_all_nodes)
 
-        act_all_nodes = QAction("Annotate All DC Node Voltages", self)
-        act_all_nodes.triggered.connect(
-            lambda _=False: self.dc_annotation_requested.emit("all_node_voltages", {})
-        )
-        menu.addAction(act_all_nodes)
+            menu.addSeparator()
+            act_clear = QAction("Clear DC Annotations", self)
+            act_clear.triggered.connect(self.clear_dc_annotations)
+            menu.addAction(act_clear)
 
-        menu.addSeparator()
-        act_clear = QAction("Clear DC Annotations", self)
-        act_clear.triggered.connect(self.clear_dc_annotations)
-        menu.addAction(act_clear)
-        menu.exec(global_pos)
+            if isinstance(global_pos, QPointF):
+                exec_pos = global_pos.toPoint()
+            elif isinstance(global_pos, QPoint):
+                exec_pos = global_pos
+            else:
+                exec_pos = QCursor.pos()
+
+            menu.exec(exec_pos)
+        except Exception as exc:
+            print(f"[SchematicEditor] Context menu error: {exc}")
 
     def keyPressEvent(self, event: QKeyEvent):
         """Handle keyboard shortcuts."""
@@ -2034,7 +2093,7 @@ class SchematicEditor(QWidget):
             if resolved:
                 return resolved
 
-        data = self.get_data()
+        data = self.to_data()
         gen = NetlistGenerator(self.db)
         try:
             gen._build_net_map_connectivity(data)

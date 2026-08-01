@@ -318,8 +318,6 @@ class APWWindow(QMainWindow):
         tools_menu.addAction(act_ade)
         tools_menu.addAction(self.act_sigview)
         tools_menu.addSeparator()
-        tools_menu.addAction(self.act_open_layout)
-        tools_menu.addAction(self.act_klayout_runtime)
         tools_menu.addAction(self.act_sim_runtime)
         tools_menu.addSeparator()
         act_pdk = QAction("PDK Manager...", self)

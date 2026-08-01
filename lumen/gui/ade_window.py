@@ -6,6 +6,8 @@ import os
 import re
 import traceback
 import json
+import csv
+import math
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
@@ -18,7 +20,7 @@ from PyQt6.QtWidgets import (
     QFileDialog, QInputDialog, QProgressBar
 )
 from PyQt6.QtWidgets import QAbstractItemView, QMenu
-from PyQt6.QtCore import Qt, QSize, QUrl, QObject, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QSize, QUrl, QObject, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QFont, QColor, QKeySequence, QDesktopServices
 
 from lumen.core.database import LibraryDatabase
@@ -76,6 +78,7 @@ ANALYSES = {
         ("TstabPeriods", "", "Optional stabilization periods before shooting"),
         ("Adaptive", False, "Enable GSPICE adaptive PSS controls"),
         ("Continuation", False, "Enable GSPICE continuation for harder oscillator starts"),
+        ("UseIC", False, "Use .IC entries from the Convergence tab for PSS startup"),
         ("ContinuationSteps", "", "Optional continuation step count"),
         ("ResidualGoal", "", "Optional PSS residual goal")]},
     "Harmonic Balance": {"cmd": ".HB", "category": "RF Core", "params": [
@@ -285,6 +288,7 @@ class AnalysisSetupWidget(QWidget):
             "tstab_periods": "TstabPeriods",
             "pss_adaptive": "Adaptive",
             "pss_continuation": "Continuation",
+            "pss_use_ic": "UseIC",
             "pss_continuation_steps": "ContinuationSteps",
             "pss_residual_goal": "ResidualGoal",
         }.items():
@@ -1286,7 +1290,7 @@ class ConvergenceHelpersWidget(QWidget):
                 return True
         return super().eventFilter(source, event)
 
-    def _add_row(self, table: QTableWidget, node="node", value="0"):
+    def _add_row(self, table: QTableWidget, node="", value="0"):
         r = table.rowCount()
         table.insertRow(r)
         node_item = QTableWidgetItem(node)
@@ -1295,6 +1299,14 @@ class ConvergenceHelpersWidget(QWidget):
         table.setItem(r, 1, val_item)
         table.selectRow(r)
         table.editItem(node_item)
+
+    @staticmethod
+    def _convergence_line(kind: str, node: str, value: str) -> str:
+        node = str(node or "").strip()
+        value = str(value or "").strip()
+        if not node or node.lower() == "node" or node.startswith("*"):
+            return ""
+        return f".{kind} {node}={value or '0'}"
 
     def _delete_selected_rows(self, table: QTableWidget):
         selected_rows = sorted({item.row() for item in table.selectedItems()}, reverse=True)
@@ -1353,10 +1365,9 @@ class ConvergenceHelpersWidget(QWidget):
             node_item = self.nodeset_table.item(r, 0)
             val_item = self.nodeset_table.item(r, 1)
             if node_item and val_item:
-                node = node_item.text().strip()
-                val = val_item.text().strip()
-                if node and not node.startswith("*"):
-                    lines.append(f".NODESET {node}={val}")
+                line = self._convergence_line("NODESET", node_item.text(), val_item.text())
+                if line:
+                    lines.append(line)
         return lines
 
     def get_ic_lines(self) -> list[str]:
@@ -1365,10 +1376,9 @@ class ConvergenceHelpersWidget(QWidget):
             node_item = self.ic_table.item(r, 0)
             val_item = self.ic_table.item(r, 1)
             if node_item and val_item:
-                node = node_item.text().strip()
-                val = val_item.text().strip()
-                if node and not node.startswith("*"):
-                    lines.append(f".IC {node}={val}")
+                line = self._convergence_line("IC", node_item.text(), val_item.text())
+                if line:
+                    lines.append(line)
         return lines
 
 
@@ -1393,6 +1403,7 @@ class ADEWindow(QMainWindow):
         self._result_all_waveforms_by_row: dict[int, dict] = {}
         self._result_section_rows: set[int] = set()
         self._result_section_corners: set[str] = set()
+        self._corner_result_rows: dict[str, list[int]] = {}
         self._sim_thread: QThread | None = None
         self._sim_worker: SimEnvSimulationWorker | None = None
         self._sim_jobs_total = 0
@@ -1401,7 +1412,11 @@ class ADEWindow(QMainWindow):
         self._sim_cancel_requested = False
         self._sim_log_window: SimulationMonitorWindow | None = None
         self._startup_warnings: list[str] = []
-        self._pdk_registry = pdk_registry or self._create_pdk_registry()
+        self._pdk_registry = pdk_registry
+        self._pdk_registry_loaded = pdk_registry is not None
+        self._pdk_combo_populated = False
+        self._pending_simenv_pdk = ""
+        self._sim_status_refresh_scheduled = False
 
         self.setWindowTitle(f"Lumen SimENV - {cell} [{library}]")
         apply_window_branding(self)
@@ -1424,13 +1439,23 @@ class ADEWindow(QMainWindow):
         self._sim_method = "Auto"
         self._sim_save_mode = "all"
         self._sim_adaptive_maxstep = True
+        self._simenv_autosave_suspended = False
         self._build_ui()
+        self._apply_ade_workbench_style()
         self._create_menus()
         self._create_toolbar()
         self._create_status_bar()
         self._load_simenv_view()
         for warning in self._startup_warnings:
             self._log(warning)
+
+    def _ensure_pdk_registry(self):
+        """Load the PDK registry on demand; discovery is too slow for window construction."""
+        if self._pdk_registry_loaded:
+            return self._pdk_registry
+        self._pdk_registry_loaded = True
+        self._pdk_registry = self._create_pdk_registry()
+        return self._pdk_registry
 
     def _create_pdk_registry(self):
         """Create a PDK registry scoped to the design workspace."""
@@ -1486,7 +1511,7 @@ class ADEWindow(QMainWindow):
     def _accuracy_options_line(self) -> str:
         preset = self._accuracy_presets().get(self._sim_accuracy, self._accuracy_presets()["High"])
         tolerance_override = str(getattr(self, "_sim_tolerance_override", "") or "").strip()
-        if tolerance_override:
+        if tolerance_override and ADEWindow._is_tighter_tolerance_override(tolerance_override, preset):
             preset = dict(preset)
             preset["RELTOL"] = tolerance_override
             preset["LTE_RELTOL"] = tolerance_override
@@ -1509,6 +1534,15 @@ class ADEWindow(QMainWindow):
         if self._sim_adaptive_maxstep:
             parts.append("MAXSTEP=AUTO")
         return ".OPTIONS " + " ".join(parts)
+
+    @staticmethod
+    def _is_tighter_tolerance_override(value: str, preset: dict) -> bool:
+        try:
+            parsed = SimulatorBridge._parse_spice_number(value)
+            preset_reltol = SimulatorBridge._parse_spice_number(preset.get("RELTOL", "1e-3"))
+        except Exception:
+            return False
+        return parsed > 0 and parsed <= preset_reltol
 
     def _sim_method_token(self) -> str:
         return {
@@ -1567,16 +1601,18 @@ class ADEWindow(QMainWindow):
             parts.append(start or "0")
         if maxstep:
             parts.append(maxstep)
-        has_ic_helpers = False
-        convergence_widget = getattr(self, "convergence_widget", None)
-        if convergence_widget and hasattr(convergence_widget, "get_ic_lines"):
-            try:
-                has_ic_helpers = bool(convergence_widget.get_ic_lines())
-            except Exception:
-                has_ic_helpers = False
-        if bool(values.get("UIC", False)) or has_ic_helpers:
+        if bool(values.get("UIC", False)) or ADEWindow._has_transient_initial_conditions(self):
             parts.append("UIC")
         return " ".join(parts)
+
+    def _has_transient_initial_conditions(self) -> bool:
+        convergence_widget = getattr(self, "convergence_widget", None)
+        if not convergence_widget or not hasattr(convergence_widget, "get_ic_lines"):
+            return False
+        try:
+            return bool(convergence_widget.get_ic_lines())
+        except Exception:
+            return False
 
     def _on_accuracy_changed(self, text: str):
         self._sim_accuracy = text if text in self._accuracy_presets() else "High"
@@ -1593,6 +1629,15 @@ class ADEWindow(QMainWindow):
                 parsed = None
             if parsed is None or parsed <= 0:
                 self._log(f"Ignored invalid tolerance override: {value}")
+                if hasattr(self, "tolerance_override_edit"):
+                    self.tolerance_override_edit.setText(self._sim_tolerance_override)
+                return
+            preset = self._accuracy_presets().get(self._sim_accuracy, self._accuracy_presets()["High"])
+            if not self._is_tighter_tolerance_override(value, preset):
+                self._log(
+                    f"Ignored loose tolerance override: {value}; "
+                    f"{self._sim_accuracy} preset RELTOL is {preset.get('RELTOL', '1e-3')}"
+                )
                 if hasattr(self, "tolerance_override_edit"):
                     self.tolerance_override_edit.setText(self._sim_tolerance_override)
                 return
@@ -1645,6 +1690,11 @@ class ADEWindow(QMainWindow):
                 if editor is not None:
                     return editor, win
         return None, None
+
+    def _clear_schematic_dc_annotations_for_run(self):
+        editor, _win = self._find_schematic_editor()
+        if editor is not None and hasattr(editor, "clear_dc_annotations"):
+            editor.clear_dc_annotations()
 
     def _collect_output_targets(self) -> dict:
         """Collect net and terminal targets for output/save convenience pickers."""
@@ -1905,13 +1955,13 @@ class ADEWindow(QMainWindow):
         return row
 
     def _current_waveforms_for_sigview(self) -> dict:
-        if self._last_sigview_waveforms:
-            return dict(self._last_sigview_waveforms)
         selected = self.results_table.currentRow() if hasattr(self, "results_table") else -1
         if selected in self._result_all_waveforms_by_row:
             return dict(self._result_all_waveforms_by_row[selected])
         if selected in self._result_waveforms_by_row:
             return dict(self._result_waveforms_by_row[selected])
+        if self._last_sigview_waveforms:
+            return dict(self._last_sigview_waveforms)
         return {}
 
     def _show_expression_in_sigview(self, expression: str, name_hint: str = "", show_calculator: bool = False):
@@ -1983,6 +2033,8 @@ class ADEWindow(QMainWindow):
         menu.exec(table.viewport().mapToGlobal(pos))
 
     def _save_simenv_view_silent(self):
+        if getattr(self, "_simenv_autosave_suspended", False):
+            return
         try:
             data = self._collect_simenv_setup()
             self.db.save_view(self.library, self.cell, "simenv", data)
@@ -1993,34 +2045,38 @@ class ADEWindow(QMainWindow):
 
     def _infer_pdk_name(self) -> str:
         """Infer the PDK from placed schematic instances or active registry state."""
-        if self._pdk_registry:
+        registry = self._ensure_pdk_registry()
+        if registry:
             try:
                 data = self.db.load_view(self.library, self.cell, "schematic") or {}
                 for inst in data.get("instances", []):
                     lib_name = inst.get("library", "")
                     if lib_name.startswith("pdk:"):
                         pdk_name = lib_name.split(":", 1)[1]
-                        if self._pdk_registry.get_pdk(pdk_name):
+                        if registry.get_pdk(pdk_name):
                             return pdk_name
             except Exception:
                 pass
 
             try:
-                active_name = self._pdk_registry.get_active_name()
+                active_name = registry.get_active_name()
                 if active_name:
                     return active_name
             except Exception:
                 pass
         return ""
 
-    def _selected_pdk_name(self) -> str:
+    def _selected_pdk_name(self, infer: bool = True) -> str:
         """Return the SimENV-selected PDK, falling back to schematic/active inference."""
         pdk_name = self.pdk_combo.currentData() if hasattr(self, "pdk_combo") else ""
-        return pdk_name or self._infer_pdk_name()
+        if pdk_name:
+            return pdk_name
+        return self._infer_pdk_name() if infer else ""
 
     def _used_pdk_devices(self, pdk_name: str) -> list:
         """Return PDK devices used by this schematic."""
-        if not pdk_name or not self._pdk_registry:
+        registry = self._ensure_pdk_registry()
+        if not pdk_name or not registry:
             return []
         devices = []
         try:
@@ -2028,7 +2084,7 @@ class ADEWindow(QMainWindow):
             for inst in data.get("instances", []):
                 if inst.get("library") != f"pdk:{pdk_name}":
                     continue
-                dev = self._pdk_registry.find_device(inst.get("cell", ""), pdk_name)
+                dev = registry.find_device(inst.get("cell", ""), pdk_name)
                 if dev and dev not in devices:
                     devices.append(dev)
         except Exception:
@@ -2038,9 +2094,10 @@ class ADEWindow(QMainWindow):
     def _configure_pdk_model_directives(self, directives: NetlistDirectives,
                                         pdk_name: str, process: str = ""):
         """Add Cadence-style model library selections to the netlist."""
-        if not pdk_name or not self._pdk_registry:
+        registry = self._ensure_pdk_registry()
+        if not pdk_name or not registry:
             return
-        pdk = self._pdk_registry.get_pdk(pdk_name)
+        pdk = registry.get_pdk(pdk_name)
         if not pdk:
             return
 
@@ -2155,14 +2212,169 @@ class ADEWindow(QMainWindow):
                 return section
         return sections[0]
 
+    def _apply_ade_workbench_style(self):
+        """Apply a dense ADE-style local skin for this window."""
+        self.setStyleSheet(
+            """
+            QMainWindow {
+                background: #202020;
+                color: #d6d6d6;
+                font-family: "Segoe UI", Arial, sans-serif;
+                font-size: 10pt;
+            }
+            QFrame#simenvHeader {
+                background: #2a2a2a;
+                border: 1px solid #4a4a4a;
+                border-radius: 2px;
+            }
+            QLabel#adeTitle {
+                color: #f0f0f0;
+                font-size: 18px;
+                font-weight: 700;
+                background: transparent;
+            }
+            QLabel#adeSubtitle {
+                color: #b9c2c7;
+                background: transparent;
+                font-family: Consolas, "Segoe UI", monospace;
+            }
+            QLabel#adeSessionBadge {
+                color: #111111;
+                background: #d8b45f;
+                border: 1px solid #f0cf75;
+                border-radius: 2px;
+                padding: 5px 10px;
+                font-weight: 700;
+            }
+            QSplitter::handle {
+                background: #3a3a3a;
+            }
+            QTabWidget#adeMainTabs::pane,
+            QTabWidget#adeSubTabs::pane,
+            QTabWidget#adeTestTabs::pane {
+                border: 1px solid #4a4a4a;
+                background: #242424;
+            }
+            QTabBar::tab {
+                background: #333333;
+                color: #c8c8c8;
+                border: 1px solid #4a4a4a;
+                border-bottom: none;
+                border-radius: 0;
+                padding: 5px 14px;
+                min-height: 20px;
+            }
+            QTabBar::tab:selected {
+                background: #242424;
+                color: #ffffff;
+                border-top: 2px solid #d8b45f;
+            }
+            QFrame#adeNavigator {
+                background: #2b2b2b;
+                border: 1px solid #464646;
+                border-radius: 2px;
+            }
+            QLabel#adePanelLabel,
+            QLabel#adePanelTitle {
+                color: #d8b45f;
+                background: transparent;
+                font-weight: 700;
+                padding: 3px 0;
+            }
+            QGroupBox {
+                border: 1px solid #494949;
+                border-radius: 2px;
+                margin-top: 8px;
+                padding-top: 14px;
+                background: #282828;
+            }
+            QGroupBox::title {
+                color: #d8b45f;
+                subcontrol-origin: margin;
+                left: 8px;
+                padding: 0 3px;
+                font-weight: 700;
+            }
+            QTreeWidget#adeAnalysisTree,
+            QTreeWidget,
+            QTableWidget,
+            QTextEdit {
+                background: #1f1f1f;
+                color: #dcdcdc;
+                border: 1px solid #454545;
+                border-radius: 2px;
+                gridline-color: #383838;
+                selection-background-color: #4b3f24;
+                selection-color: #ffffff;
+            }
+            QTextEdit#adeConsole {
+                background: #151515;
+                color: #b9c2c7;
+                font-family: Consolas, "Cascadia Mono", monospace;
+            }
+            QHeaderView::section {
+                background: #303030;
+                color: #d6d6d6;
+                border: 1px solid #454545;
+                padding: 4px 6px;
+                font-weight: 700;
+            }
+            QLineEdit,
+            QComboBox,
+            QSpinBox,
+            QDoubleSpinBox {
+                background: #181818;
+                color: #eeeeee;
+                border: 1px solid #565656;
+                border-radius: 2px;
+                padding: 4px 6px;
+                min-height: 20px;
+            }
+            QLineEdit:focus,
+            QComboBox:focus,
+            QSpinBox:focus {
+                border: 1px solid #d8b45f;
+            }
+            QPushButton {
+                background: #363636;
+                color: #f0f0f0;
+                border: 1px solid #595959;
+                border-radius: 2px;
+                padding: 5px 10px;
+            }
+            QPushButton:hover {
+                background: #444444;
+                border-color: #d8b45f;
+            }
+            QPushButton#adePrimaryButton {
+                background: #5b4521;
+                border-color: #d8b45f;
+                font-weight: 700;
+            }
+            QToolBar {
+                background: #2b2b2b;
+                border-bottom: 1px solid #454545;
+                spacing: 3px;
+                padding: 3px;
+            }
+            QStatusBar {
+                background: #2b2b2b;
+                color: #d6d6d6;
+                border-top: 1px solid #454545;
+            }
+            """
+        )
+
     def _build_ui(self):
         splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter.setObjectName("adeRootSplitter")
         self.setCentralWidget(splitter)
 
         splitter.addWidget(self._build_session_header())
 
         # Session tabs
         self.main_tabs = QTabWidget()
+        self.main_tabs.setObjectName("adeMainTabs")
         self.main_tabs.setTabPosition(QTabWidget.TabPosition.North)
         self.main_tabs.currentChanged.connect(lambda _idx: self._refresh_run_plan())
         splitter.addWidget(self.main_tabs)
@@ -2175,10 +2387,10 @@ class ADEWindow(QMainWindow):
 
         # Bottom: log
         self.log_view = QTextEdit()
+        self.log_view.setObjectName("adeConsole")
         self.log_view.setReadOnly(True)
         self.log_view.setFont(QFont("Consolas", 9))
         self.log_view.setMaximumHeight(180)
-        self.log_view.setStyleSheet("QTextEdit{background:#1a1a1a;color:#b0b0b0;border:1px solid #3c3c3c;border-radius:4px;}")
         splitter.addWidget(self.log_view)
         splitter.setSizes([74, 560, 160])
 
@@ -2186,14 +2398,6 @@ class ADEWindow(QMainWindow):
         header = QFrame()
         header.setObjectName("simenvHeader")
         header.setMaximumHeight(104)
-        header.setStyleSheet("""
-            QFrame#simenvHeader {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #122232, stop:0.58 #1a2b2f, stop:1 #2d2414);
-                border: 1px solid #385060;
-                border-radius: 8px;
-            }
-        """)
         layout = QVBoxLayout(header)
         layout.setContentsMargins(14, 8, 14, 8)
         layout.setSpacing(6)
@@ -2203,10 +2407,10 @@ class ADEWindow(QMainWindow):
 
         title_box = QVBoxLayout()
         title_box.setSpacing(0)
-        title = QLabel("SimENV")
-        title.setStyleSheet("font-size:22px;font-weight:bold;color:#f2f7fb;background:transparent;")
-        subtitle = QLabel(f"Simulation cockpit - {self.library}/{self.cell}")
-        subtitle.setStyleSheet("color:#a9c7d8;background:transparent;")
+        title = QLabel("Lumen ADE")
+        title.setObjectName("adeTitle")
+        subtitle = QLabel(f"{self.library}/{self.cell}/simenv")
+        subtitle.setObjectName("adeSubtitle")
         title_box.addWidget(title)
         title_box.addWidget(subtitle)
         top_row.addLayout(title_box, stretch=1)
@@ -2216,20 +2420,12 @@ class ADEWindow(QMainWindow):
         dump_btn.setToolTip("Choose where SimENV writes input.sp, logs, RAW waveform files, and run manifests")
         dump_btn.clicked.connect(self._on_set_sim_dump_dir)
         dump_btn.setFixedWidth(126)
-        dump_btn.setStyleSheet(
-            "QPushButton{color:#e8f2f7;background:#233746;border:1px solid #4b6a82;"
-            "border-radius:6px;padding:7px 10px;font-weight:bold;}"
-            "QPushButton:hover{background:#2e4658;}"
-        )
         top_row.addWidget(dump_btn)
 
         self.session_badge = QLabel("Session: interactive")
+        self.session_badge.setObjectName("adeSessionBadge")
         self.session_badge.setMinimumWidth(128)
         self.session_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.session_badge.setStyleSheet(
-            "color:#ffd166;background:#26384a;border:1px solid #4b6a82;"
-            "border-radius:10px;padding:6px 12px;font-weight:bold;"
-        )
         top_row.addWidget(self.session_badge)
         layout.addLayout(top_row)
 
@@ -2239,41 +2435,30 @@ class ADEWindow(QMainWindow):
         thread_box = QHBoxLayout()
         thread_box.setSpacing(6)
         thread_label = QLabel("Threads")
-        thread_label.setStyleSheet("color:#d7e7ef;background:transparent;font-weight:bold;")
         thread_box.addWidget(thread_label)
         self.thread_spin = QSpinBox()
         self.thread_spin.setRange(1, 16)
         self.thread_spin.setValue(self._sim_threads)
         self.thread_spin.setToolTip("Simulator worker threads. Backends that do not expose a thread option ignore this setting.")
         self.thread_spin.valueChanged.connect(self._on_threads_changed)
-        self.thread_spin.setStyleSheet(
-            "QSpinBox{color:#f2f7fb;background:#1d303e;border:1px solid #4b6a82;"
-            "border-radius:6px;padding:5px;min-width:54px;}"
-        )
         thread_box.addWidget(self.thread_spin)
         controls_row.addLayout(thread_box)
 
         accuracy_box = QHBoxLayout()
         accuracy_box.setSpacing(6)
         accuracy_label = QLabel("Accuracy")
-        accuracy_label.setStyleSheet("color:#d7e7ef;background:transparent;font-weight:bold;")
         accuracy_box.addWidget(accuracy_label)
         self.accuracy_combo = QComboBox()
         self.accuracy_combo.addItems(["Low", "Medium", "High", "Very High"])
         self.accuracy_combo.setCurrentText(self._sim_accuracy)
         self.accuracy_combo.setToolTip("Simulation accuracy preset. Higher settings reduce transient timestep error and tighten solver tolerances.")
         self.accuracy_combo.currentTextChanged.connect(self._on_accuracy_changed)
-        self.accuracy_combo.setStyleSheet(
-            "QComboBox{color:#f2f7fb;background:#1d303e;border:1px solid #4b6a82;"
-            "border-radius:6px;padding:5px;min-width:96px;}"
-        )
         accuracy_box.addWidget(self.accuracy_combo)
         controls_row.addLayout(accuracy_box)
 
         tolerance_box = QHBoxLayout()
         tolerance_box.setSpacing(6)
         tolerance_label = QLabel("Tol")
-        tolerance_label.setStyleSheet("color:#d7e7ef;background:transparent;font-weight:bold;")
         tolerance_box.addWidget(tolerance_label)
         self.tolerance_override_edit = QLineEdit(self._sim_tolerance_override)
         self.tolerance_override_edit.setPlaceholderText("Preset")
@@ -2284,44 +2469,30 @@ class ADEWindow(QMainWindow):
         self.tolerance_override_edit.editingFinished.connect(
             lambda: self._on_tolerance_override_changed(self.tolerance_override_edit.text())
         )
-        self.tolerance_override_edit.setStyleSheet(
-            "QLineEdit{color:#f2f7fb;background:#1d303e;border:1px solid #4b6a82;"
-            "border-radius:6px;padding:5px;min-width:76px;max-width:92px;}"
-        )
         tolerance_box.addWidget(self.tolerance_override_edit)
         controls_row.addLayout(tolerance_box)
 
         method_box = QHBoxLayout()
         method_box.setSpacing(6)
         method_label = QLabel("Method")
-        method_label.setStyleSheet("color:#d7e7ef;background:transparent;font-weight:bold;")
         method_box.addWidget(method_label)
         self.method_combo = QComboBox()
         self.method_combo.addItems(["Auto", "Backward Euler", "Trapezoidal", "Gear2"])
         self.method_combo.setCurrentText(self._sim_method)
         self.method_combo.setToolTip("Transient integration method. Native GSPICE records the selected method; external backends receive compatible tolerance options.")
         self.method_combo.currentTextChanged.connect(self._on_method_changed)
-        self.method_combo.setStyleSheet(
-            "QComboBox{color:#f2f7fb;background:#1d303e;border:1px solid #4b6a82;"
-            "border-radius:6px;padding:5px;min-width:128px;}"
-        )
         method_box.addWidget(self.method_combo)
         controls_row.addLayout(method_box)
 
         save_box = QHBoxLayout()
         save_box.setSpacing(6)
         save_label = QLabel("Save")
-        save_label.setStyleSheet("color:#d7e7ef;background:transparent;font-weight:bold;")
         save_box.addWidget(save_label)
         self.save_mode_combo = QComboBox()
         self.save_mode_combo.addItems(["All", "Selected", "None"])
         self.save_mode_combo.setCurrentText(self._sim_save_mode_label())
         self.save_mode_combo.setToolTip("GSPICE waveform save policy. All matches Cadence-style save-all; Selected writes only output expressions; None writes time only.")
         self.save_mode_combo.currentTextChanged.connect(self._on_save_mode_changed)
-        self.save_mode_combo.setStyleSheet(
-            "QComboBox{color:#f2f7fb;background:#1d303e;border:1px solid #4b6a82;"
-            "border-radius:6px;padding:5px;min-width:92px;}"
-        )
         save_box.addWidget(self.save_mode_combo)
         controls_row.addLayout(save_box)
 
@@ -2334,9 +2505,6 @@ class ADEWindow(QMainWindow):
         self.adaptive_maxstep_check.stateChanged.connect(
             lambda state: self._on_adaptive_maxstep_changed(state == Qt.CheckState.Checked.value)
         )
-        self.adaptive_maxstep_check.setStyleSheet(
-            "QCheckBox{color:#d7e7ef;background:transparent;font-weight:bold;}"
-        )
         controls_row.addWidget(self.adaptive_maxstep_check)
         controls_row.addStretch(1)
         layout.addLayout(controls_row)
@@ -2344,6 +2512,7 @@ class ADEWindow(QMainWindow):
 
     def _build_data_view_tab(self):
         data_tabs = QTabWidget()
+        data_tabs.setObjectName("adeSubTabs")
         data_tabs.setDocumentMode(True)
 
         self.var_widget = DesignVariablesWidget()
@@ -2373,20 +2542,26 @@ class ADEWindow(QMainWindow):
         self.sweep_widget = ParametricSweepWidget()
         data_tabs.addTab(self.sweep_widget, "Sweeps")
 
-        self.main_tabs.addTab(data_tabs, "Data View")
+        self.main_tabs.addTab(data_tabs, "Setup")
 
     def _build_analyses_tab(self):
         analyses_widget = QWidget()
         layout = QHBoxLayout(analyses_widget)
-        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(8)
 
         # Left: simulator selector + analysis tree
-        left_panel = QWidget()
+        left_panel = QFrame()
+        left_panel.setObjectName("adeNavigator")
+        left_panel.setMinimumWidth(260)
+        left_panel.setMaximumWidth(340)
         left_layout = QVBoxLayout(left_panel)
-        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setContentsMargins(8, 8, 8, 8)
+        left_layout.setSpacing(8)
 
         # Simulator selector
         sim_group = QGroupBox("Simulator")
+        sim_group.setObjectName("adeControlGroup")
         sim_form = QVBoxLayout(sim_group)
         self.sim_combo = QComboBox()
         for sim in ACTIVE_SIMULATORS:
@@ -2409,6 +2584,7 @@ class ADEWindow(QMainWindow):
 
         # Machine selector (Local or Remote SSH)
         machine_group = QGroupBox("Machine")
+        machine_group.setObjectName("adeControlGroup")
         machine_layout = QVBoxLayout(machine_group)
 
         mach_row = QHBoxLayout()
@@ -2456,30 +2632,34 @@ class ADEWindow(QMainWindow):
         left_layout.addWidget(machine_group)
 
         lbl = QLabel("Available Analyses")
-        lbl.setStyleSheet("font-weight:bold;color:#6b9ece;background:transparent;padding:4px;")
+        lbl.setObjectName("adePanelLabel")
         left_layout.addWidget(lbl)
 
         self.analysis_tree = QTreeWidget()
+        self.analysis_tree.setObjectName("adeAnalysisTree")
         self.analysis_tree.setHeaderHidden(True)
         self.analysis_tree.setMinimumWidth(220)
         self.analysis_tree.itemDoubleClicked.connect(self._on_analysis_dblclick)
         left_layout.addWidget(self.analysis_tree)
 
         add_btn = QPushButton("Add Analysis \u2192")
+        add_btn.setObjectName("adePrimaryButton")
         add_btn.clicked.connect(self._add_selected_analysis)
         left_layout.addWidget(add_btn)
         layout.addWidget(left_panel)
 
         # Right: setup tabs for added analyses
         self.analysis_setup_tabs = QTabWidget()
+        self.analysis_setup_tabs.setObjectName("adeTestTabs")
         self.analysis_setup_tabs.setTabsClosable(True)
         self.analysis_setup_tabs.tabCloseRequested.connect(self._on_close_analysis_tab)
         layout.addWidget(self.analysis_setup_tabs, stretch=1)
 
-        self.main_tabs.addTab(analyses_widget, "Tests")
+        self.main_tabs.addTab(analyses_widget, "Analyses")
 
         # Populate initial state
         self._refresh_analysis_tree()
+        QTimer.singleShot(0, self._schedule_simulator_status_refresh)
 
     def _on_simulator_changed(self, index):
         """Handle simulator selection change."""
@@ -2512,30 +2692,7 @@ class ADEWindow(QMainWindow):
         # Update toolbar label
         if hasattr(self, 'toolbar_sim_label'):
             self.toolbar_sim_label.setText(self._current_simulator)
-        # Update status
-        bridge = self._build_bridge()
-        avail = bridge.is_available()
-        if avail:
-            self.sim_status_label.setText("\u2713 Found")
-            self.sim_status_label.setStyleSheet("color:#8bc78b;background:transparent;padding:2px;")
-        else:
-            self.sim_status_label.setText(f"\u2717 Not found: {bridge.exe_path}")
-            self.sim_status_label.setStyleSheet("color:#cc8888;background:transparent;padding:2px;")
-            if self._current_simulator not in self._missing_sim_prompted:
-                self._missing_sim_prompted.add(self._current_simulator)
-                ready = ensure_simulator_available(
-                    self,
-                    str(getattr(self.db, "workspace", "")),
-                    self._current_simulator,
-                    logger=self._log,
-                )
-                if ready:
-                    bridge = self._build_bridge()
-                    if bridge.is_available():
-                        self.sim_status_label.setText("\u2713 Found")
-                        self.sim_status_label.setStyleSheet(
-                            "color:#8bc78b;background:transparent;padding:2px;"
-                        )
+        self._schedule_simulator_status_refresh()
         self._refresh_run_plan()
         self._save_simenv_view_silent()
 
@@ -2562,23 +2719,60 @@ class ADEWindow(QMainWindow):
             adaptive_maxstep=self._sim_adaptive_maxstep,
         )
 
-    def _on_machine_changed(self, _index=0):
+    def _sync_machine_visibility(self):
         is_remote = hasattr(self, "machine_combo") and (self.machine_combo.currentData() == "remote")
         if hasattr(self, "remote_ssh_widget"):
             self.remote_ssh_widget.setVisible(is_remote)
+        return is_remote
+
+    def _schedule_simulator_status_refresh(self):
+        if not hasattr(self, "sim_status_label"):
+            return
+        self.sim_status_label.setText("Checking runtime...")
+        self.sim_status_label.setStyleSheet("color:#c9b26a;background:transparent;padding:2px;")
+        if self._sim_status_refresh_scheduled:
+            return
+        self._sim_status_refresh_scheduled = True
+        QTimer.singleShot(0, self._refresh_simulator_status)
+
+    def _refresh_simulator_status(self):
+        self._sim_status_refresh_scheduled = False
+        if not hasattr(self, "sim_status_label"):
+            return
+        is_remote = self._sync_machine_visibility()
         bridge = self._build_bridge()
         if bridge.is_available():
             if is_remote:
                 user = self.ssh_user_edit.text().strip() if hasattr(self, "ssh_user_edit") else ""
                 host = self.ssh_host_edit.text().strip() if hasattr(self, "ssh_host_edit") else ""
-                target_str = f"✓ Remote ({user}@{host})" if user and host else "✓ Remote SSH"
-                self.sim_status_label.setText(target_str)
+                target = f"Remote ({user}@{host})" if user and host else "Remote SSH"
+                self.sim_status_label.setText(target)
             else:
-                self.sim_status_label.setText("✓ Found")
+                self.sim_status_label.setText("Found")
             self.sim_status_label.setStyleSheet("color:#8bc78b;background:transparent;padding:2px;")
         else:
-            self.sim_status_label.setText(f"✗ Not found: {bridge.exe_path}")
+            self.sim_status_label.setText(f"Not found: {bridge.exe_path}")
             self.sim_status_label.setStyleSheet("color:#cc8888;background:transparent;padding:2px;")
+            if self._current_simulator not in self._missing_sim_prompted:
+                self._missing_sim_prompted.add(self._current_simulator)
+                ready = ensure_simulator_available(
+                    self,
+                    str(getattr(self.db, "workspace", "")),
+                    self._current_simulator,
+                    logger=self._log,
+                )
+                if ready:
+                    bridge = self._build_bridge()
+                    if bridge.is_available():
+                        self.sim_status_label.setText("Found")
+                        self.sim_status_label.setStyleSheet(
+                            "color:#8bc78b;background:transparent;padding:2px;"
+                        )
+        self._refresh_run_plan()
+
+    def _on_machine_changed(self, _index=0):
+        self._sync_machine_visibility()
+        self._schedule_simulator_status_refresh()
         self._refresh_run_plan()
         self._save_simenv_view_silent()
 
@@ -2617,9 +2811,7 @@ class ADEWindow(QMainWindow):
 
     def _on_close_analysis_tab(self, index):
         name = self.analysis_setup_tabs.tabText(index)
-        self.analysis_setup_tabs.removeTab(index)
-        self._analysis_tabs.pop(name, None)
-        self._refresh_run_plan()
+        self._remove_analysis(name)
 
     def _build_corners_tab(self):
         widget = QWidget()
@@ -2636,18 +2828,7 @@ class ADEWindow(QMainWindow):
         # PDK selector for corner-aware models
         hdr.addWidget(QLabel("PDK:"))
         self.pdk_combo = QComboBox()
-        self.pdk_combo.addItem("None")
-        if self._pdk_registry:
-            try:
-                for pdk in self._pdk_registry.get_all_pdks():
-                    self.pdk_combo.addItem(pdk.display_name, pdk.name)
-            except Exception as exc:
-                self._startup_warnings.append(f"Could not load PDK list: {exc}")
-        default_pdk = self._infer_pdk_name()
-        if default_pdk:
-            idx = self.pdk_combo.findData(default_pdk)
-            if idx >= 0:
-                self.pdk_combo.setCurrentIndex(idx)
+        self.pdk_combo.addItem("None", "")
         self.pdk_combo.currentIndexChanged.connect(lambda _idx: self._refresh_run_plan())
         hdr.addWidget(self.pdk_combo)
 
@@ -2677,6 +2858,43 @@ class ADEWindow(QMainWindow):
             self._add_corner(name, temp, vdd, proc)
 
         self.main_tabs.addTab(widget, "Corners")
+        QTimer.singleShot(0, self._populate_pdk_combo)
+
+    def _populate_pdk_combo(self):
+        if not hasattr(self, "pdk_combo") or self._pdk_combo_populated:
+            return
+        self._pdk_combo_populated = True
+        registry = self._ensure_pdk_registry()
+        if not registry:
+            return
+
+        self.pdk_combo.blockSignals(True)
+        try:
+            existing = {
+                self.pdk_combo.itemData(i)
+                for i in range(self.pdk_combo.count())
+                if self.pdk_combo.itemData(i)
+            }
+            hidden_pdks = {"sky130", "gf180mcu"}
+            for pdk in registry.get_all_pdks():
+                if pdk.name in hidden_pdks:
+                    continue
+                if pdk.name not in existing:
+                    self.pdk_combo.addItem(pdk.display_name, pdk.name)
+                    existing.add(pdk.name)
+
+            target = self._pending_simenv_pdk or ""
+            if not target and not self.pdk_combo.currentData():
+                target = self._infer_pdk_name()
+            if target:
+                idx = self.pdk_combo.findData(target)
+                if idx >= 0:
+                    self.pdk_combo.setCurrentIndex(idx)
+        except Exception as exc:
+            self._log(f"Could not load PDK list: {exc}")
+        finally:
+            self.pdk_combo.blockSignals(False)
+        self._refresh_run_plan()
 
     def _add_corner_row(self):
         self._add_corner("corner", "25", "1.8", "tt")
@@ -2700,7 +2918,7 @@ class ADEWindow(QMainWindow):
 
         top = QHBoxLayout()
         title = QLabel("Run Plan")
-        title.setStyleSheet("font-size:15px;font-weight:bold;color:#6b9ece;background:transparent;")
+        title.setObjectName("adePanelTitle")
         top.addWidget(title)
         top.addStretch()
         refresh_btn = QPushButton("Refresh Plan")
@@ -2765,7 +2983,7 @@ class ADEWindow(QMainWindow):
             "On" if self._sim_adaptive_maxstep else "Off",
         ]))
         session.addChild(QTreeWidgetItem(["Dump Folder", self._resolved_sim_dump_dir()]))
-        session.addChild(QTreeWidgetItem(["PDK", self._selected_pdk_name() or "None selected"]))
+        session.addChild(QTreeWidgetItem(["PDK", self._selected_pdk_name(infer=False) or "None selected"]))
 
         tests = add_parent("Tests", f"{len(self._analysis_tabs)} analysis setup(s)")
         for name, widget in self._analysis_tabs.items():
@@ -2832,18 +3050,323 @@ class ADEWindow(QMainWindow):
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
 
-        self.results_table = QTableWidget(0, 5)
-        self.results_table.setHorizontalHeaderLabels(["Run", "Analysis", "Status", "Waveforms", "Time"])
-        self.results_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(8)
+
+        lbl_view = QLabel("Corner Results Matrix:")
+        lbl_view.setObjectName("adePanelLabel")
+        toolbar.addWidget(lbl_view)
+
+        self.btn_plot_all_results = QPushButton("📈 Plot Selected Waveforms")
+        self.btn_plot_all_results.setText("Plot Selected")
+        self.btn_plot_all_results.setToolTip("Open SigView plot for selected result row")
+        self.btn_plot_all_results.clicked.connect(self._on_results_plot_selected)
+        toolbar.addWidget(self.btn_plot_all_results)
+
+        self.btn_export_results_csv = QPushButton("💾 Export Matrix (CSV)")
+        self.btn_export_results_csv.setText("Export CSV")
+        self.btn_export_results_csv.setToolTip("Export Corner Results Matrix to CSV")
+        self.btn_export_results_csv.clicked.connect(self._export_corner_matrix_to_csv)
+        toolbar.addWidget(self.btn_export_results_csv)
+
+        toolbar.addStretch()
+        layout.addLayout(toolbar)
+
+        self.corner_matrix_table = QTableWidget(5, 0)
+        self.corner_matrix_table.setVerticalHeaderLabels(["Status", "Plots", "Runs", "Process", "Conditions"])
+        self.corner_matrix_table.verticalHeader().setVisible(True)
+        self.corner_matrix_table.setMaximumHeight(156)
+        self.corner_matrix_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectColumns)
+        self.corner_matrix_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.corner_matrix_table.customContextMenuRequested.connect(self._on_corner_matrix_context_menu)
+        matrix_header = self.corner_matrix_table.horizontalHeader()
+        matrix_header.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        matrix_header.customContextMenuRequested.connect(self._on_corner_matrix_header_menu)
+        layout.addWidget(self.corner_matrix_table)
+
+        self.results_table = QTableWidget(0, 7)
+        self.results_table.setHorizontalHeaderLabels([
+            "Corner / Run",
+            "Process",
+            "Temp",
+            "VDD",
+            "Analysis",
+            "Measurements / Outputs",
+            "Status"
+        ])
+        header = self.results_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(6, QHeaderView.ResizeMode.Interactive)
+
+        self.results_table.setColumnWidth(0, 140)
+        self.results_table.setColumnWidth(1, 80)
+        self.results_table.setColumnWidth(2, 70)
+        self.results_table.setColumnWidth(3, 70)
+        self.results_table.setColumnWidth(4, 130)
+        self.results_table.setColumnWidth(6, 90)
+
         self.results_table.verticalHeader().setVisible(False)
         self.results_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.results_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.results_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.results_table.customContextMenuRequested.connect(self._on_results_context_menu)
         self.results_table.itemDoubleClicked.connect(self._on_result_double_click)
-        layout.addWidget(self.results_table)
 
+        layout.addWidget(self.results_table)
         self.main_tabs.addTab(widget, "Results")
+
+    def _refresh_corner_matrix(self):
+        if not hasattr(self, "corner_matrix_table"):
+            return
+        corners = sorted(self._corner_result_rows.keys())
+        self.corner_matrix_table.setColumnCount(len(corners))
+        self.corner_matrix_table.setHorizontalHeaderLabels(corners)
+        for col, corner in enumerate(corners):
+            rows = self._corner_result_rows.get(corner, [])
+            ok = 0
+            plottable = 0
+            for row in rows:
+                item = self.results_table.item(row, 6)
+                if item and "PASS" in item.text():
+                    ok += 1
+                if self._result_waveforms_by_row.get(row) or self._result_all_waveforms_by_row.get(row):
+                    plottable += 1
+            values = [
+                f"{ok}/{len(rows)} PASS",
+                f"{plottable} plot",
+                str(len(rows)),
+                self._corner_matrix_value(corner, 1),
+                f"{self._corner_matrix_value(corner, 2)}, {self._corner_matrix_value(corner, 3)}",
+            ]
+            for row_idx, text in enumerate(values):
+                cell = QTableWidgetItem(text)
+                cell.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                cell.setData(Qt.ItemDataRole.UserRole, corner)
+                if row_idx == 0:
+                    if ok == len(rows):
+                        cell.setForeground(QColor("#74c69d"))
+                        cell.setBackground(QColor("#173524"))
+                    elif ok:
+                        cell.setForeground(QColor("#ffd166"))
+                        cell.setBackground(QColor("#3a3117"))
+                    else:
+                        cell.setForeground(QColor("#ff8fa3"))
+                        cell.setBackground(QColor("#401820"))
+                self.corner_matrix_table.setItem(row_idx, col, cell)
+        self.corner_matrix_table.resizeColumnsToContents()
+
+    def _corner_matrix_value(self, corner: str, result_col: int) -> str:
+        rows = self._corner_result_rows.get(corner, [])
+        if rows:
+            item = self.results_table.item(rows[-1], result_col)
+            return item.text() if item else ""
+        return ""
+
+    def _corner_from_matrix_pos(self, pos) -> str:
+        if not hasattr(self, "corner_matrix_table"):
+            return ""
+        col = self.corner_matrix_table.columnAt(pos.x())
+        if col < 0:
+            col = self.corner_matrix_table.currentColumn()
+        item = self.corner_matrix_table.horizontalHeaderItem(col) if col >= 0 else None
+        return item.text() if item else ""
+
+    def _on_corner_matrix_header_menu(self, pos):
+        col = self.corner_matrix_table.horizontalHeader().logicalIndexAt(pos)
+        item = self.corner_matrix_table.horizontalHeaderItem(col) if col >= 0 else None
+        self._show_corner_matrix_menu(item.text() if item else "", pos, on_header=True)
+
+    def _on_corner_matrix_context_menu(self, pos):
+        self._show_corner_matrix_menu(self._corner_from_matrix_pos(pos), pos, on_header=False)
+
+    def _show_corner_matrix_menu(self, corner: str, pos, on_header: bool):
+        if not corner:
+            return
+        rows = self._corner_result_rows.get(corner, [])
+        menu = QMenu(self)
+        title = QAction(f"Corner: {corner}", self)
+        title.setEnabled(False)
+        menu.addAction(title)
+        menu.addSeparator()
+
+        act_main = QAction("Main Form...", self)
+        act_main.setEnabled(bool(rows))
+        act_main.triggered.connect(lambda: self._show_corner_main_form(corner))
+        menu.addAction(act_main)
+
+        act_plot = QAction("Plot All", self)
+        act_plot.setEnabled(any(self._result_waveforms_by_row.get(r) or self._result_all_waveforms_by_row.get(r) for r in rows))
+        act_plot.triggered.connect(lambda: self._plot_corner_results(corner))
+        menu.addAction(act_plot)
+
+        act_plot_outputs = QAction("Plot Selected Outputs", self)
+        act_plot_outputs.setEnabled(any(self._result_waveforms_by_row.get(r) for r in rows))
+        act_plot_outputs.triggered.connect(lambda: self._plot_corner_results(corner, selected_only=True))
+        menu.addAction(act_plot_outputs)
+
+        signal_menu = menu.addMenu("Plot Signal")
+        signals = self._corner_signal_names(corner)
+        signal_menu.setEnabled(bool(signals))
+        for signal in signals[:80]:
+            action = QAction(signal, self)
+            action.triggered.connect(lambda _checked=False, sig=signal: self._plot_corner_results(corner, signals=[sig]))
+            signal_menu.addAction(action)
+        if len(signals) > 80:
+            more = QAction(f"... {len(signals) - 80} more signal(s)", self)
+            more.setEnabled(False)
+            signal_menu.addAction(more)
+
+        act_select = QAction("Select Runs", self)
+        act_select.setEnabled(bool(rows))
+        act_select.triggered.connect(lambda: self._select_corner_result_rows(corner))
+        menu.addAction(act_select)
+
+        menu.addSeparator()
+        act_export = QAction("Export Corner Matrix CSV...", self)
+        act_export.triggered.connect(self._export_corner_matrix_to_csv)
+        menu.addAction(act_export)
+
+        widget = self.corner_matrix_table.horizontalHeader() if on_header else self.corner_matrix_table.viewport()
+        menu.exec(widget.mapToGlobal(pos))
+
+    def _select_corner_result_rows(self, corner: str):
+        rows = self._corner_result_rows.get(corner, [])
+        if not rows:
+            return
+        self.results_table.clearSelection()
+        for row in rows:
+            self.results_table.selectRow(row)
+        self.results_table.scrollToItem(self.results_table.item(rows[0], 0))
+
+    def _corner_signal_names(self, corner: str) -> list[str]:
+        names: set[str] = set()
+        for row in self._corner_result_rows.get(corner, []):
+            waveforms = self._result_all_waveforms_by_row.get(row) or self._result_waveforms_by_row.get(row, {})
+            names.update(self._plottable_signal_names(waveforms))
+        return sorted(names, key=lambda s: s.lower())
+
+    def _plot_corner_results(self, corner: str, selected_only: bool = False, signals: list[str] | None = None):
+        merged: dict = {}
+        for row in self._corner_result_rows.get(corner, []):
+            waveforms = self._result_waveforms_by_row.get(row, {}) if selected_only else (
+                self._result_all_waveforms_by_row.get(row) or self._result_waveforms_by_row.get(row, {})
+            )
+            if signals:
+                waveforms = self._waveforms_for_signals(waveforms, signals)
+            if waveforms:
+                run = self.results_table.item(row, 0).text() if self.results_table.item(row, 0) else corner
+                self._merge_corner_waveforms(merged, run, waveforms)
+        if not merged:
+            self.statusBar().showMessage(f"No plottable waveforms for {corner}", 5000)
+            return
+        self._last_sigview_waveforms = dict(merged)
+        self._show_waveforms(self._sigview_payload_for_waveforms(merged))
+        self.statusBar().showMessage(f"Plotted all waveforms for {corner}", 4000)
+
+    def _show_corner_main_form(self, corner: str):
+        rows = self._corner_result_rows.get(corner, [])
+        if not rows:
+            self.statusBar().showMessage(f"No result rows for {corner}", 5000)
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Corner Main Form - {corner}")
+        dlg.resize(760, 420)
+        layout = QVBoxLayout(dlg)
+        title = QLabel(self._results_corner_section_title(corner))
+        title.setObjectName("adePanelTitle")
+        layout.addWidget(title)
+        table = QTableWidget(len(rows), 5)
+        table.setHorizontalHeaderLabels(["Run", "Analysis", "Measurements / Outputs", "Status", "Signals"])
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        for idx, row in enumerate(rows):
+            waveforms = self._result_all_waveforms_by_row.get(row) or self._result_waveforms_by_row.get(row, {})
+            values = [
+                self.results_table.item(row, 0).text() if self.results_table.item(row, 0) else "",
+                self.results_table.item(row, 4).text() if self.results_table.item(row, 4) else "",
+                self.results_table.item(row, 5).text() if self.results_table.item(row, 5) else "",
+                self.results_table.item(row, 6).text() if self.results_table.item(row, 6) else "",
+                str(len(self._plottable_signal_names(waveforms))),
+            ]
+            for col, value in enumerate(values):
+                table.setItem(idx, col, QTableWidgetItem(value))
+        layout.addWidget(table)
+        buttons = QHBoxLayout()
+        plot = QPushButton("Plot All")
+        plot.clicked.connect(lambda _checked=False: self._plot_corner_results(corner))
+        buttons.addWidget(plot)
+        select = QPushButton("Select Runs")
+        select.clicked.connect(lambda _checked=False: self._select_corner_result_rows(corner))
+        buttons.addWidget(select)
+        close = QPushButton("Close")
+        close.clicked.connect(dlg.accept)
+        buttons.addWidget(close)
+        buttons.addStretch()
+        layout.addLayout(buttons)
+        dlg.exec()
+
+    def _show_results_tab(self):
+        if not hasattr(self, "main_tabs"):
+            return
+        for idx in range(self.main_tabs.count()):
+            if self.main_tabs.tabText(idx) == "Results":
+                self.main_tabs.setCurrentIndex(idx)
+                return
+
+    def _export_results_to_csv(self):
+        filename, _ = QFileDialog.getSaveFileName(self, "Export Corner Results Matrix", "", "CSV Files (*.csv);;All Files (*)")
+        if not filename:
+            return
+        self._export_results_rows_to_csv(filename)
+
+    def _export_results_rows_to_csv(self, filename: str):
+        try:
+            with open(filename, "w", newline="", encoding="utf-8") as fh:
+                writer = csv.writer(fh)
+                writer.writerow(["Run", "Process", "Temp", "VDD", "Analysis", "Measurements / Outputs", "Status"])
+                for r in range(self.results_table.rowCount()):
+                    if r in self._result_section_rows:
+                        item = self.results_table.item(r, 0)
+                        writer.writerow([item.text() if item else "Corner Header"])
+                        continue
+                    row_data = []
+                    for c in range(7):
+                        item = self.results_table.item(r, c)
+                        row_data.append(item.text() if item else "")
+                    writer.writerow(row_data)
+            self.statusBar().showMessage(f"Exported Corner Matrix to {filename}", 5000)
+        except Exception as exc:
+            QMessageBox.critical(self, "Export CSV", f"Could not export CSV:\n{exc}")
+
+    def _export_corner_matrix_to_csv(self, filename: str = ""):
+        if not filename:
+            filename, _ = QFileDialog.getSaveFileName(self, "Export Corner Matrix", "", "CSV Files (*.csv);;All Files (*)")
+            if not filename:
+                return
+        try:
+            headers = ["Metric"] + [self.corner_matrix_table.horizontalHeaderItem(c).text() for c in range(self.corner_matrix_table.columnCount())]
+            with open(filename, "w", newline="", encoding="utf-8") as fh:
+                writer = csv.writer(fh)
+                writer.writerow(headers)
+                for r in range(self.corner_matrix_table.rowCount()):
+                    row_name = self.corner_matrix_table.verticalHeaderItem(r).text()
+                    writer.writerow([row_name] + [
+                        self.corner_matrix_table.item(r, c).text() if self.corner_matrix_table.item(r, c) else ""
+                        for c in range(self.corner_matrix_table.columnCount())
+                    ])
+            self.statusBar().showMessage(f"Exported Corner Matrix to {filename}", 5000)
+        except Exception as exc:
+            QMessageBox.critical(self, "Export Corner Matrix", f"Could not export CSV:\n{exc}")
 
     def _output_save_lines(self) -> list[str]:
         mode = str(self._sim_save_mode or "all").lower()
@@ -2903,107 +3426,152 @@ class ADEWindow(QMainWindow):
     def _add_analysis(self, name: str):
         if name in self._analysis_tabs:
             # Focus existing tab
-            for i in range(self.analysis_setup_tabs.count()):
-                if self.analysis_setup_tabs.tabText(i) == name:
-                    self.analysis_setup_tabs.setCurrentIndex(i)
-                    return
+            self._show_analysis_setup(name)
+            return
         widget = AnalysisSetupWidget(name)
+        self._connect_analysis_widget(widget)
         self._analysis_tabs[name] = widget
         self.analysis_setup_tabs.addTab(widget, name)
         self.analysis_setup_tabs.setCurrentWidget(widget)
+        self._show_main_tab("Analyses")
         self._log(f"Added test: {name}")
         self._refresh_run_plan()
+
+    def _connect_analysis_widget(self, widget: AnalysisSetupWidget):
+        def changed():
+            self._refresh_run_plan()
+            self._save_simenv_view_silent()
+        for field in getattr(widget, "_fields", {}).values():
+            if isinstance(field, QCheckBox):
+                field.stateChanged.connect(lambda _state, fn=changed: fn())
+            elif isinstance(field, QComboBox):
+                field.currentTextChanged.connect(lambda _text, fn=changed: fn())
+            elif isinstance(field, QLineEdit):
+                field.editingFinished.connect(changed)
+
+    def _remove_analysis(self, name: str):
+        if name not in self._analysis_tabs:
+            return
+        for i in range(self.analysis_setup_tabs.count()):
+            if self.analysis_setup_tabs.tabText(i) == name:
+                self.analysis_setup_tabs.removeTab(i)
+                break
+        self._analysis_tabs.pop(name, None)
+        self._log(f"Disabled test: {name}")
+        self._refresh_run_plan()
+
+    def _show_analysis_setup(self, name: str):
+        for i in range(self.analysis_setup_tabs.count()):
+            if self.analysis_setup_tabs.tabText(i) == name:
+                self.analysis_setup_tabs.setCurrentIndex(i)
+                for idx in range(self.main_tabs.count()):
+                    if self.main_tabs.tabText(idx) == "Analyses":
+                        self.main_tabs.setCurrentIndex(idx)
+                        break
+                return
+
+    def _show_main_tab(self, name: str):
+        for idx in range(self.main_tabs.count()):
+            if self.main_tabs.tabText(idx) == name:
+                self.main_tabs.setCurrentIndex(idx)
+                break
 
     # ── Menus & Toolbar ───────────────────────────────────────
 
     def _create_menus(self):
         menubar = self.menuBar()
-        sim_menu = menubar.addMenu("&SimENV")
-
-        act_run = QAction("Run All", self)
-        act_run.setShortcut("F5")
-        act_run.triggered.connect(self._on_run)
-        sim_menu.addAction(act_run)
-
-        act_netlist = QAction("View Netlist", self)
-        act_netlist.triggered.connect(self._on_view_netlist)
-        sim_menu.addAction(act_netlist)
-
-        act_sigview = QAction("Open SigView", self)
-        act_sigview.triggered.connect(self._on_open_waveform)
-        sim_menu.addAction(act_sigview)
-
-        act_calc = QAction("Open SigView Calculator", self)
-        act_calc.triggered.connect(self._on_open_waveform_calculator)
-        sim_menu.addAction(act_calc)
-
-        results_menu = menubar.addMenu("&Results")
-
-        act_results_plot = QAction("Plot Latest/Selected", self)
-        act_results_plot.triggered.connect(self._on_results_plot_selected)
-        results_menu.addAction(act_results_plot)
-
-        act_results_direct = QAction("Direct Plot Signal...", self)
-        act_results_direct.triggered.connect(self._on_results_direct_plot_signal)
-        results_menu.addAction(act_results_direct)
-
-        act_results_calc = QAction("Send Latest/Selected To Calculator", self)
-        act_results_calc.triggered.connect(self._on_results_calculator_selected)
-        results_menu.addAction(act_results_calc)
-
-        results_menu.addSeparator()
-        annotate_menu = results_menu.addMenu("Annotate")
-
-        act_annotate_nodes = QAction("DC Node Voltages", self)
-        act_annotate_nodes.triggered.connect(self._on_results_annotate_dc_node_voltages)
-        annotate_menu.addAction(act_annotate_nodes)
-
-        act_annotate_op = QAction("DC Operating Point...", self)
-        act_annotate_op.triggered.connect(self._on_results_annotate_dc_operating_point)
-        annotate_menu.addAction(act_annotate_op)
-
-        act_clear_annotations = QAction("Clear Schematic DC Annotations", self)
-        act_clear_annotations.triggered.connect(self._on_results_clear_schematic_dc_annotations)
-        annotate_menu.addAction(act_clear_annotations)
-
-        results_menu.addSeparator()
-        act_results_form = QAction("Main Form...", self)
-        act_results_form.triggered.connect(self._on_results_main_form_selected)
-        results_menu.addAction(act_results_form)
-
-        act_results_dump = QAction("Open Dump Folder", self)
-        act_results_dump.triggered.connect(self._on_open_sim_dump_dir)
-        results_menu.addAction(act_results_dump)
-
-        sim_menu.addSeparator()
-
-        act_save_view = QAction("Save", self)
+        session_menu = menubar.addMenu("&Session")
+        act_save_view = QAction("Save State", self)
         act_save_view.setShortcut(QKeySequence("Ctrl+S"))
         act_save_view.triggered.connect(self._on_save_view)
-        sim_menu.addAction(act_save_view)
+        session_menu.addAction(act_save_view)
 
-        act_save = QAction("Export SimENV Setup...", self)
+        act_save = QAction("Save State As...", self)
         act_save.triggered.connect(self._on_save_setup)
-        sim_menu.addAction(act_save)
+        session_menu.addAction(act_save)
 
-        act_load = QAction("Import SimENV Setup...", self)
+        act_load = QAction("Load State...", self)
         act_load.triggered.connect(self._on_load_setup)
-        sim_menu.addAction(act_load)
-
-        act_dump = QAction("Simulation Dump Settings...", self)
-        act_dump.triggered.connect(self._on_set_sim_dump_dir)
-        sim_menu.addAction(act_dump)
-        act_open_dump = QAction("Open Dump Folder", self)
-        act_open_dump.triggered.connect(self._on_open_sim_dump_dir)
-        sim_menu.addAction(act_open_dump)
-        act_sim_mgr = QAction("Simulator Manager...", self)
-        act_sim_mgr.triggered.connect(self._on_open_simulator_manager)
-        sim_menu.addAction(act_sim_mgr)
-
-        sim_menu.addSeparator()
+        session_menu.addAction(act_load)
+        session_menu.addSeparator()
         act_close = QAction("Close", self)
         act_close.triggered.connect(self.close)
-        sim_menu.addAction(act_close)
+        session_menu.addAction(act_close)
+
+        setup_menu = menubar.addMenu("&Setup")
+        for title, tab_name in (
+            ("Variables...", "Setup"),
+            ("Outputs...", "Setup"),
+            ("Measurements...", "Setup"),
+            ("Stimuli...", "Setup"),
+            ("Convergence Aids...", "Setup"),
+            ("Corners...", "Corners"),
+        ):
+            action = QAction(title, self)
+            action.triggered.connect(lambda _checked=False, name=tab_name: self._show_main_tab(name))
+            setup_menu.addAction(action)
+
+        analyses_menu = menubar.addMenu("&Analyses")
+        act_choose = QAction("Choose...", self)
+        act_choose.triggered.connect(lambda: self._show_main_tab("Analyses"))
+        analyses_menu.addAction(act_choose)
+        analyses_menu.addSeparator()
+        categories: dict[str, QMenu] = {}
+        for name, info in ANALYSES.items():
+            category = info["category"]
+            menu = categories.get(category)
+            if menu is None:
+                menu = analyses_menu.addMenu(category)
+                categories[category] = menu
+            action = QAction(name, self)
+            action.triggered.connect(lambda _checked=False, analysis=name: self._add_analysis(analysis))
+            menu.addAction(action)
+
+        simulation_menu = menubar.addMenu("&Simulation")
+        act_run = QAction("Netlist and Run", self)
+        act_run.setShortcut("F5")
+        act_run.triggered.connect(self._on_run)
+        simulation_menu.addAction(act_run)
+
+        act_stop = QAction("Stop", self)
+        act_stop.triggered.connect(self._on_stop_simulation)
+        simulation_menu.addAction(act_stop)
+
+        act_netlist = QAction("Create Netlist", self)
+        act_netlist.triggered.connect(self._on_view_netlist)
+        simulation_menu.addAction(act_netlist)
+        simulation_menu.addSeparator()
+        act_dump = QAction("Simulation Dump Settings...", self)
+        act_dump.triggered.connect(self._on_set_sim_dump_dir)
+        simulation_menu.addAction(act_dump)
+        act_open_dump = QAction("Open Dump Folder", self)
+        act_open_dump.triggered.connect(self._on_open_sim_dump_dir)
+        simulation_menu.addAction(act_open_dump)
+
+        results_menu = menubar.addMenu("&Results")
+        act_results = QAction("Results Browser...", self)
+        act_results.triggered.connect(lambda: self._show_main_tab("Results"))
+        results_menu.addAction(act_results)
+        act_sigview = QAction("Direct Plot...", self)
+        act_sigview.triggered.connect(self._on_open_waveform)
+        results_menu.addAction(act_sigview)
+        act_calc = QAction("Calculator...", self)
+        act_calc.triggered.connect(self._on_open_waveform_calculator)
+        results_menu.addAction(act_calc)
+        act_export = QAction("Export Corner Matrix CSV...", self)
+        act_export.triggered.connect(self._export_corner_matrix_to_csv)
+        results_menu.addAction(act_export)
+
+        tools_menu = menubar.addMenu("&Tools")
+        act_sim_mgr = QAction("Simulator Manager...", self)
+        act_sim_mgr.triggered.connect(self._on_open_simulator_manager)
+        tools_menu.addAction(act_sim_mgr)
+
+        window_menu = menubar.addMenu("&Window")
+        for tab_name in ("Setup", "Analyses", "Corners", "Run Plan", "Results"):
+            action = QAction(tab_name, self)
+            action.triggered.connect(lambda _checked=False, name=tab_name: self._show_main_tab(name))
+            window_menu.addAction(action)
 
     def _create_toolbar(self):
         tb = QToolBar("SimENV")
@@ -3274,6 +3842,7 @@ class ADEWindow(QMainWindow):
         self._last_sigview_waveforms = {}
         self._last_sigview_payload = {}
         self._sim_merged_waveforms = {}
+        self._clear_schematic_dc_annotations_for_run()
         if not self._ensure_selected_analysis_for_run():
             QMessageBox.warning(self, "No Test", "Add at least one SimENV test first.")
             return
@@ -3438,6 +4007,9 @@ class ADEWindow(QMainWindow):
                     self._show_waveforms(self._last_sigview_payload)
             else:
                 self._merge_corner_waveforms(self._sim_merged_waveforms, run_name, plot_waveforms)
+        elif self._sim_jobs_total == 1:
+            self._last_sigview_waveforms = {}
+            self._last_sigview_payload = {}
         self.statusBar().showMessage(
             f"Simulating in background... {self._sim_jobs_done}/{self._sim_jobs_total}"
         )
@@ -3461,7 +4033,7 @@ class ADEWindow(QMainWindow):
             if self._sim_log_window is not None:
                 self._sim_log_window.append_message("Simulation stopped.")
         else:
-            self.main_tabs.setCurrentIndex(7)  # Switch to Results tab
+            self._show_results_tab()
             self.statusBar().showMessage("Simulation finished", 5000)
             self._log("Background simulation finished.")
             if self._sim_log_window is not None:
@@ -3655,57 +4227,148 @@ class ADEWindow(QMainWindow):
         except OSError:
             return False
 
-    def _update_run_manifest_for_selected_waveforms(self, result, waveforms: dict) -> None:
-        artifacts = getattr(result, "artifacts", {}) or {}
-        manifest_path = artifacts.get("manifest", "")
-        if not manifest_path:
-            return
+    @staticmethod
+    def _extract_scalar_val(values) -> float | None:
+        """Return a representative scalar from OP or waveform data."""
+        if values is None:
+            return None
+        if isinstance(values, (int, float)):
+            val = float(values)
+            return val if math.isfinite(val) else None
+        if isinstance(values, (list, tuple)):
+            for raw in reversed(values):
+                try:
+                    val = float(raw)
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(val):
+                    return val
+            return None
         try:
-            data = {}
-            if os.path.isfile(manifest_path):
-                with open(manifest_path, "r", encoding="utf-8") as fh:
-                    data = json.load(fh)
-            if not isinstance(data, dict):
-                data = {}
-            data.setdefault("format", "lumen-sim-run")
-            data.setdefault("version", 1)
-            data["artifacts"] = artifacts
-            data["plot_signals"] = [k for k in waveforms.keys() if not str(k).startswith("_")]
-            data["plot_source"] = "simenv_outputs"
-            with open(manifest_path, "w", encoding="utf-8", newline="\n") as fh:
-                json.dump(data, fh, indent=2)
-        except (OSError, json.JSONDecodeError):
-            return
+            val = float(values)
+        except (TypeError, ValueError):
+            return None
+        return val if math.isfinite(val) else None
+
+    @staticmethod
+    def _format_engineering_val(val: float, unit: str = "") -> str:
+        if not math.isfinite(val):
+            return "NaN"
+        abs_val = abs(val)
+        if abs_val == 0:
+            return f"0 {unit}".strip()
+        elif abs_val >= 1e9:
+            return f"{val / 1e9:.3g} G{unit}".strip()
+        elif abs_val >= 1e6:
+            return f"{val / 1e6:.3g} M{unit}".strip()
+        elif abs_val >= 1e3:
+            return f"{val / 1e3:.3g} k{unit}".strip()
+        elif abs_val >= 1:
+            return f"{val:.3g} {unit}".strip()
+        elif abs_val >= 1e-3:
+            return f"{val * 1e3:.3g} m{unit}".strip()
+        elif abs_val >= 1e-6:
+            return f"{val * 1e6:.3g} u{unit}".strip()
+        elif abs_val >= 1e-9:
+            return f"{val * 1e9:.3g} n{unit}".strip()
+        elif abs_val >= 1e-12:
+            return f"{val * 1e12:.3g} f{unit}".strip()
+        else:
+            return f"{val:.3e} {unit}".strip()
 
     def _handle_simulation_result(self, result, run_name: str, plot_waveforms: dict | None = None):
-        """Handle simulation result and update results table."""
+        """Handle simulation result and update Cadence-style Corner Results Matrix."""
         plot_waveforms = plot_waveforms or {}
         self._ensure_results_corner_section(run_name)
         r = self.results_table.rowCount()
         self.results_table.insertRow(r)
-        analyses_str = ", ".join(self._analysis_tabs.keys())
-        self.results_table.setItem(r, 0, QTableWidgetItem(run_name))
-        self.results_table.setItem(r, 1, QTableWidgetItem(f"[{self._current_simulator}] {analyses_str}"))
-        status = "\u2713 Pass" if result.success else "\u2717 Fail"
-        status_item = QTableWidgetItem(status)
-        status_item.setForeground(QColor("#8bc78b") if result.success else QColor("#cc8888"))
-        self.results_table.setItem(r, 2, status_item)
+
+        corner_name = self._results_corner_from_run_name(run_name)
+        proc_str = "TT"
+        temp_str = "27 °C"
+        vdd_str = "1.0 V"
+
+        for entry in self.get_corner_data() if hasattr(self, "corner_table") else []:
+            if str(entry.get("name", "")).strip() == corner_name:
+                proc_str = str(entry.get("process", "TT")).strip().upper()
+                temp_str = f"{entry.get('temp', '27')} °C"
+                vdd_str = f"{entry.get('vdd', '1.0')} V"
+                break
+
+        analyses_str = ", ".join(self._analysis_tabs.keys()) or "Transient"
         stored_waveforms = dict(plot_waveforms or (getattr(result, "waveforms", {}) or {})) if result.success else {}
+
+        meas_parts = []
+        if stored_waveforms:
+            for sig_name, vals in stored_waveforms.items():
+                if str(sig_name).startswith("_"):
+                    continue
+                last_val = self._extract_scalar_val(vals)
+                if last_val is not None:
+                    unit = "Hz" if "freq" in str(sig_name).lower() else ("V" if str(sig_name).lower().startswith("v") or "out" in str(sig_name).lower() else "")
+                    meas_parts.append(f"{sig_name}: {self._format_engineering_val(last_val, unit)}")
+
         signal_count = self._count_plottable_signals(stored_waveforms)
-        selected_count = self._count_plottable_signals(plot_waveforms)
-        if signal_count:
-            wf_label = f"{signal_count} signal(s)"
-            if selected_count and selected_count != signal_count:
-                wf_label = f"{selected_count} selected / {signal_count} total"
+        if meas_parts:
+            meas_str = " | ".join(meas_parts[:6])
+            if len(meas_parts) > 6:
+                meas_str += f" (+{len(meas_parts) - 6} more)"
+        elif signal_count:
+            meas_str = f"{signal_count} signal(s) available"
         else:
-            wf_label = "None"
-        self.results_table.setItem(r, 3, QTableWidgetItem(wf_label))
-        self.results_table.setItem(r, 4, QTableWidgetItem("--"))
+            meas_str = "None"
+
+        # 0: Corner / Run Name
+        self.results_table.setItem(r, 0, QTableWidgetItem(run_name))
+        # 1: Process
+        self.results_table.setItem(r, 1, QTableWidgetItem(proc_str))
+        # 2: Temp
+        self.results_table.setItem(r, 2, QTableWidgetItem(temp_str))
+        # 3: VDD
+        self.results_table.setItem(r, 3, QTableWidgetItem(vdd_str))
+        # 4: Analysis
+        self.results_table.setItem(r, 4, QTableWidgetItem(f"[{self._current_simulator}] {analyses_str}"))
+        # 5: Measurements / Outputs
+        self.results_table.setItem(r, 5, QTableWidgetItem(meas_str))
+
+        # 6: Status Pill Badge (Green PASS / Red FAIL)
+        status_text = "✓ PASS" if result.success else "✗ FAIL"
+        status_item = QTableWidgetItem(status_text)
+        status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        if result.success:
+            status_item.setForeground(QColor("#74c69d"))
+            status_item.setBackground(QColor("#1b4332"))
+        else:
+            status_item.setForeground(QColor("#ff8fa3"))
+            status_item.setBackground(QColor("#4a0e17"))
+        self.results_table.setItem(r, 6, status_item)
+
+        # 7: Action Pill Button (📈 Plot)
+        btn_plot = QPushButton("📈 Plot")
+        btn_plot.setStyleSheet("""
+            QPushButton {
+                background-color: #1e293b;
+                color: #38bdf8;
+                border: 1px solid #334155;
+                border-radius: 3px;
+                padding: 2px 6px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #0284c7;
+                color: #ffffff;
+            }
+        """)
+        btn_plot.clicked.connect(lambda _chk=False, row_idx=r: self._plot_result_row(row_idx))
+        btn_plot.deleteLater()
+
         if stored_waveforms:
             self._result_waveforms_by_row[r] = stored_waveforms
         if result.success and getattr(result, "waveforms", None):
             self._result_all_waveforms_by_row[r] = dict(getattr(result, "waveforms", {}) or {})
-
+        matrix_corner = corner_name or run_name or "single"
+        self._corner_result_rows.setdefault(matrix_corner, []).append(r)
+        self._refresh_corner_matrix()
         if result.success:
             self._log(f"[{run_name}] Simulation completed successfully")
             if plot_waveforms:
@@ -3810,6 +4473,18 @@ class ADEWindow(QMainWindow):
     def _on_results_context_menu(self, pos):
         row = self.results_table.rowAt(pos.y())
         if row < 0:
+            menu = QMenu(self)
+            title = QAction("Results", self)
+            title.setEnabled(False)
+            menu.addAction(title)
+            menu.addSeparator()
+            act_export = QAction("Export Matrix CSV...", self)
+            act_export.triggered.connect(self._export_corner_matrix_to_csv)
+            menu.addAction(act_export)
+            act_dump = QAction("Open Dump Folder", self)
+            act_dump.triggered.connect(self._on_open_sim_dump_dir)
+            menu.addAction(act_dump)
+            menu.exec(self.results_table.viewport().mapToGlobal(pos))
             return
         if row in self._result_section_rows:
             item = self.results_table.item(row, 0)
@@ -3823,7 +4498,7 @@ class ADEWindow(QMainWindow):
         self.results_table.selectRow(row)
         waveforms = self._result_waveforms_by_row.get(row, {})
         run_item = self.results_table.item(row, 0)
-        status_item = self.results_table.item(row, 2)
+        status_item = self.results_table.item(row, 6)
         run_name = run_item.text() if run_item else f"Run {row + 1}"
         status = status_item.text() if status_item else ""
 
@@ -3854,6 +4529,24 @@ class ADEWindow(QMainWindow):
             more = QAction(f"... {len(signal_names) - 80} more signal(s)", self)
             more.setEnabled(False)
             signal_menu.addAction(more)
+
+        menu.addSeparator()
+        act_export = QAction("Export Matrix CSV...", self)
+        act_export.triggered.connect(self._export_corner_matrix_to_csv)
+        menu.addAction(act_export)
+
+        annotate_menu = menu.addMenu("Annotate Schematic")
+        act_annotate_nodes = QAction("DC Node Voltages", self)
+        act_annotate_nodes.triggered.connect(self._on_results_annotate_dc_node_voltages)
+        annotate_menu.addAction(act_annotate_nodes)
+
+        act_annotate_op = QAction("DC Operating Point...", self)
+        act_annotate_op.triggered.connect(self._on_results_annotate_dc_operating_point)
+        annotate_menu.addAction(act_annotate_op)
+
+        act_clear_annotations = QAction("Clear DC Annotations", self)
+        act_clear_annotations.triggered.connect(self._on_results_clear_schematic_dc_annotations)
+        annotate_menu.addAction(act_clear_annotations)
 
         menu.addSeparator()
         act_details = QAction("Main Form...", self)
@@ -4152,8 +4845,8 @@ class ADEWindow(QMainWindow):
             QMessageBox.information(self, "Corner Results", f"Corner section: {corner}")
             return
         run = self.results_table.item(row, 0).text() if self.results_table.item(row, 0) else f"Run {row + 1}"
-        analysis = self.results_table.item(row, 1).text() if self.results_table.item(row, 1) else ""
-        status = self.results_table.item(row, 2).text() if self.results_table.item(row, 2) else ""
+        analysis = self.results_table.item(row, 4).text() if self.results_table.item(row, 4) else ""
+        status = self.results_table.item(row, 6).text() if self.results_table.item(row, 6) else ""
         waveforms = self._result_all_waveforms_by_row.get(row) or self._result_waveforms_by_row.get(row, {})
         signals = self._plottable_signal_names(waveforms)
         QMessageBox.information(
@@ -4184,6 +4877,12 @@ class ADEWindow(QMainWindow):
         viewer.activateWindow()
 
     def _on_open_waveform(self):
+        selected = self.results_table.currentRow() if hasattr(self, "results_table") else -1
+        if selected in self._result_waveforms_by_row or selected in self._result_all_waveforms_by_row:
+            self._plot_result_row(selected, calculator=False)
+            self.statusBar().showMessage("Opened selected run in SigView", 4000)
+            return
+
         if self._last_sigview_waveforms:
             payload = self._sigview_payload_for_waveforms(self._last_sigview_waveforms)
             self._last_sigview_payload = payload
@@ -4191,28 +4890,22 @@ class ADEWindow(QMainWindow):
             self.statusBar().showMessage("Opened latest waveforms in SigView", 4000)
             return
 
-        selected = self.results_table.currentRow() if hasattr(self, "results_table") else -1
-        if selected in self._result_waveforms_by_row or selected in self._result_all_waveforms_by_row:
-            self._plot_result_row(selected, calculator=False)
-            self.statusBar().showMessage("Opened selected run in SigView", 4000)
-            return
-
         if hasattr(self, "main_tabs"):
             self.main_tabs.setCurrentWidget(self.results_table.parentWidget())
         self.statusBar().showMessage("No waveforms yet. Run simulation, then right-click a Results row and choose Plot.", 7000)
 
     def _on_open_waveform_calculator(self):
+        selected = self.results_table.currentRow() if hasattr(self, "results_table") else -1
+        if selected in self._result_waveforms_by_row or selected in self._result_all_waveforms_by_row:
+            self._plot_result_row(selected, calculator=True)
+            self.statusBar().showMessage("Opened selected run in SigView calculator", 4000)
+            return
+
         if self._last_sigview_waveforms:
             payload = self._sigview_payload_for_waveforms(self._last_sigview_waveforms, show_calculator=True)
             self._last_sigview_payload = payload
             self._show_waveforms(payload, calculator=True)
             self.statusBar().showMessage("Opened latest waveforms in SigView calculator", 4000)
-            return
-
-        selected = self.results_table.currentRow() if hasattr(self, "results_table") else -1
-        if selected in self._result_waveforms_by_row or selected in self._result_all_waveforms_by_row:
-            self._plot_result_row(selected, calculator=True)
-            self.statusBar().showMessage("Opened selected run in SigView calculator", 4000)
             return
 
         if hasattr(self, "main_tabs"):
@@ -4327,7 +5020,7 @@ class ADEWindow(QMainWindow):
             "method": self._sim_method,
             "save_mode": self._sim_save_mode,
             "adaptive_maxstep": self._sim_adaptive_maxstep,
-            "pdk": self._selected_pdk_name(),
+            "pdk": self._selected_pdk_name(infer=False),
             "corner_mode": self.corner_mode_combo.currentText() if hasattr(self, "corner_mode_combo") else "Single",
             "machine": self.machine_combo.currentData() if hasattr(self, "machine_combo") else "local",
             "ssh_host": self.ssh_host_edit.text() if hasattr(self, "ssh_host_edit") else "",
@@ -4429,6 +5122,8 @@ class ADEWindow(QMainWindow):
         if not isinstance(setup, dict):
             return
 
+        was_suspended = getattr(self, "_simenv_autosave_suspended", False)
+        self._simenv_autosave_suspended = True
         sim = normalize_simulator_name(setup.get("simulator", "GSPICE"))
         idx = self.sim_combo.findData(sim)
         if idx >= 0:
@@ -4480,6 +5175,7 @@ class ADEWindow(QMainWindow):
 
         if hasattr(self, "pdk_combo"):
             pdk = setup.get("pdk", "")
+            self._pending_simenv_pdk = str(pdk or "")
             idx = self.pdk_combo.findData(pdk)
             if idx >= 0:
                 self.pdk_combo.setCurrentIndex(idx)
@@ -4621,6 +5317,7 @@ class ADEWindow(QMainWindow):
         if hasattr(self, "toolbar_sim_label"):
             self.toolbar_sim_label.setText(self._current_simulator)
         self._refresh_run_plan()
+        self._simenv_autosave_suspended = was_suspended
 
     def _load_simenv_view(self) -> None:
         data = self.db.load_view(self.library, self.cell, "simenv")
@@ -4631,6 +5328,7 @@ class ADEWindow(QMainWindow):
             self.session_badge.setText("Session: saved view")
             self.statusBar().showMessage("Loaded saved SimENV view", 3000)
         except Exception as exc:
+            self._simenv_autosave_suspended = False
             self._log(f"Could not load saved SimENV view: {exc}")
 
     def _on_save_view(self):
@@ -4677,8 +5375,12 @@ class ADEWindow(QMainWindow):
         with open(path) as f:
             setup = json.load(f)
 
-        self._apply_simenv_setup(setup)
-        self._log(f"Imported SimENV setup from {path}")
+        try:
+            self._apply_simenv_setup(setup)
+            self._log(f"Imported SimENV setup from {path}")
+        except Exception as exc:
+            self._simenv_autosave_suspended = False
+            QMessageBox.critical(self, "Import SimENV Setup", f"Could not import setup:\n{exc}")
 
 
 

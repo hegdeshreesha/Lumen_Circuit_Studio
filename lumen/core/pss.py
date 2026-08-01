@@ -182,6 +182,8 @@ def build_pss_statement(values: Mapping, command: str = ".PSS") -> str:
         parts.append("PSS_ADAPTIVE=YES")
     if _option_enabled(values, "Continuation", "continuation", "PSSContinuation", "pss_continuation"):
         parts.append("PSS_CONTINUATION=YES")
+    if _option_enabled(values, "UseIC", "Use Initial Conditions", "use_ic", "pss_use_ic"):
+        parts.append("USE_INITIAL_CONDITIONS=YES")
     _append_value_option(
         parts,
         "PSS_CONTINUATION_STEPS",

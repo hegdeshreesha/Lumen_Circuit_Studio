@@ -220,7 +220,6 @@ class LumenMainWindow(QMainWindow):
         # Simulation menu
         sim_menu = menubar.addMenu("&Simulation")
         sim_menu.addAction(self.act_netlist)
-        sim_menu.addAction(self.act_simulate)
         sim_menu.addSeparator()
         sim_menu.addAction(self.act_ade)
 
@@ -275,7 +274,6 @@ class LumenMainWindow(QMainWindow):
         sim_tb = QToolBar("Simulation")
         sim_tb.setIconSize(QSize(20, 20))
         sim_tb.addAction(self.act_netlist)
-        sim_tb.addAction(self.act_simulate)
         self.addToolBar(sim_tb)
 
     # ── Dock Panels ───────────────────────────────────────────
