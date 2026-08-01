@@ -752,13 +752,6 @@ class PDKRegistry:
     def _attach_builtin_model_files(self, pdk: PDKInfo) -> None:
         """Attach locally discovered model files to built-in PDK metadata."""
         candidates = []
-        env_root = os.environ.get("PDK_ROOT", "") or os.environ.get("PDK_DIR", "")
-        if env_root:
-            candidates.append(Path(env_root))
-
-        if pdk.root_path:
-            candidates.append(Path(pdk.root_path))
-
         workspace_root = Path(self.workspace).resolve() if self.workspace else Path.cwd().resolve()
         eda_root = workspace_root.parent if workspace_root.name.lower() == "lumencircuitstudio" else Path("C:/EDA")
         if pdk.name == "ihp_sg13g2":
@@ -788,6 +781,13 @@ class PDKRegistry:
                 eda_root / "gf180mcu-pdk",
                 eda_root / "gf180mcu",
             ])
+
+        if pdk.root_path:
+            candidates.append(Path(pdk.root_path))
+
+        env_root = os.environ.get("PDK_ROOT", "") or os.environ.get("PDK_DIR", "")
+        if env_root:
+            candidates.append(Path(env_root))
 
         for root in candidates:
             root = self._normalize_builtin_root(pdk.name, root)
