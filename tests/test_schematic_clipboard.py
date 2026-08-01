@@ -10,6 +10,7 @@ try:
 
     from lumen.core.database import LibraryDatabase
     from lumen.gui.schematic_editor import (
+        InstanceItem,
         NetLabelItem,
         SchematicEditor,
         WireItem,
@@ -107,6 +108,65 @@ class SchematicClipboardTest(unittest.TestCase):
             self.assertEqual(left.net_name, "VIN")
             self.assertEqual(right.net_name, "VIN")
             self.assertEqual(len(editor.junction_dots), 0)
+
+    def test_instance_refresh_keeps_position_and_transform(self):
+        _ = _app()
+        symbol = {
+            "name": "sg13_lv_nmos",
+            "library": "pdk:ihp_sg13g2",
+            "parameters": [{"name": "w", "default": "0.5u"}],
+            "shapes": [{"type": "text", "text": "w=@w", "x": 0, "y": 0}],
+            "pins": [],
+        }
+        inst = InstanceItem(symbol, "M1", 120, -40, {"w": "0.5u"})
+        inst.setRotation(90)
+        inst.parameters["w"] = "2u"
+        inst.refresh_graphics()
+
+        self.assertEqual(inst.pos().x(), 120)
+        self.assertEqual(inst.pos().y(), -40)
+        self.assertEqual(inst.rotation(), 90)
+
+    def test_property_edit_saves_updated_instance_params(self):
+        _ = _app()
+
+        class FakePropertyEditor:
+            def show_properties(self, _name, _props, callback=None):
+                self.callback = callback
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = LibraryDatabase(tmp)
+            db.save_view("work", "res", "symbol", {
+                "type": "symbol",
+                "name": "res",
+                "library": "work",
+                "parameters": [{"name": "R", "default": "1k"}],
+                "shapes": [{"type": "text", "text": "R=@R", "x": 0, "y": 0}],
+                "pins": [],
+            })
+            db.save_view("work", "top", "schematic", {
+                "type": "schematic",
+                "name": "top",
+                "library": "work",
+                "instances": [{
+                    "name": "R1", "library": "work", "cell": "res",
+                    "x": 30, "y": 40, "params": {"R": "1k"},
+                }],
+                "wires": [],
+                "labels": [],
+                "pins": [],
+            })
+            editor = SchematicEditor(db, "work", "top", "schematic")
+            editor.prop_editor = FakePropertyEditor()
+            inst = editor.instances[0]
+
+            editor._show_instance_properties(inst)
+            editor.prop_editor.callback("R", "2k")
+
+            saved = db.load_view("work", "top", "schematic")
+            self.assertEqual(saved["instances"][0]["params"]["R"], "2k")
+            self.assertEqual(saved["instances"][0]["x"], 30)
+            self.assertEqual(saved["instances"][0]["y"], 40)
 
 
 if __name__ == "__main__":

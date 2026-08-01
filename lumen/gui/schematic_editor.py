@@ -440,7 +440,13 @@ class InstanceItem(QGraphicsItemGroup):
     def refresh_graphics(self):
         """Refresh symbol text/labels after parameter changes."""
         was_selected = self.isSelected()
+        pos = QPointF(self.pos())
+        rotation = self.rotation()
+        transform = QTransform(self.transform())
         self._build_graphics()
+        self.setTransform(transform)
+        self.setRotation(rotation)
+        self.setPos(pos)
         self.setSelected(was_selected)
         self.update()
 
@@ -2362,6 +2368,7 @@ class SchematicEditor(QWidget):
                 if key in inst.parameters:
                     inst.parameters[key] = value
                     inst.refresh_graphics()
+                    self.save()
                     self.clear_dc_annotations()
                     self.redraw()
                     if hasattr(main_win, "_dc_op_waveforms"):
