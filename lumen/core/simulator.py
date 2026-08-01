@@ -1343,6 +1343,9 @@ class SimulatorBridge:
         netlist, sanitize_note = self._sanitize_gspice_netlist(netlist)
         if sanitize_note:
             notes.append(sanitize_note)
+        netlist, ihp_note = self._ensure_ihp_model_libraries(netlist)
+        if ihp_note:
+            notes.append(ihp_note)
         netlist, method_note = self._stabilize_gspice_psp_uic_method(netlist)
         if method_note:
             notes.append(method_note)
@@ -1411,6 +1414,63 @@ class SimulatorBridge:
         if updated == text:
             return text, ""
         return updated, "[GSPICE AC] Added .OP before .AC so AC is explicitly biased from the DC operating point."
+
+    def _ensure_ihp_model_libraries(self, netlist: str) -> tuple[str, str]:
+        """Insert local IHP model wrappers when a deck has IHP instances but no PDK libs."""
+        text = str(netlist or "")
+        if re.search(r"(?im)^\s*\.LIB\s+\"?[^\n\"]*ihp-sg13g2[\\/]", text):
+            return text, ""
+        if not re.search(r"(?i)\b(?:sg13_|npn13g2|pnpmpa|rppd|rsil|rhigh|cmim|cap_|schottky_nbl1)\w*\b", text):
+            return text, ""
+
+        root = self._ihp_model_root()
+        if not root:
+            return text, ""
+
+        wanted = self._ihp_required_model_libs(text)
+        lib_lines = []
+        for filename, section in wanted:
+            path = os.path.join(root, "libs.tech", "ngspice", "models", filename)
+            if os.path.isfile(path):
+                lib_lines.append(f'.LIB "{path}" {section}')
+        stdcell_path = os.path.join(root, "libs.ref", "sg13g2_stdcell", "spice", "sg13g2_stdcell.spice")
+        if re.search(r"(?i)\bsg13g2_", text) and os.path.isfile(stdcell_path):
+            lib_lines.append(f'.INCLUDE "{stdcell_path}"')
+        if not lib_lines:
+            return text, ""
+
+        updated = self._insert_after_header_comments(text, "\n".join(lib_lines))
+        return updated, f"[GSPICE IHP] Added {len(lib_lines)} local IHP model include(s) for placed PDK devices."
+
+    def _ihp_model_root(self) -> str:
+        for root in self._ihp_pdk_roots():
+            model_dir = os.path.join(root, "libs.tech", "ngspice", "models")
+            if os.path.isdir(model_dir):
+                return root
+        return ""
+
+    def _ihp_required_model_libs(self, netlist: str) -> list[tuple[str, str]]:
+        text = str(netlist or "").lower()
+        libs: list[tuple[str, str]] = []
+
+        def add(filename: str, section: str) -> None:
+            item = (filename, section)
+            if item not in libs:
+                libs.append(item)
+
+        if "sg13_lv_" in text:
+            add("cornerMOSlv.lib", "mos_tt")
+        if "sg13_hv_" in text:
+            add("cornerMOShv.lib", "mos_tt")
+        if any(token in text for token in ("rppd", "rsil", "rhigh", "ntap1", "ptap1")):
+            add("cornerRES.lib", "res_typ")
+        if any(token in text for token in ("cap_", "cmim", "svaricap")):
+            add("cornerCAP.lib", "cap_typ")
+        if any(token in text for token in ("diode", "dantenna", "dpantenna", "schottky", "isolbox")):
+            add("cornerDIO.lib", "dio_tt")
+        if any(token in text for token in ("npn13g2", "pnpmpa")):
+            add("cornerHBT.lib", "hbt_typ")
+        return libs
 
     def _prepare_netlist_for_xyce(self, netlist: str) -> tuple[str, list[str]]:
         """Make simple decks friendlier to Xyce without hiding model incompatibility."""
@@ -1541,6 +1601,12 @@ class SimulatorBridge:
                     f"{reason} Select GSPICE for this run, or install/build an Ngspice binary "
                     "with working OpenVAF/OSDI support."
                 )
+        elif self.simulator == "GSPICE" and uses_ihp_lv and not uses_ihp_ngspice and not self._ihp_model_root():
+            errors.append(
+                "GSPICE cannot run this IHP deck because the IHP model libraries were not found. "
+                "Run `git submodule update --init --recursive external/ihp_pdk` from the Lumen checkout, "
+                "then restart Lumen."
+            )
         return errors
 
     def _prepare_command_line_rules(self, netlist: str) -> list[str]:

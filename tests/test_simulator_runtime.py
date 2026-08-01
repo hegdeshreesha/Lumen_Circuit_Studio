@@ -142,6 +142,20 @@ class SimulatorRuntimeManagerTest(unittest.TestCase):
         self.assertIn(".OPTIONS RELTOL=1e-4 METHOD=BE", prepared)
         self.assertTrue(any("METHOD=BE selected" in note for note in notes))
 
+    def test_gspice_prepare_adds_ihp_model_library_for_naked_pdk_deck(self):
+        bridge = SimulatorBridge("GSPICE", exe_path="gspice")
+        prepared, notes = bridge._prepare_netlist_for_simulator(
+            "* inverter\n"
+            "XM1 out in vdd vdd sg13_lv_pmos l=0.13u w=0.15u\n"
+            "XM2 out in 0 0 sg13_lv_nmos l=0.13u w=0.15u\n"
+            ".TRAN 1n 1u\n"
+            ".END\n"
+        )
+        if bridge._ihp_model_root():
+            self.assertIn("cornerMOSlv.lib", prepared)
+            self.assertIn("mos_tt", prepared)
+            self.assertTrue(any("local IHP model" in note for note in notes))
+
     def test_gspice_crash_safe_keeps_subcircuit_instances(self):
         bridge = SimulatorBridge("GSPICE", exe_path="gspice")
         safe, notes = bridge._build_crash_safe_netlist(
