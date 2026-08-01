@@ -20,6 +20,8 @@ from lumen.gui.branding import apply_window_branding
 class PDKManagerWindow(QMainWindow):
     """PDK Manager — browse and select process design kits."""
 
+    HIDDEN_PDKS = {"sky130", "gf180mcu"}
+
     CATEGORY_ICONS = {
         "MOSFET": "⊞", "Resistor": "⏚", "Capacitor": "⊟",
         "Diode": "◮", "BJT": "⊳", "Inductor": "∿",
@@ -157,7 +159,11 @@ class PDKManagerWindow(QMainWindow):
         self.pdk_combo.clear()
         active = self.registry.get_active_name()
         select_idx = 0
-        for i, pdk in enumerate(self.registry.get_all_pdks()):
+        pdks = [
+            pdk for pdk in self.registry.get_all_pdks()
+            if pdk.name not in self.HIDDEN_PDKS
+        ]
+        for i, pdk in enumerate(pdks):
             status = "✓" if pdk.installed else "○"
             self.pdk_combo.addItem(
                 f"{status} {pdk.display_name} ({pdk.node})", pdk.name)
@@ -167,7 +173,7 @@ class PDKManagerWindow(QMainWindow):
         self.pdk_combo.blockSignals(False)
         self._on_pdk_changed(select_idx)
 
-        count = len(self.registry.get_all_pdks())
+        count = len(pdks)
         self.status_label.setText(
             f"{count} PDKs available | Active: {active or 'None'}")
 
