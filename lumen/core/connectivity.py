@@ -54,10 +54,17 @@ class Junction:
     pin_name: Optional[str] = None
     pin_instance: Optional[str] = None
     pin_library: Optional[str] = None
+    pin_connections: list[dict] = field(default_factory=list)
 
     def __post_init__(self):
         self.x = _coerce_float(self.x)
         self.y = _coerce_float(self.y)
+        if self.is_pin and self.pin_name and self.pin_instance and not self.pin_connections:
+            self.pin_connections.append({
+                "instance": self.pin_instance,
+                "pin": self.pin_name,
+                "library": self.pin_library,
+            })
 
 
 @dataclass
@@ -177,9 +184,7 @@ class ConnectivityEngine:
             x, y = self._as_coord(pin.get("x", 0)), self._as_coord(pin.get("y", 0))
             jid = self._get_or_create_wire_junction(x, y)
             self.junctions[jid].net_name = str(pin.get("name", "")).strip()
-            self.junctions[jid].is_pin = True
-            self.junctions[jid].pin_name = pin.get("name", "")
-            self.junctions[jid].pin_instance = "__top__"
+            self._add_pin_to_junction(jid, "__top__", pin.get("name", ""), None)
 
         # Step 3: Process instance pins - connect to wires
         for inst in schematic_data.get("instances", []):
@@ -200,17 +205,13 @@ class ConnectivityEngine:
                 # GND pin is at offset (0, -10)
                 jid = self._get_or_create_wire_junction(ix, iy - 10)
                 self.junctions[jid].net_name = "0"
-                self.junctions[jid].is_pin = True
-                self.junctions[jid].pin_name = "gnd"
-                self.junctions[jid].pin_instance = inst.get("name", "gnd")
+                self._add_pin_to_junction(jid, inst.get("name", "gnd"), "gnd", None)
             elif cell_name == "vdd":
                 ix, iy = self._as_coord(inst.get("x", 0)), self._as_coord(inst.get("y", 0))
                 # VDD pin is at offset (0, +10)
                 jid = self._get_or_create_wire_junction(ix, iy + 10)
                 self.junctions[jid].net_name = "VDD"
-                self.junctions[jid].is_pin = True
-                self.junctions[jid].pin_name = "vdd"
-                self.junctions[jid].pin_instance = inst.get("name", "vdd")
+                self._add_pin_to_junction(jid, inst.get("name", "vdd"), "vdd", None)
 
     def add_instance_pins(self, instance_name: str, library_name: str,
                            cell_name: str, x: float, y: float,
@@ -235,13 +236,29 @@ class ConnectivityEngine:
             # pin participates in the same electrical net.
             jid = self._get_or_create_wire_junction(px, py)
 
-            # Mark as pin
-            self.junctions[jid].is_pin = True
-            self.junctions[jid].pin_name = pin.get("name", "?")
-            self.junctions[jid].pin_instance = instance_name
-            self.junctions[jid].pin_library = library_name
+            self._add_pin_to_junction(jid, instance_name, pin.get("name", "?"), library_name)
             if pin.get("net_name"):
                 self.junctions[jid].net_name = str(pin.get("net_name")).strip()
+
+    def _add_pin_to_junction(self, jid: str, instance: object, pin: object, library: object = None) -> None:
+        """Attach a pin to a junction without overwriting other pins at that point."""
+        if jid not in self.junctions:
+            return
+        j = self.junctions[jid]
+        rec = {
+            "instance": str(instance or ""),
+            "pin": str(pin or ""),
+            "library": str(library or ""),
+        }
+        if not rec["instance"] or not rec["pin"]:
+            return
+        j.is_pin = True
+        if not j.pin_name:
+            j.pin_name = rec["pin"]
+            j.pin_instance = rec["instance"]
+            j.pin_library = rec["library"]
+        if rec not in j.pin_connections:
+            j.pin_connections.append(rec)
 
     @staticmethod
     def _pin_scene_position(x: float, y: float, pin: dict,
@@ -375,6 +392,9 @@ class ConnectivityEngine:
             j1.pin_name = j2.pin_name
             j1.pin_instance = j2.pin_instance
             j1.pin_library = j2.pin_library
+        for rec in j2.pin_connections:
+            if rec not in j1.pin_connections:
+                j1.pin_connections.append(rec)
 
         # Remove j2
         del self.junctions[jid2]
@@ -692,10 +712,15 @@ class ConnectivityEngine:
                 j = self.junctions[jid]
                 if not j.is_pin:
                     continue
-                key = f"{j.pin_instance}.{j.pin_name}"
-                net_map.setdefault(net_name, [])
-                if key not in net_map[net_name]:
-                    net_map[net_name].append(key)
+                connections = j.pin_connections or [{
+                    "instance": j.pin_instance,
+                    "pin": j.pin_name,
+                }]
+                for rec in connections:
+                    key = f"{rec.get('instance')}.{rec.get('pin')}"
+                    net_map.setdefault(net_name, [])
+                    if key not in net_map[net_name]:
+                        net_map[net_name].append(key)
 
         return net_map
 
@@ -798,13 +823,14 @@ class ConnectivityEngine:
             if j.is_pin:
                 # Check if connected to any segment
                 if not j.connected_segment_ids:
-                    floating.append({
-                        "instance": j.pin_instance,
-                        "pin": j.pin_name,
-                        "library": j.pin_library,
-                        "x": j.x,
-                        "y": j.y
-                    })
+                    for rec in j.pin_connections or [{"instance": j.pin_instance, "pin": j.pin_name, "library": j.pin_library}]:
+                        floating.append({
+                            "instance": rec.get("instance"),
+                            "pin": rec.get("pin"),
+                            "library": rec.get("library"),
+                            "x": j.x,
+                            "y": j.y
+                        })
 
         return floating
 
@@ -819,11 +845,12 @@ class ConnectivityEngine:
 
         for jid, j in self.junctions.items():
             if j.is_pin and j.net_name:
-                key = (j.pin_instance, j.pin_name)
-                if key not in pin_connections:
-                    pin_connections[key] = []
-                if j.net_name not in pin_connections[key]:
-                    pin_connections[key].append(j.net_name)
+                for rec in j.pin_connections or [{"instance": j.pin_instance, "pin": j.pin_name}]:
+                    key = (rec.get("instance"), rec.get("pin"))
+                    if key not in pin_connections:
+                        pin_connections[key] = []
+                    if j.net_name not in pin_connections[key]:
+                        pin_connections[key].append(j.net_name)
 
         for (inst, pin), nets in pin_connections.items():
             if len(nets) > 1:
@@ -840,12 +867,15 @@ class ConnectivityEngine:
         unconnected = []
         bulk_pin_names = {"B", "BULK", "B4", "4"}
         for jid, j in self.junctions.items():
-            if j.is_pin and j.pin_name and j.pin_name.upper() in bulk_pin_names:
-                if not j.connected_segment_ids:
+            if not j.is_pin or j.connected_segment_ids:
+                continue
+            for rec in j.pin_connections or [{"instance": j.pin_instance, "pin": j.pin_name, "library": j.pin_library}]:
+                pin_name = str(rec.get("pin") or "")
+                if pin_name.upper() in bulk_pin_names:
                     unconnected.append({
-                        "instance": j.pin_instance,
-                        "pin": j.pin_name,
-                        "library": j.pin_library,
+                        "instance": rec.get("instance"),
+                        "pin": pin_name,
+                        "library": rec.get("library"),
                         "x": j.x,
                         "y": j.y
                     })

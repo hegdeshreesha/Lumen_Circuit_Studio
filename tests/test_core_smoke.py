@@ -56,6 +56,21 @@ class ConnectivitySmokeTest(unittest.TestCase):
 
         self.assertEqual(engine.get_net_map(), {"VIN": ["R0.PLUS"]})
 
+    def test_multiple_pins_on_same_rail_junction_are_all_stamped(self):
+        engine = ConnectivityEngine()
+        engine.build_from_schematic({
+            "wires": [{"x1": 0, "y1": 0, "x2": 100, "y2": 0}],
+            "labels": [{"text": "VDD", "x": 0, "y": 0}],
+            "pins": [],
+            "instances": [],
+        })
+        engine.add_instance_pins(
+            "X0", "pdk:ihp_sg13g2", "sg13_lv_pmos", 40, 0,
+            [{"name": "S", "x": 0, "y": 0}, {"name": "B", "x": 0, "y": 0}],
+        )
+
+        self.assertEqual(engine.get_net_map(), {"VDD": ["X0.S", "X0.B"]})
+
     def test_top_level_pin_names_net(self):
         engine = ConnectivityEngine()
         engine.build_from_schematic({
