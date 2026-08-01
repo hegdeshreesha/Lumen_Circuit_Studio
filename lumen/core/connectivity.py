@@ -179,12 +179,12 @@ class ConnectivityEngine:
             if not label_text:
                 continue
 
-            jid = self._get_or_create_wire_junction(x, y)
+            jid = self._get_or_create_wire_junction(x, y, PIN_WIRE_SNAP_TOLERANCE)
             self.junctions[jid].net_name = label_text
 
         for pin in schematic_data.get("pins", []):
             x, y = self._as_coord(pin.get("x", 0)), self._as_coord(pin.get("y", 0))
-            jid = self._get_or_create_wire_junction(x, y)
+            jid = self._get_or_create_wire_junction(x, y, PIN_WIRE_SNAP_TOLERANCE)
             self.junctions[jid].net_name = str(pin.get("name", "")).strip()
             self._add_pin_to_junction(jid, "__top__", pin.get("name", ""), None)
 

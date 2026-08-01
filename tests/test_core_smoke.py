@@ -86,6 +86,36 @@ class ConnectivitySmokeTest(unittest.TestCase):
 
         self.assertEqual(engine.get_net_map(), {"VDD": ["X1.S"]})
 
+    def test_label_near_wire_names_visible_rail(self):
+        engine = ConnectivityEngine()
+        engine.build_from_schematic({
+            "wires": [{"x1": 0, "y1": 0, "x2": 100, "y2": 0}],
+            "labels": [{"text": "VDD", "x": 20, "y": 4}],
+            "pins": [],
+            "instances": [],
+        })
+        engine.add_instance_pins(
+            "X1", "pdk:ihp_sg13g2", "sg13_lv_pmos", 40, 2,
+            [{"name": "S", "x": 0, "y": 0}],
+        )
+
+        self.assertEqual(engine.get_net_map(), {"VDD": ["X1.S"]})
+
+    def test_top_pin_near_wire_names_visible_rail(self):
+        engine = ConnectivityEngine()
+        engine.build_from_schematic({
+            "wires": [{"x1": 0, "y1": 0, "x2": 100, "y2": 0}],
+            "labels": [],
+            "pins": [{"name": "VDD", "x": 20, "y": 4}],
+            "instances": [],
+        })
+        engine.add_instance_pins(
+            "X1", "pdk:ihp_sg13g2", "sg13_lv_pmos", 40, 2,
+            [{"name": "S", "x": 0, "y": 0}],
+        )
+
+        self.assertEqual(engine.get_net_map(), {"VDD": ["__top__.VDD", "X1.S"]})
+
     def test_top_level_pin_names_net(self):
         engine = ConnectivityEngine()
         engine.build_from_schematic({
