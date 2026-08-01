@@ -441,10 +441,10 @@ class SchematicEditorWindow(QMainWindow):
     def _create_dock_panels(self):
         # Property editor (right)
         self.prop_editor = PropertyEditorWidget(parent=self)
-        prop_dock = QDockWidget("Properties", self)
-        prop_dock.setWidget(self.prop_editor)
-        prop_dock.setMinimumWidth(220)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, prop_dock)
+        self.prop_dock = QDockWidget("Properties", self)
+        self.prop_dock.setWidget(self.prop_editor)
+        self.prop_dock.setMinimumWidth(220)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.prop_dock)
 
         # Netlist / output log (bottom)
         from PyQt6.QtGui import QFont
@@ -1465,6 +1465,7 @@ class SchematicEditorWindow(QMainWindow):
 
     def _on_object_properties(self):
         """Show properties for the currently selected object."""
+        self._show_properties_dock()
         shown = self.editor.show_selected_properties()
         if shown:
             self.prop_editor.setFocus()
@@ -1472,6 +1473,12 @@ class SchematicEditorWindow(QMainWindow):
         else:
             self.prop_editor.clear_properties()
             self.statusBar().showMessage("No object selected", 3000)
+
+    def _show_properties_dock(self):
+        dock = getattr(self, "prop_dock", None)
+        if dock is not None:
+            dock.show()
+            dock.raise_()
 
     def _on_save(self):
         self.editor.save()

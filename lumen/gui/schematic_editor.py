@@ -2362,6 +2362,8 @@ class SchematicEditor(QWidget):
         """Show properties of a selected instance in the property editor."""
         main_win = self.window()
         if hasattr(main_win, 'prop_editor'):
+            if hasattr(main_win, "_show_properties_dock"):
+                main_win._show_properties_dock()
             props = inst.get_properties()
 
             def on_change(key, value):
@@ -2398,6 +2400,8 @@ class SchematicEditor(QWidget):
         main_win = self.window()
         if not hasattr(main_win, "prop_editor"):
             return False
+        if hasattr(main_win, "_show_properties_dock"):
+            main_win._show_properties_dock()
 
         item = selected[0]
         while item.parentItem():
