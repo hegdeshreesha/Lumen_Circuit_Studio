@@ -197,12 +197,12 @@ class KLayoutCLIAdapter:
                 profile.klayout_root,
                 str(Path(profile.klayout_root) / "tech"),
             ]
-            env["KLAYOUT_PATH"] = self._join_unique_paths(klayout_paths + [env.get("KLAYOUT_PATH", "")])
+            env["KLAYOUT_PATH"] = self._join_unique_paths(klayout_paths)
             if profile.python_root:
                 python_paths = [profile.python_root]
                 if profile.pycell_api_root:
                     python_paths.append(profile.pycell_api_root)
-                env["PYTHONPATH"] = self._join_unique_paths(python_paths + [env.get("PYTHONPATH", "")])
+                env["PYTHONPATH"] = self._join_unique_paths(python_paths)
         return env
 
     def get_executable(self) -> str:
@@ -380,11 +380,7 @@ class KLayoutCLIAdapter:
         return result
 
     def _find_ihp_sg13g2_dir(self) -> Path | None:
-        env_root = os.environ.get("PDK_ROOT", "").strip()
         candidates: list[Path] = []
-        if env_root:
-            candidates.append(Path(env_root) / os.environ.get("PDK", "ihp-sg13g2"))
-            candidates.append(Path(env_root) / "ihp-sg13g2")
         repo_root = Path(__file__).resolve().parents[2]
         candidates.extend(
             [
@@ -395,6 +391,10 @@ class KLayoutCLIAdapter:
                 Path.home() / "IHP-Open-PDK" / "ihp-sg13g2",
             ]
         )
+        env_root = os.environ.get("PDK_ROOT", "").strip()
+        if env_root:
+            candidates.append(Path(env_root) / os.environ.get("PDK", "ihp-sg13g2"))
+            candidates.append(Path(env_root) / "ihp-sg13g2")
         for candidate in candidates:
             if (candidate / "libs.tech" / "klayout" / "tech" / "sg13g2.lyt").exists():
                 return candidate

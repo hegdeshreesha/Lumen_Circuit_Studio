@@ -50,10 +50,10 @@ $env:PDKPATH = $pdkPath
 $env:STD_CELL_LIBRARY = "sg13g2_stdcell"
 $env:KLAYOUT_HOME = $klayoutHome
 $env:PYTHONPYCACHEPREFIX = $pycache
-$env:KLAYOUT_PATH = (@($klayoutHome, $klayoutTech, (Join-Path $klayoutTech "tech"), $env:KLAYOUT_PATH) |
+$env:KLAYOUT_PATH = (@($klayoutHome, $klayoutTech, (Join-Path $klayoutTech "tech")) |
     Where-Object { $_ }) -join [System.IO.Path]::PathSeparator
 $env:PYTHONPATH = (@((Join-Path $klayoutTech "python"),
-    (Join-Path $klayoutTech "python\pycell4klayout-api\source\python"), $env:PYTHONPATH) |
+    (Join-Path $klayoutTech "python\pycell4klayout-api\source\python")) |
     Where-Object { $_ }) -join [System.IO.Path]::PathSeparator
 $env:Path = "$(Split-Path -Parent $KLayout)$([System.IO.Path]::PathSeparator)$env:Path"
 

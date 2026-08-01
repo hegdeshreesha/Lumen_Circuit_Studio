@@ -67,6 +67,28 @@ class KLayoutAdapterTest(unittest.TestCase):
             self.assertIn("klayout", env["KLAYOUT_PATH"].lower())
             self.assertIn(str(Path(tmp) / ".klayout"), env["KLAYOUT_PATH"])
 
+    def test_ihp_profile_ignores_conflicting_global_environment(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as fake_pdk_root:
+            fake_tech = Path(fake_pdk_root) / "ihp-sg13g2" / "libs.tech" / "klayout" / "tech"
+            fake_tech.mkdir(parents=True)
+            (fake_tech / "sg13g2.lyt").write_text("wrong", encoding="utf-8")
+
+            with patch.dict(
+                "lumen.core.klayout_adapter.os.environ",
+                {
+                    "PDK_ROOT": fake_pdk_root,
+                    "KLAYOUT_PATH": str(fake_tech),
+                    "PYTHONPATH": str(fake_tech),
+                },
+            ):
+                adapter = KLayoutCLIAdapter(tmp, runtime_manager=_FakeRuntime())
+                profile = adapter.resolve_ihp_sg13g2_profile()
+                env = adapter.build_environment(profile)
+
+            self.assertNotEqual(Path(profile.pdk_root), Path(fake_pdk_root))
+            self.assertNotIn(str(fake_tech), env["KLAYOUT_PATH"])
+            self.assertNotIn(str(fake_tech), env.get("PYTHONPATH", ""))
+
     def test_python_helper_uses_klayout_environment(self):
         with tempfile.TemporaryDirectory() as tmp:
             adapter = KLayoutCLIAdapter(tmp, runtime_manager=_FakeRuntime())
