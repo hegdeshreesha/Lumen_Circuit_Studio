@@ -694,6 +694,10 @@ class PDKRegistry:
         
         # Scan search paths
         self._scan_paths()
+
+        ihp = self._pdks.get("ihp_sg13g2")
+        if not self.get_active_pdk() and ihp and ihp.installed:
+            self._active_pdk = "ihp_sg13g2"
     
     def _build_builtin_pdk(self, name: str, info: Dict) -> PDKInfo:
         """Build a built-in PDK definition."""
@@ -705,7 +709,7 @@ class PDKRegistry:
             node=info["node"],
             description=info["description"],
             is_builtin=True,
-            installed=True,
+            installed=False,
         )
 
         # Compatibility: import full built-in device/layer/corner catalogs from legacy registry.
@@ -1397,12 +1401,14 @@ class PDKRegistry:
     def get_active_pdk(self) -> Optional[PDKInfo]:
         """Get the currently active PDK."""
         if self._active_pdk:
-            return self._pdks.get(self._active_pdk)
+            pdk = self._pdks.get(self._active_pdk)
+            return pdk if pdk and pdk.installed else None
         return None
     
     def set_active_pdk(self, name: str) -> bool:
         """Set the active PDK."""
-        if name in self._pdks:
+        pdk = self._pdks.get(name)
+        if pdk and pdk.installed:
             self._active_pdk = name
             self._save_config()
             return True
@@ -1410,7 +1416,7 @@ class PDKRegistry:
     
     def get_active_name(self) -> str:
         """Get the name of the active PDK."""
-        return self._active_pdk
+        return self._active_pdk if self.get_active_pdk() else ""
     
     def get_devices(self, pdk_name: str = "", category: DeviceCategory = None) -> List[PDKDevice]:
         """Get devices from a PDK, optionally filtered by category."""
