@@ -1,0 +1,3 @@
+[submodule "external/ihp_pdk"]
+	path = external/ihp_pdk
+	url = https://github.com/IHP-GmbH/IHP-Open-PDK.git
