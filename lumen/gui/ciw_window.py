@@ -313,7 +313,7 @@ class APWWindow(QMainWindow):
         tools_menu = menubar.addMenu("&Tools")
         tools_menu.addAction(self.act_lib_manager)
         tools_menu.addSeparator()
-        act_ade = QAction("SimENV - Simulation Environment", self)
+        act_ade = QAction("Simulation Cockpit", self)
         act_ade.triggered.connect(self._on_open_simenv_prompt)
         tools_menu.addAction(act_ade)
         tools_menu.addAction(self.act_sigview)

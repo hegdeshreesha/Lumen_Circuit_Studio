@@ -371,7 +371,7 @@ class SchematicEditorWindow(QMainWindow):
         sim_menu.addSeparator()
         sim_menu.addAction(self.act_netlist)
         sim_menu.addSeparator()
-        act_ade = QAction("SimENV - Simulation Environment", self)
+        act_ade = QAction("Simulation Cockpit", self)
         act_ade.triggered.connect(self._on_open_ade)
         sim_menu.addAction(act_ade)
         sim_menu.addSeparator()

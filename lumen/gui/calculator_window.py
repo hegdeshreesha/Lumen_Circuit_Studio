@@ -130,7 +130,7 @@ class CalculatorWindow(QDialog):
         btn_eval.clicked.connect(self._evaluate)
         act_layout.addWidget(btn_eval)
 
-        btn_push = QPushButton("Push to ADE Outputs")
+        btn_push = QPushButton("Push to Simulation Cockpit Outputs")
         btn_push.clicked.connect(self._push_to_ade)
         act_layout.addWidget(btn_push)
 
@@ -209,4 +209,4 @@ class CalculatorWindow(QDialog):
         expr = self.expr_edit.text().strip()
         if expr:
             self.expression_pushed_to_ade.emit(expr)
-            QMessageBox.information(self, "Pushed", f"Expression '{expr}' pushed to ADE Outputs.")
+            QMessageBox.information(self, "Pushed", f"Expression '{expr}' pushed to Simulation Cockpit Outputs.")

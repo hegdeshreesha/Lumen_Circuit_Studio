@@ -2509,7 +2509,7 @@ class ADEWindow(QMainWindow):
 
         title_box = QVBoxLayout()
         title_box.setSpacing(0)
-        title = QLabel("Lumen ADE")
+        title = QLabel("Simulation Cockpit")
         title.setObjectName("adeTitle")
         subtitle = QLabel(f"{self.library}/{self.cell}/simenv")
         subtitle.setObjectName("adeSubtitle")

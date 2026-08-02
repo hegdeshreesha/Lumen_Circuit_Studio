@@ -160,7 +160,7 @@ class LumenMainWindow(QMainWindow):
         self.act_simulate.setShortcut(QKeySequence("F5"))
         self.act_simulate.triggered.connect(self._on_simulate)
 
-        self.act_ade = QAction("Open SimENV...", self)
+        self.act_ade = QAction("Open Simulation Cockpit...", self)
         self.act_ade.triggered.connect(self._on_open_ade)
 
         # Hierarchy
