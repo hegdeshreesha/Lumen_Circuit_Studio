@@ -10,13 +10,13 @@ The central application window with:
 - Output/log panel (bottom)
 - Status bar
 """
-from PyQt6.QtWidgets import (
+from lumen.qt.QtWidgets import (
     QMainWindow, QDockWidget, QToolBar, QStatusBar,
     QTabWidget, QMessageBox, QFileDialog, QSplitter, QLabel,
     QWidget, QVBoxLayout, QTextEdit
 )
-from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QAction, QKeySequence
+from lumen.qt.QtCore import Qt, QSize
+from lumen.qt.QtGui import QAction, QKeySequence
 from pathlib import Path
 
 from lumen.core.database import LibraryDatabase
@@ -386,7 +386,7 @@ class LumenMainWindow(QMainWindow):
     # ── Slot Handlers ─────────────────────────────────────────
 
     def _on_new_library(self):
-        from PyQt6.QtWidgets import QInputDialog
+        from lumen.qt.QtWidgets import QInputDialog
         name, ok = QInputDialog.getText(self, "New Library", "Library name:")
         if ok and name:
             try:
@@ -397,7 +397,7 @@ class LumenMainWindow(QMainWindow):
                 QMessageBox.warning(self, "Error", str(e))
 
     def _on_new_cell(self):
-        from PyQt6.QtWidgets import QInputDialog
+        from lumen.qt.QtWidgets import QInputDialog
         libs = [lib.name for lib in self.db.get_libraries()]
         if not libs:
             QMessageBox.warning(self, "Error", "Create a library first.")
@@ -447,7 +447,7 @@ class LumenMainWindow(QMainWindow):
         if not libs:
             QMessageBox.warning(self, "Open View", "No libraries found.")
             return
-        from PyQt6.QtWidgets import QInputDialog
+        from lumen.qt.QtWidgets import QInputDialog
         lib, ok = QInputDialog.getItem(self, "Open View", "Library:", libs, 0, False)
         if not ok or not lib:
             return
@@ -477,7 +477,7 @@ class LumenMainWindow(QMainWindow):
         editor = self._current_editor()
         if not editor:
             return
-        from PyQt6.QtWidgets import QInputDialog
+        from lumen.qt.QtWidgets import QInputDialog
         if isinstance(editor, SchematicEditor):
             lib = editor.library or ""
             current = editor.cell or "untitled"

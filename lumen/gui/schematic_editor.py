@@ -13,15 +13,15 @@ import math
 import copy
 import json
 import re
-from PyQt6.QtWidgets import (
+from lumen.qt.QtWidgets import (
     QWidget, QVBoxLayout, QGraphicsView, QGraphicsScene,
     QGraphicsLineItem, QGraphicsRectItem, QGraphicsTextItem,
     QGraphicsEllipseItem, QGraphicsPathItem, QGraphicsItemGroup,
     QInputDialog, QDialog, QDialogButtonBox, QListWidget, QMenu,
     QListWidgetItem, QLabel, QHBoxLayout, QApplication, QRubberBand
 )
-from PyQt6.QtCore import Qt, QPointF, QRect, QRectF, pyqtSignal, QLineF, QTimer, QMimeData
-from PyQt6.QtGui import (
+from lumen.qt.QtCore import Qt, QPointF, QRect, QRectF, pyqtSignal, QLineF, QTimer, QMimeData
+from lumen.qt.QtGui import (
     QPen, QBrush, QColor, QPainter, QPainterPath, QFont,
     QTransform, QWheelEvent, QKeyEvent, QAction
 )

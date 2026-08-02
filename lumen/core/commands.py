@@ -187,11 +187,11 @@ class MirrorCommand(Command):
             if self.axis == 'x':
                 # Horizontal mirror: scale(-1, 1)
                 t = item.transform()
-                item.setTransform(t * __import__('PyQt6.QtGui', fromlist=['QTransform']).QTransform(-1, 0, 0, 1, 0, 0))
+                item.setTransform(t * __import__('lumen.qt.QtGui', fromlist=['QTransform']).QTransform(-1, 0, 0, 1, 0, 0))
             else:
                 # Vertical mirror: scale(1, -1)
                 t = item.transform()
-                item.setTransform(t * __import__('PyQt6.QtGui', fromlist=['QTransform']).QTransform(1, 0, 0, -1, 0, 0))
+                item.setTransform(t * __import__('lumen.qt.QtGui', fromlist=['QTransform']).QTransform(1, 0, 0, -1, 0, 0))
 
     def undo(self):
         for item in self.items:

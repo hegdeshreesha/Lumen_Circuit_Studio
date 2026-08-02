@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 
-REQUIRED_MODULES = ("PyQt6", "jsonschema", "numpy")
+REQUIRED_MODULES = ("PySide6", "jsonschema", "numpy")
 OPTIONAL_MODULES = ("pytest",)
 MIN_PYTHON = (3, 11)
 

@@ -10,7 +10,7 @@ import csv
 import math
 from pathlib import Path
 
-from PyQt6.QtWidgets import (
+from lumen.qt.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
     QTableWidget, QTableWidgetItem, QHeaderView, QComboBox,
     QLineEdit, QLabel, QPushButton, QGroupBox, QFormLayout,
@@ -19,9 +19,9 @@ from PyQt6.QtWidgets import (
     QDialog, QDialogButtonBox, QGridLayout, QScrollArea, QFrame,
     QFileDialog, QInputDialog, QProgressBar
 )
-from PyQt6.QtWidgets import QAbstractItemView, QMenu
-from PyQt6.QtCore import Qt, QSize, QUrl, QObject, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QAction, QFont, QColor, QKeySequence, QDesktopServices
+from lumen.qt.QtWidgets import QAbstractItemView, QMenu
+from lumen.qt.QtCore import Qt, QSize, QUrl, QObject, QThread, QTimer, pyqtSignal
+from lumen.qt.QtGui import QAction, QFont, QColor, QKeySequence, QDesktopServices
 
 from lumen.core.database import LibraryDatabase
 from lumen.core.netlist import NetlistGenerator, NetlistDirectives

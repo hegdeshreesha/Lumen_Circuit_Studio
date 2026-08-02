@@ -5,9 +5,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QAction
-from PyQt6.QtWidgets import (
+from lumen.qt.QtCore import Qt
+from lumen.qt.QtGui import QAction
+from lumen.qt.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QLabel,

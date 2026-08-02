@@ -5,8 +5,8 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(__file__))
 
-from PyQt6.QtWidgets import QApplication, QMainWindow
-from PyQt6.QtCore import QTimer
+from lumen.qt.QtWidgets import QApplication, QMainWindow
+from lumen.qt.QtCore import QTimer
 from lumen.core.database import LibraryDatabase
 from lumen.gui.schematic_editor import SchematicEditor, InstanceItem
 

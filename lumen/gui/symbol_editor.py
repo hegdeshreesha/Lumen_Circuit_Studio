@@ -10,7 +10,7 @@ Interactive symbol editor with:
 """
 import math
 from typing import Optional
-from PyQt6.QtWidgets import (
+from lumen.qt.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGraphicsView, QGraphicsScene,
     QGraphicsLineItem, QGraphicsRectItem, QGraphicsTextItem,
     QGraphicsEllipseItem, QGraphicsPathItem, QGraphicsItemGroup,
@@ -18,8 +18,8 @@ from PyQt6.QtWidgets import (
     QListWidgetItem, QLabel, QPushButton, QFormLayout, QLineEdit,
     QComboBox, QCheckBox, QMessageBox, QToolBar, QRubberBand
 )
-from PyQt6.QtCore import Qt, QPointF, QRect, QRectF, pyqtSignal, QLineF
-from PyQt6.QtGui import (
+from lumen.qt.QtCore import Qt, QPointF, QRect, QRectF, pyqtSignal, QLineF
+from lumen.qt.QtGui import (
     QPen, QBrush, QColor, QPainter, QPainterPath, QFont,
     QTransform, QWheelEvent, QKeyEvent, QAction, QCursor
 )

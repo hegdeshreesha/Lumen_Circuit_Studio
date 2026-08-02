@@ -3,7 +3,7 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtWidgets import QApplication
+from lumen.qt.QtWidgets import QApplication
 
 from lumen.core.ade_engine import AnalysisSetup, AnalysisType
 from lumen.core.pss import (
@@ -122,7 +122,8 @@ class PssSetupTest(unittest.TestCase):
         self.assertEqual(widget.get_values()["Mode"], PSS_MODE_OSCILLATOR)
         self.assertEqual(
             widget.get_spice_line(),
-            ".PSS 10MEG 5 OSCILLATOR=YES TSTAB=1u PSS_ADAPTIVE=YES PSS_CONTINUATION=YES USE_INITIAL_CONDITIONS=YES",
+            ".PSS 10MEG 5 OSCILLATOR=YES TSTAB=1u PSS_ADAPTIVE=YES PSS_CONTINUATION=YES "
+            "USE_INITIAL_CONDITIONS=YES MAX_PSS_ITER=50",
         )
 
     def test_form_exposes_advanced_pss_options(self):

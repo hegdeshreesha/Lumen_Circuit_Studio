@@ -7,13 +7,13 @@ The main hub window, analogous to Cadence Virtuoso's APW.
 - Output log for messages
 - Manages lifecycle of Library Manager, Schematic Editors, etc.
 """
-from PyQt6.QtWidgets import (
+from lumen.qt.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTextEdit, QLineEdit, QLabel, QStatusBar, QMessageBox, QApplication,
     QProgressDialog, QInputDialog, QFileDialog
 )
-from PyQt6.QtCore import Qt, QSize, QThread, QTimer
-from PyQt6.QtGui import QAction, QActionGroup, QKeySequence, QFont, QTextCursor
+from lumen.qt.QtCore import Qt, QSize, QThread, QTimer
+from lumen.qt.QtGui import QAction, QActionGroup, QKeySequence, QFont, QTextCursor
 
 import os
 from pathlib import Path
@@ -704,7 +704,7 @@ class APWWindow(QMainWindow):
                 self.log(f"  {line}")
 
     def _on_new_library(self):
-        from PyQt6.QtWidgets import QInputDialog
+        from lumen.qt.QtWidgets import QInputDialog
         name, ok = QInputDialog.getText(self, "New Library", "Library name:")
         if ok and name:
             try:
@@ -804,7 +804,7 @@ class APWWindow(QMainWindow):
             )
 
     def _on_open_simenv_prompt(self):
-        from PyQt6.QtWidgets import QInputDialog
+        from lumen.qt.QtWidgets import QInputDialog
         libs = [l.name for l in self.db.get_libraries()]
         if not libs:
             QMessageBox.warning(self, "Error", "No libraries found.")
@@ -821,7 +821,7 @@ class APWWindow(QMainWindow):
             self.open_ade(lib, cell)
 
     def _on_open_layout_prompt(self):
-        from PyQt6.QtWidgets import QInputDialog
+        from lumen.qt.QtWidgets import QInputDialog
         ok, msg = self.layout_service.ensure_runtime(auto_install=False)
         if not ok:
             choice = QMessageBox.question(
@@ -911,7 +911,7 @@ class APWWindow(QMainWindow):
             QMessageBox.warning(self, "Open Layout Failed", result.message)
 
     def _on_klayout_runtime(self):
-        from PyQt6.QtWidgets import QInputDialog
+        from lumen.qt.QtWidgets import QInputDialog
 
         summary = self.layout_service.runtime_summary()
         discovered = summary.get("discovered", [])

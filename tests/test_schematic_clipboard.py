@@ -7,7 +7,7 @@ from types import SimpleNamespace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PyQt6.QtWidgets import QApplication
+    from lumen.qt.QtWidgets import QApplication
 
     from lumen.core.database import LibraryDatabase
     from lumen.core.xschem_symbol_import import XschemSymbolParser
@@ -18,7 +18,7 @@ try:
         WireItem,
     )
 except ModuleNotFoundError as exc:
-    if exc.name == "PyQt6":
+    if exc.name in {"PySide6", "lumen.qt"}:
         QApplication = None
         LibraryDatabase = None
         NetLabelItem = None
@@ -37,7 +37,7 @@ def _app():
     return QApplication.instance() or QApplication([])
 
 
-@unittest.skipUnless(HAS_QT, "PyQt6 is not installed in this Python environment")
+@unittest.skipUnless(HAS_QT, "PySide6 is not installed in this Python environment")
 class SchematicClipboardTest(unittest.TestCase):
     def test_copy_paste_between_schematic_editors(self):
         app = _app()
@@ -146,6 +146,7 @@ class SchematicClipboardTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             db = LibraryDatabase(tmp)
+            db.create_library("work")
             db.save_view("work", "res", "symbol", {
                 "type": "symbol",
                 "name": "res",

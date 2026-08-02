@@ -3,11 +3,11 @@ Lumen Circuit Studio — Property Editor Widget
 
 Displays and edits properties of selected schematic components.
 """
-from PyQt6.QtWidgets import (
+from lumen.qt.QtWidgets import (
     QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem,
     QLabel, QHeaderView
 )
-from PyQt6.QtCore import Qt
+from lumen.qt.QtCore import Qt
 
 
 class PropertyEditorWidget(QWidget):

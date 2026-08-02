@@ -4,14 +4,14 @@ Lumen Circuit Studio — PDK Manager Window
 Virtuoso-style PDK browser and configuration. Select active PDK,
 browse devices, layers, corners, and install/configure PDK data.
 """
-from PyQt6.QtWidgets import (
+from lumen.qt.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QTableWidget, QTableWidgetItem, QHeaderView, QTabWidget,
     QLabel, QPushButton, QStatusBar, QToolBar, QGroupBox,
     QTreeWidget, QTreeWidgetItem, QMessageBox, QComboBox
 )
-from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QAction, QColor, QBrush, QFont
+from lumen.qt.QtCore import Qt, QSize
+from lumen.qt.QtGui import QAction, QColor, QBrush, QFont
 
 from lumen.core.pdk_unified import PDKRegistry, PDKInfo
 from lumen.gui.branding import apply_window_branding

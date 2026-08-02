@@ -28,8 +28,8 @@ except ImportError:
     HAS_NUMPY = False
     np = None
 
-from PyQt6.QtCore import Qt, QPoint, QPointF, QRectF, QSize, pyqtSignal
-from PyQt6.QtGui import (
+from lumen.qt.QtCore import Qt, QPoint, QPointF, QRectF, QSize, pyqtSignal
+from lumen.qt.QtGui import (
     QAction,
     QPainter,
     QPen,
@@ -40,7 +40,7 @@ from PyQt6.QtGui import (
     QKeySequence,
     QWheelEvent,
 )
-from PyQt6.QtWidgets import (
+from lumen.qt.QtWidgets import (
     QMainWindow,
     QWidget,
     QVBoxLayout,

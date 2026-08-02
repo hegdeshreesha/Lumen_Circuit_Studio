@@ -64,6 +64,6 @@ Lumen Circuit Studio source code is licensed under the Apache License 2.0. See
 Third-party PDKs, model files, helper scripts, and Python packages keep their
 own licenses. See `THIRD_PARTY_NOTICES.md`.
 
-Note: the current GUI dependency is PyQt6, which is GPLv3/commercial licensed.
-For Apache-only binary distribution, use a commercial PyQt license or port the
-GUI binding layer to an LGPL/commercial Qt binding such as PySide6.
+Note: the GUI uses PySide6, which is available under LGPL/commercial licensing.
+Apache-only source distribution is separate from the Qt runtime license terms;
+preserve the PySide6/Qt notices when distributing binary bundles.

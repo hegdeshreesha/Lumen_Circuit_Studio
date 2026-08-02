@@ -1,7 +1,7 @@
 """Small generated toolbar icons for the editor UI."""
 
-from PyQt6.QtCore import Qt, QRectF
-from PyQt6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
+from lumen.qt.QtCore import Qt, QRectF
+from lumen.qt.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
 
 
 ICON_COLOR = QColor("#36b8d0")

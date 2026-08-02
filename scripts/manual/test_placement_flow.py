@@ -5,7 +5,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(__file__))
 
-from PyQt6.QtWidgets import QApplication
+from lumen.qt.QtWidgets import QApplication
 from lumen.core.database import LibraryDatabase
 from lumen.gui.schematic_editor import SchematicEditor, InstanceBrowserDialog
 

@@ -3,12 +3,12 @@ Lumen Circuit Studio - Symbol Editor Window
 
 Standalone shell for editing symbol views.
 """
-from PyQt6.QtWidgets import (
+from lumen.qt.QtWidgets import (
     QMainWindow, QStatusBar, QLabel, QToolBar, QMessageBox, QInputDialog,
     QFileDialog
 )
-from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QAction, QKeySequence
+from lumen.qt.QtCore import Qt, QSize
+from lumen.qt.QtGui import QAction, QKeySequence
 from pathlib import Path
 
 from lumen.core.database import LibraryDatabase

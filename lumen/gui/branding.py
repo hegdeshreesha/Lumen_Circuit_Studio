@@ -2,9 +2,9 @@
 
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QIcon, QPixmap
-from PyQt6.QtWidgets import QLabel
+from lumen.qt.QtCore import Qt
+from lumen.qt.QtGui import QIcon, QPixmap
+from lumen.qt.QtWidgets import QLabel
 
 
 LOGO_PATH = Path(__file__).resolve().parent.parent / "assets" / "logo.png"

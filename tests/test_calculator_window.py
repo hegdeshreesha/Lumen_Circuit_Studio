@@ -1,6 +1,6 @@
 import unittest
 import sys
-from PyQt6.QtWidgets import QApplication
+from lumen.qt.QtWidgets import QApplication
 from lumen.gui.calculator_window import CalculatorWindow
 
 app = QApplication.instance() or QApplication(sys.argv)

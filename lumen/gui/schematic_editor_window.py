@@ -4,13 +4,13 @@ Lumen Circuit Studio — Schematic Editor Window
 Standalone schematic editor window with its own menu bar,
 toolbars, property panel, and canvas. Opens one per design.
 """
-from PyQt6.QtWidgets import (
+from lumen.qt.QtWidgets import (
     QMainWindow, QWidget, QDockWidget, QToolBar,
     QStatusBar, QLabel, QMessageBox, QTextEdit, QInputDialog, QFileDialog,
     QTabWidget, QApplication, QProgressDialog
 )
-from PyQt6.QtCore import Qt, QSize, QThread, QTimer, QPointF
-from PyQt6.QtGui import QAction, QKeySequence
+from lumen.qt.QtCore import Qt, QSize, QThread, QTimer, QPointF
+from lumen.qt.QtGui import QAction, QKeySequence
 import json
 import math
 import re
@@ -447,7 +447,7 @@ class SchematicEditorWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.prop_dock)
 
         # Netlist / output log (bottom)
-        from PyQt6.QtGui import QFont
+        from lumen.qt.QtGui import QFont
         self.netlist_view = QTextEdit()
         self.netlist_view.setReadOnly(True)
         self.netlist_view.setFont(QFont("Consolas", 9))
@@ -665,8 +665,8 @@ class SchematicEditorWindow(QMainWindow):
             )
             return
 
-        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QTableWidget, QTableWidgetItem
-        from PyQt6.QtGui import QBrush, QColor
+        from lumen.qt.QtWidgets import QDialog, QVBoxLayout, QTableWidget, QTableWidgetItem
+        from lumen.qt.QtGui import QBrush, QColor
 
         dialog = QDialog(self)
         dialog.setWindowTitle("IHP SG13G2 Layer Palette")

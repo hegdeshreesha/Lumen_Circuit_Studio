@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtWidgets import QApplication
+from lumen.qt.QtWidgets import QApplication
 
 from lumen.core.database import LibraryDatabase
 from lumen.gui.ade_window import ADEWindow
@@ -52,7 +52,8 @@ class SimEnvGuiTest(unittest.TestCase):
 
         self.assertEqual(
             win._analysis_spice_line("PSS (Periodic Steady-State)", editor),
-            ".PSS 60M 7 OSCILLATOR=YES PSS_ADAPTIVE=YES PSS_CONTINUATION=YES USE_INITIAL_CONDITIONS=YES",
+            ".PSS 60MEG 7 OSCILLATOR=YES TSTAB_PERIODS=30 PSS_ADAPTIVE=YES "
+            "PSS_CONTINUATION=YES USE_INITIAL_CONDITIONS=YES MAX_PSS_ITER=50",
         )
 
     def test_all_save_mode_keeps_currents_explicit(self):

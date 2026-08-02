@@ -9,9 +9,9 @@ Provides an interactive GUI Calculator window matching Virtuoso ADE Calculator:
 """
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QFont
-from PyQt6.QtWidgets import (
+from lumen.qt.QtCore import Qt, pyqtSignal
+from lumen.qt.QtGui import QFont
+from lumen.qt.QtWidgets import (
     QDialog,
     QWidget,
     QVBoxLayout,

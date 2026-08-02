@@ -1,6 +1,6 @@
 """Application theme management for Lumen Circuit Studio."""
 
-from PyQt6.QtCore import QSettings
+from lumen.qt.QtCore import QSettings
 
 
 THEME_DARK = "dark"

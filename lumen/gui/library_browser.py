@@ -3,13 +3,13 @@ Lumen Circuit Studio — Library Browser Widget
 
 Tree-based library/cell/view navigator, similar to Cadence's Library Manager.
 """
-from PyQt6.QtWidgets import (
+from lumen.qt.QtWidgets import (
     QWidget, QVBoxLayout, QTreeWidget, QTreeWidgetItem,
     QLineEdit, QMenu, QMessageBox, QInputDialog, QHBoxLayout, QPushButton,
     QComboBox, QCheckBox
 )
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QAction, QColor, QBrush, QFont
+from lumen.qt.QtCore import Qt, pyqtSignal
+from lumen.qt.QtGui import QAction, QColor, QBrush, QFont
 from pathlib import Path
 
 from lumen.core.database import LibraryDatabase

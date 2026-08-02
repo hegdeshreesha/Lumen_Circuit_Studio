@@ -1,7 +1,7 @@
 import sys
 import os
-from PyQt6.QtWidgets import QApplication
-from PyQt6.QtCore import Qt
+from lumen.qt.QtWidgets import QApplication
+from lumen.qt.QtCore import Qt
 
 # Add current directory to path
 sys.path.append(os.getcwd())

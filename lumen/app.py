@@ -3,9 +3,9 @@ Lumen Circuit Studio - Application Bootstrap
 """
 import sys
 import os
-from PyQt6.QtWidgets import QApplication, QSplashScreen
-from PyQt6.QtGui import QFont, QPixmap, QColor, QPainter
-from PyQt6.QtCore import Qt, QTimer
+from lumen.qt.QtWidgets import QApplication, QSplashScreen
+from lumen.qt.QtGui import QFont, QPixmap, QColor, QPainter
+from lumen.qt.QtCore import Qt, QTimer
 from lumen.gui.branding import app_icon, logo_path
 from lumen.gui.theme import apply_theme, get_stylesheet
 

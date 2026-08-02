@@ -5,9 +5,8 @@ subtree says otherwise.
 
 ## Runtime Dependencies
 
-- PyQt6: GPLv3 or Riverbank commercial license. Do not distribute a proprietary
-  or Apache-only binary bundle with GPL PyQt6 unless you satisfy GPLv3 terms or
-  have a commercial PyQt license.
+- PySide6 / Qt for Python: LGPL/commercial license. Preserve the applicable Qt
+  notices and dynamic-linking/relinking rights when distributing binary bundles.
 - jsonschema: MIT license.
 - NumPy: BSD-style license.
 - pytest: MIT license, test dependency only.
@@ -32,4 +31,3 @@ Lumen can interoperate with external tools such as KLayout, ngspice, Xyce,
 Magic, OpenROAD, and related PDK toolchains. Those tools are not relicensed by
 Lumen; follow each upstream project's license when installing or redistributing
 them.
-

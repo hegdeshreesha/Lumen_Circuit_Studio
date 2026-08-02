@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 
-from PyQt6.QtWidgets import (
+from lumen.qt.QtWidgets import (
     QMainWindow,
     QWidget,
     QVBoxLayout,
@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QStatusBar,
 )
-from PyQt6.QtGui import QAction, QKeySequence, QFont
+from lumen.qt.QtGui import QAction, QKeySequence, QFont
 
 from lumen.core.database import LibraryDatabase
 from lumen.gui.branding import apply_window_branding

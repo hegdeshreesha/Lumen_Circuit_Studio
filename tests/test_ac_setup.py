@@ -4,7 +4,7 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtWidgets import QApplication
+from lumen.qt.QtWidgets import QApplication
 
 from lumen.core.ade_engine import AnalysisSetup, AnalysisType
 from lumen.core.database import LibraryDatabase

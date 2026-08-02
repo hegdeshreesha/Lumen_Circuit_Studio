@@ -4,14 +4,14 @@ Lumen Circuit Studio — Library Manager Window
 Standalone window for managing libraries, cells, and views.
 Analogous to Cadence's Library Manager (CDB Browser).
 """
-from PyQt6.QtWidgets import (
+from lumen.qt.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QTreeWidget, QTreeWidgetItem, QTableWidget, QTableWidgetItem,
     QLineEdit, QLabel, QPushButton, QMenu, QMenuBar, QToolBar,
     QStatusBar, QMessageBox, QInputDialog, QHeaderView, QTextEdit
 )
-from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QAction, QKeySequence, QBrush, QColor, QFont
+from lumen.qt.QtCore import Qt, QSize
+from lumen.qt.QtGui import QAction, QKeySequence, QBrush, QColor, QFont
 from pathlib import Path
 
 from lumen.core.database import LibraryDatabase
