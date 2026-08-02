@@ -64,7 +64,7 @@ ANALYSES = {
         ("Sweep", "DEC", "DEC/OCT/LIN"), ("Points", "100", "Points per decade"),
         ("Fstart", "1", "Start freq (Hz)"), ("Fstop", "10G", "Stop freq (Hz)")]},
     "Noise": {"cmd": ".NOISE", "category": "Standard", "params": [
-        ("Output", "V(out)", "Output node"), ("Source", "V1", "Input source"),
+        ("Output", "", "Required output node, for example V(OUTNET)"), ("Source", "V1", "Input source"),
         ("Sweep", "DEC", "DEC/OCT/LIN"), ("Points", "50", "Points"),
         ("Fstart", "1", "Start freq"), ("Fstop", "1G", "Stop freq")]},
     "DC Sweep": {"cmd": ".DC", "category": "Standard", "params": [
@@ -80,6 +80,7 @@ ANALYSES = {
         ("Continuation", False, "Enable GSPICE continuation for harder oscillator starts"),
         ("UseIC", False, "Use .IC entries from the Convergence tab for PSS startup"),
         ("ContinuationSteps", "", "Optional continuation step count"),
+        ("MaxPssIter", "", "Optional maximum PSS shooting iterations"),
         ("ResidualGoal", "", "Optional PSS residual goal")]},
     "Harmonic Balance": {"cmd": ".HB", "category": "RF Core", "params": [
         ("Freq", "1G", "Fundamental freq"), ("Harmonics", "7", "Num harmonics"),
@@ -92,7 +93,9 @@ ANALYSES = {
         ("Fund", "1G", "Fund freq"), ("Sidebands", "5", "Num sidebands"),
         ("Fstart", "1k", "Start freq"), ("Fstop", "100M", "Stop freq")]},
     "PNOISE (Periodic Noise)": {"cmd": ".PNOISE", "category": "RF Advanced", "params": [
-        ("Fund", "1G", "Fund freq"), ("Output", "V(out)", "Output"),
+        ("Fund", "", "Optional carrier override; blank uses converged PSS frequency"),
+        ("Output", "", "Required output node, for example V(OUTNET)"),
+        ("Points", "50", "Points per decade"),
         ("Fstart", "1k", "Start offset"), ("Fstop", "100M", "Stop offset")]},
     "HBAC": {"cmd": ".HBAC", "category": "RF Advanced", "params": [
         ("Freq", "1G", "Fund freq"), ("Fstart", "1k", "Start"),
@@ -154,6 +157,8 @@ def gspice_transient_defaults(accuracy: str = "High", stop: str = "10u") -> dict
 
 class AnalysisSetupWidget(QWidget):
     """Tab for configuring a single analysis."""
+    pick_output_requested = pyqtSignal(object)
+
     def __init__(self, analysis_name: str, parent=None):
         super().__init__(parent)
         self.analysis_name = analysis_name
@@ -191,7 +196,17 @@ class AnalysisSetupWidget(QWidget):
                     widget = QLineEdit(str(default))
                     widget.setToolTip(desc)
                     widget.setPlaceholderText(desc)
-                form.addRow(f"{name}:", widget)
+                row_widget = widget
+                if self.analysis_name in {"Noise", "PNOISE (Periodic Noise)"} and name == "Output":
+                    row_widget = QWidget()
+                    row_layout = QHBoxLayout(row_widget)
+                    row_layout.setContentsMargins(0, 0, 0, 0)
+                    row_layout.addWidget(widget, 1)
+                    pick_btn = QPushButton("Pick")
+                    pick_btn.setToolTip("Pick a voltage net from the schematic")
+                    pick_btn.clicked.connect(lambda _checked=False, w=widget: self.pick_output_requested.emit(w))
+                    row_layout.addWidget(pick_btn)
+                form.addRow(f"{name}:", row_widget)
                 self._fields[name] = widget
             layout.addWidget(group)
             if self.analysis_name == "PSS (Periodic Steady-State)":
@@ -214,6 +229,17 @@ class AnalysisSetupWidget(QWidget):
         cmd = self.info["cmd"]
         if self.analysis_name == "PSS (Periodic Steady-State)":
             return build_pss_statement(self.get_values(), cmd)
+        if self.analysis_name == "PNOISE (Periodic Noise)":
+            values = self.get_values()
+            output = str(values.get("Output", "") or "").strip()
+            if not output.upper().startswith("V("):
+                output = f"V({output})"
+            points = str(values.get("Points", "50") or "50").strip()
+            fstart = str(values.get("Fstart", "1k") or "1k").strip()
+            fstop = str(values.get("Fstop", "100M") or "100M").strip()
+            fund = str(values.get("Fund", "") or "").strip()
+            suffix = f" FUND={fund}" if fund else ""
+            return f"{cmd} {output} none DEC {points} {fstart} {fstop}{suffix}"
         parts = [cmd]
         for name, default, desc in self.info["params"]:
             w = self._fields.get(name)
@@ -268,6 +294,10 @@ class AnalysisSetupWidget(QWidget):
     def validation_errors(self) -> list[str]:
         if self.analysis_name == "PSS (Periodic Steady-State)":
             return pss_validation_errors(self.get_values())
+        if self.analysis_name in {"Noise", "PNOISE (Periodic Noise)"}:
+            output = str(self.get_values().get("Output", "") or "").strip()
+            if not output:
+                return ["Choose an output node before running noise analysis."]
         return []
 
     def _normalize_pss_form_values(self, values: dict) -> dict:
@@ -311,6 +341,10 @@ class AnalysisSetupWidget(QWidget):
             return
         if normalize_pss_mode(text) == PSS_MODE_OSCILLATOR:
             self._pss_frequency_label.setText("Frequency estimate:")
+            for name in ("Adaptive", "Continuation", "UseIC"):
+                widget = self._fields.get(name)
+                if isinstance(widget, QCheckBox):
+                    widget.setChecked(True)
         else:
             self._pss_frequency_label.setText("Fundamental frequency:")
 
@@ -725,6 +759,11 @@ class OutputsWidget(QWidget):
         add_i_btn.clicked.connect(self._on_add_current)
         hdr.addWidget(add_i_btn)
 
+        delete_btn = QPushButton("- Delete")
+        delete_btn.setToolTip("Delete selected output row(s) (Shortcut: Delete key)")
+        delete_btn.clicked.connect(self._delete_selected_rows)
+        hdr.addWidget(delete_btn)
+
         # Expression helper
         expr_combo = QComboBox()
         expr_combo.addItems(["--- Quick Expressions ---"] + self.BUILT_IN_EXPRS)
@@ -740,6 +779,10 @@ class OutputsWidget(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.table.verticalHeader().setVisible(False)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.table.setToolTip("Right-click or press Delete key to remove saved outputs.")
+        self.table.installEventFilter(self)
         self.table.itemSelectionChanged.connect(self._on_selection_changed)
         layout.addWidget(self.table)
 
@@ -762,6 +805,13 @@ class OutputsWidget(QWidget):
 
     def _add_row(self):
         self._add_entry("sig", "V(node)")
+
+    def eventFilter(self, source: QObject, event) -> bool:
+        if source is self.table and event.type() == event.Type.KeyPress:
+            if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+                self._delete_selected_rows()
+                return True
+        return super().eventFilter(source, event)
 
     def _available_targets(self) -> tuple[list[str], list[tuple[str, str]]]:
         if callable(self._target_provider):
@@ -822,6 +872,14 @@ class OutputsWidget(QWidget):
         self.table.setCellWidget(r, 2, chk)
         return r
 
+    def _delete_selected_rows(self):
+        rows = sorted({idx.row() for idx in self.table.selectedIndexes()}, reverse=True)
+        for r in rows:
+            self.table.removeRow(r)
+
+    def clear_outputs(self):
+        self.table.setRowCount(0)
+
     def _on_selection_changed(self):
         if not callable(self._visualize_hook):
             return
@@ -868,8 +926,6 @@ class OutputsWidget(QWidget):
         lines = []
         if self.chk_save_all_nodes.isChecked():
             lines.append(".SAVE ALL")
-        if self.chk_save_all_currents.isChecked():
-            lines.append(".OPTIONS SAVECURRENTS")
         for r in range(self.table.rowCount()):
             expr_item = self.table.item(r, 1)
             chk = self.table.cellWidget(r, 2)
@@ -1791,7 +1847,7 @@ class ADEWindow(QMainWindow):
     def _start_current_pick(self):
         self._start_schematic_output_pick("current")
 
-    def _start_schematic_output_pick(self, kind: str):
+    def _start_schematic_output_pick(self, kind: str, target_field=None):
         editor, editor_win = self._ensure_schematic_editor_for_pick()
         if editor is None:
             QMessageBox.information(
@@ -1801,6 +1857,7 @@ class ADEWindow(QMainWindow):
             )
             return
 
+        self._analysis_output_pick_field = target_field
         try:
             editor.output_pick_requested.disconnect(self._on_schematic_output_picked)
         except (TypeError, RuntimeError):
@@ -1812,8 +1869,12 @@ class ADEWindow(QMainWindow):
             editor_win.raise_()
             editor_win.activateWindow()
             if hasattr(editor_win, "statusBar"):
-                noun = "net for voltage" if kind == "voltage" else "terminal for current"
-                editor_win.statusBar().showMessage(f"Pick a {noun} output for SimENV", 7000)
+                if target_field is not None:
+                    message = "Pick a voltage net for the noise output"
+                else:
+                    noun = "net for voltage" if kind == "voltage" else "terminal for current"
+                    message = f"Pick a {noun} output for SimENV"
+                editor_win.statusBar().showMessage(message, 7000)
         self._log(f"Pick {'voltage net' if kind == 'voltage' else 'current terminal'} from schematic...")
 
     def _on_schematic_output_picked(self, kind: str, payload: object):
@@ -1823,6 +1884,15 @@ class ADEWindow(QMainWindow):
         if kind == "voltage":
             net = str(payload.get("net", "")).strip()
             if not net:
+                return
+            target_field = getattr(self, "_analysis_output_pick_field", None)
+            if isinstance(target_field, QLineEdit):
+                target_field.setText(f"V({net})")
+                self._analysis_output_pick_field = None
+                self._visualize_output_targets({"nets": [net], "terminals": []})
+                self._log(f"Selected noise output: V({net})")
+                self._refresh_run_plan()
+                self._save_simenv_view_silent()
                 return
             row = self.outputs_widget._add_entry(net, f"V({net})")
             self.outputs_widget.table.selectRow(row)
@@ -1990,25 +2060,40 @@ class ADEWindow(QMainWindow):
     def _on_outputs_context_menu(self, pos):
         table = self.outputs_widget.table
         row = table.rowAt(pos.y())
-        if row < 0:
-            return
-        table.selectRow(row)
-        sig = self._table_text(table, row, 0, "sig")
-        expr = self._table_text(table, row, 1, "")
         menu = QMenu(self)
+        if row < 0 and not table.selectedIndexes():
+            act_clear = QAction("Clear All Outputs", self)
+            act_clear.triggered.connect(self.outputs_widget.clear_outputs)
+            menu.addAction(act_clear)
+            menu.exec(table.viewport().mapToGlobal(pos))
+            return
+        if row >= 0:
+            table.selectRow(row)
+        active_row = row if row >= 0 else table.currentRow()
+        sig = self._table_text(table, active_row, 0, "sig")
+        expr = self._table_text(table, active_row, 1, "")
         title = QAction(sig or expr or "Output", self)
         title.setEnabled(False)
         menu.addAction(title)
         menu.addSeparator()
-        act_plot = QAction("Plot In SigView", self)
-        act_plot.triggered.connect(lambda: self._show_expression_in_sigview(expr, sig, show_calculator=False))
-        menu.addAction(act_plot)
-        act_calc = QAction("Send To Calculator", self)
-        act_calc.triggered.connect(lambda: self._show_expression_in_sigview(expr, sig, show_calculator=True))
-        menu.addAction(act_calc)
-        act_meas = QAction("Add Measurement From Output", self)
-        act_meas.triggered.connect(lambda: self._add_measurement_from_expression(expr, f"avg_{sig or row}", "AVG"))
-        menu.addAction(act_meas)
+        if expr:
+            act_plot = QAction("Plot In SigView", self)
+            act_plot.triggered.connect(lambda: self._show_expression_in_sigview(expr, sig, show_calculator=False))
+            menu.addAction(act_plot)
+            act_calc = QAction("Send To Calculator", self)
+            act_calc.triggered.connect(lambda: self._show_expression_in_sigview(expr, sig, show_calculator=True))
+            menu.addAction(act_calc)
+            act_meas = QAction("Add Measurement From Output", self)
+            act_meas.triggered.connect(lambda: self._add_measurement_from_expression(expr, f"avg_{sig or active_row}", "AVG"))
+            menu.addAction(act_meas)
+            menu.addSeparator()
+        act_delete = QAction("Delete Selected Output(s)", self)
+        act_delete.setShortcut(QKeySequence("Delete"))
+        act_delete.triggered.connect(self.outputs_widget._delete_selected_rows)
+        menu.addAction(act_delete)
+        act_clear = QAction("Clear All Outputs", self)
+        act_clear.triggered.connect(self.outputs_widget.clear_outputs)
+        menu.addAction(act_clear)
         menu.exec(table.viewport().mapToGlobal(pos))
 
     def _on_measurements_context_menu(self, pos):
@@ -3374,12 +3459,11 @@ class ADEWindow(QMainWindow):
             return []
         if mode == "all":
             lines = [".SAVE ALL"]
-            if (
-                hasattr(self, "outputs_widget")
-                and getattr(self.outputs_widget, "chk_save_all_currents", None) is not None
-                and self.outputs_widget.chk_save_all_currents.isChecked()
-            ):
-                lines.append(".OPTIONS SAVECURRENTS")
+            if hasattr(self, "outputs_widget"):
+                for spec in self._checked_output_specs():
+                    expr = str(spec.get("expression", "")).strip()
+                    if re.match(r"(?i)^I\([^)]*\)$", expr):
+                        lines.append(f".SAVE {expr}")
             return lines
         return self.outputs_widget.get_save_lines() if hasattr(self, "outputs_widget") else []
 
@@ -3441,6 +3525,7 @@ class ADEWindow(QMainWindow):
         def changed():
             self._refresh_run_plan()
             self._save_simenv_view_silent()
+        widget.pick_output_requested.connect(lambda field: self._start_schematic_output_pick("voltage", field))
         for field in getattr(widget, "_fields", {}).values():
             if isinstance(field, QCheckBox):
                 field.stateChanged.connect(lambda _state, fn=changed: fn())

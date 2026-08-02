@@ -43,6 +43,36 @@ class SimEnvGuiTest(unittest.TestCase):
 
         self.assertIn("25u", win._analysis_spice_line("Transient", editor))
 
+    def test_pss_form_can_enable_oscillator_mode(self):
+        win = self._window()
+        win._add_analysis("PSS (Periodic Steady-State)")
+
+        editor = win._analysis_tabs["PSS (Periodic Steady-State)"]
+        editor.set_values({"Mode": "Oscillator (autonomous)", "Fund": "60M", "Harmonics": "7"})
+
+        self.assertEqual(
+            win._analysis_spice_line("PSS (Periodic Steady-State)", editor),
+            ".PSS 60M 7 OSCILLATOR=YES PSS_ADAPTIVE=YES PSS_CONTINUATION=YES USE_INITIAL_CONDITIONS=YES",
+        )
+
+    def test_all_save_mode_keeps_currents_explicit(self):
+        win = self._window()
+        win.outputs_widget._add_entry("out", "V(out)")
+        win.outputs_widget._add_entry("V1.p", "I(V1)")
+
+        self.assertEqual(win._output_save_lines(), [".SAVE ALL", ".SAVE I(V1)"])
+
+    def test_outputs_can_delete_saved_voltage_and_current_rows(self):
+        win = self._window()
+        win.outputs_widget._add_entry("out", "V(out)")
+        win.outputs_widget._add_entry("X1.S", "I(X1.S)")
+
+        win.outputs_widget.table.selectAll()
+        win.outputs_widget._delete_selected_rows()
+
+        self.assertEqual(win.outputs_widget.table.rowCount(), 0)
+        self.assertEqual(win.outputs_widget.get_save_lines(), [])
+
     def test_simenv_run_cleanup_clears_stale_dc_annotations(self):
         win = self._window()
         editor = SimpleNamespace(cleared=False)

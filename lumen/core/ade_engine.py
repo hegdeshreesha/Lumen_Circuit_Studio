@@ -55,7 +55,7 @@ ANALYSIS_DEFAULTS = {
     AnalysisType.TRAN: {"step": "", "stop": "10u", "start": "0", "maxstep": "", "uic": False},
     AnalysisType.AC: {"bias_op": True, "sweep": "DEC", "points": "100", "fstart": "1", "fstop": "10G"},
     AnalysisType.DC: {"source": "V1", "start": "0", "stop": "1.8", "step": "10m"},
-    AnalysisType.NOISE: {"output": "V(out)", "source": "V1", "points": "50",
+    AnalysisType.NOISE: {"output": "", "source": "V1", "points": "50",
                          "fstart": "1", "fstop": "1G"},
     AnalysisType.PSS: {
         "mode": "driven",
@@ -72,6 +72,13 @@ ANALYSIS_DEFAULTS = {
     AnalysisType.HB: {"freq": "1G", "harmonics": "7", "maxiter": "100"},
     AnalysisType.SP: {"sweep": "LIN", "points": "201", "fstart": "100M", "fstop": "10G"},
 }
+
+
+def _format_required_voltage_output(output: str, analysis: str) -> str:
+    output = str(output or "").strip()
+    if not output:
+        raise ValueError(f"{analysis} requires an output node, for example V(OUTNET)")
+    return output if output.upper().startswith("V(") else f"V({output})"
 
 
 @dataclass
@@ -119,12 +126,12 @@ class AnalysisSetup:
             return f"{cmd} {src} {start} {stop} {step}"
 
         if self.analysis_type == AnalysisType.NOISE:
-            output = params.get("output", "V(out)")
+            output = _format_required_voltage_output(params.get("output", ""), ".NOISE")
             source = params.get("source", "V1")
             points = params.get("points", "50")
             fstart = params.get("fstart", "1")
             fstop = params.get("fstop", "1G")
-            return f"{cmd} V({output}) {source} {points} {fstart} {fstop}"
+            return f"{cmd} {output} {source} {points} {fstart} {fstop}"
 
         if self.analysis_type == AnalysisType.PSS:
             return build_pss_statement(params, cmd)
@@ -133,6 +140,15 @@ class AnalysisSetup:
             freq = params.get("freq", "1G")
             harms = params.get("harmonics", "7")
             return f"{cmd} {freq} {harms}"
+
+        if self.analysis_type == AnalysisType.PNOISE:
+            output = _format_required_voltage_output(params.get("output", ""), ".PNOISE")
+            points = params.get("points", "50")
+            fstart = params.get("fstart", "1k")
+            fstop = params.get("fstop", "100M")
+            fund = str(params.get("fund", "") or "").strip()
+            suffix = f" FUND={fund}" if fund else ""
+            return f"{cmd} {output} none DEC {points} {fstart} {fstop}{suffix}"
 
         # Fallback: key=value pairs
         parts = [cmd]

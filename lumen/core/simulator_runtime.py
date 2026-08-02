@@ -512,6 +512,7 @@ class SimulatorRuntimeManager:
         if simulator != "GSPICE":
             return []
         return [
+            r"C:\EDA\GSPICE\build\Release\gspice.exe",
             r"C:\EDA\GSPICE\build-vcpkg\Release\gspice.exe",
             r"C:\EDA\GSPICE\build-vcpkg\gspice.exe",
         ]

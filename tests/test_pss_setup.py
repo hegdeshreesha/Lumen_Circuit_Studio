@@ -40,7 +40,8 @@ class PssSetupTest(unittest.TestCase):
                     "Harmonics": "11",
                 }
             ),
-            ".PSS 800M 11 OSCILLATOR=YES",
+            ".PSS 800MEG 11 OSCILLATOR=YES TSTAB_PERIODS=30 PSS_ADAPTIVE=YES PSS_CONTINUATION=YES "
+            "USE_INITIAL_CONDITIONS=YES MAX_PSS_ITER=50",
         )
 
     def test_validation_rejects_bad_frequency_and_harmonics(self):
@@ -63,12 +64,13 @@ class PssSetupTest(unittest.TestCase):
                     "Continuation": True,
                     "UseIC": True,
                     "ContinuationSteps": "4",
+                    "MaxPssIter": "25",
                     "ResidualGoal": "0.25",
                 }
             ),
-            ".PSS 800M 11 OSCILLATOR=YES TSTAB=250n TSTAB_PERIODS=5 "
+            ".PSS 800MEG 11 OSCILLATOR=YES TSTAB=250n TSTAB_PERIODS=5 "
             "PSS_ADAPTIVE=YES PSS_CONTINUATION=YES USE_INITIAL_CONDITIONS=YES PSS_CONTINUATION_STEPS=4 "
-            "PSS_RESIDUAL_GOAL=0.25",
+            "MAX_PSS_ITER=25 PSS_RESIDUAL_GOAL=0.25",
         )
 
     def test_validation_rejects_bad_advanced_options(self):
@@ -80,17 +82,22 @@ class PssSetupTest(unittest.TestCase):
                 "Tstab": "-10n",
                 "TstabPeriods": "0",
                 "ContinuationSteps": "1.5",
+                "MaxPssIter": "0",
                 "ResidualGoal": "0",
             }
         )
-        self.assertEqual(len(errors), 4)
+        self.assertEqual(len(errors), 5)
 
     def test_engine_and_form_emit_the_same_oscillator_syntax(self):
         engine_setup = AnalysisSetup(
             AnalysisType.PSS,
             params={"mode": "oscillator", "fund": "1k", "harmonics": "3"},
         )
-        self.assertEqual(engine_setup.to_spice(), ".PSS 1k 3 OSCILLATOR=YES")
+        self.assertEqual(
+            engine_setup.to_spice(),
+            ".PSS 1k 3 OSCILLATOR=YES TSTAB_PERIODS=30 PSS_ADAPTIVE=YES PSS_CONTINUATION=YES "
+            "USE_INITIAL_CONDITIONS=YES MAX_PSS_ITER=50",
+        )
 
         widget = AnalysisSetupWidget("PSS (Periodic Steady-State)")
         widget.set_values(
@@ -113,7 +120,10 @@ class PssSetupTest(unittest.TestCase):
             {"Oscillator": True, "Fund": "10M", "Harmonics": "5", "Tstab": "1u"}
         )
         self.assertEqual(widget.get_values()["Mode"], PSS_MODE_OSCILLATOR)
-        self.assertEqual(widget.get_spice_line(), ".PSS 10M 5 OSCILLATOR=YES TSTAB=1u")
+        self.assertEqual(
+            widget.get_spice_line(),
+            ".PSS 10MEG 5 OSCILLATOR=YES TSTAB=1u PSS_ADAPTIVE=YES PSS_CONTINUATION=YES USE_INITIAL_CONDITIONS=YES",
+        )
 
     def test_form_exposes_advanced_pss_options(self):
         widget = AnalysisSetupWidget("PSS (Periodic Steady-State)")
@@ -128,6 +138,7 @@ class PssSetupTest(unittest.TestCase):
                 "Continuation": True,
                 "UseIC": True,
                 "ContinuationSteps": "2",
+                "MaxPssIter": "40",
                 "ResidualGoal": "0.5",
             }
         )
@@ -135,9 +146,21 @@ class PssSetupTest(unittest.TestCase):
             widget.get_spice_line(),
             ".PSS 2G 15 OSCILLATOR=YES TSTAB=100n TSTAB_PERIODS=3 "
             "PSS_ADAPTIVE=YES PSS_CONTINUATION=YES USE_INITIAL_CONDITIONS=YES PSS_CONTINUATION_STEPS=2 "
-            "PSS_RESIDUAL_GOAL=0.5",
+            "MAX_PSS_ITER=40 PSS_RESIDUAL_GOAL=0.5",
         )
         self.assertEqual(widget.validation_errors(), [])
+
+    def test_pnoise_form_emits_gspice_syntax(self):
+        widget = AnalysisSetupWidget("PNOISE (Periodic Noise)")
+        widget.set_values(
+            {
+                "Output": "V(OUTNET)",
+                "Points": "25",
+                "Fstart": "1k",
+                "Fstop": "10MEG",
+            }
+        )
+        self.assertEqual(widget.get_spice_line(), ".PNOISE V(OUTNET) none DEC 25 1k 10MEG")
 
 
 if __name__ == "__main__":

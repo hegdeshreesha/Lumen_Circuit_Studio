@@ -359,6 +359,7 @@ class SimulatorBridge:
         transient_stop = self._extract_transient_stop_seconds(sim_netlist)
         transient_point_estimate = self._estimate_transient_output_points(sim_netlist)
         has_ac_analysis = bool(re.search(r"(?im)^\s*\.AC\b", sim_netlist))
+        has_pnoise_analysis = bool(re.search(r"(?im)^\s*\.PNOISE\b", sim_netlist))
         has_dynamic_sources = bool(re.search(r"(?im)^\s*[VI]\S*\s+\S+\s+\S+.*\b(PULSE|SIN|PWL|EXP|SFFM)\(", sim_netlist))
         node_aliases = self._extract_gspice_node_aliases(sim_netlist) if self.simulator == "GSPICE" else {}
 
@@ -744,6 +745,17 @@ class SimulatorBridge:
                         result.waveforms = self._parse_raw(result.output_path)
                     else:
                         result.waveforms = self._parse_gspice_stdout(stdout, node_aliases)
+                    if has_pnoise_analysis and result.output_path:
+                        pnoise_path = os.path.join(
+                            os.path.dirname(result.output_path),
+                            f"{os.path.splitext(os.path.basename(result.output_path))[0]}_pnoise.raw",
+                        )
+                        if os.path.isfile(pnoise_path):
+                            if result.output_path and os.path.isfile(result.output_path):
+                                result.artifacts["pss_orbit"] = result.output_path
+                            result.artifacts["pnoise"] = pnoise_path
+                            result.output_path = pnoise_path
+                            result.waveforms = self._parse_raw(pnoise_path)
                     if not result.output_path and result.waveforms:
                         if self._write_ascii_raw_fallback(output_path, result.waveforms):
                             result.output_path = output_path
@@ -900,6 +912,7 @@ class SimulatorBridge:
         allowed_prefixes = {"R", "C", "L", "V", "I", "D", "Q", "M", "X"}
         allowed_directives = {
             ".OP", ".TRAN", ".AC", ".DC", ".NOISE",
+            ".PSS", ".HB",
             ".TEMP", ".OPTIONS", ".OPTION", ".PARAM",
             ".PRINT", ".MEASURE", ".MEAS", ".IC", ".NODESET",
             ".LIB", ".INCLUDE", ".INC", ".SAVE",
@@ -1228,7 +1241,7 @@ class SimulatorBridge:
             return False
 
         x_name = ""
-        for candidate in ("time", "frequency", "v-sweep", "sweep"):
+        for candidate in ("time", "frequency", "sample", "v-sweep", "sweep"):
             if candidate in waveforms:
                 x_name = candidate
                 break
@@ -1249,7 +1262,7 @@ class SimulatorBridge:
             return False
 
         n_points = min(len(vals) for vals in series) if series else 0
-        if n_points <= 1:
+        if n_points <= 0:
             return False
 
         try:
@@ -1262,7 +1275,7 @@ class SimulatorBridge:
                 f.write(f"No. Points: {n_points}\n")
                 f.write("Variables:\n")
                 for idx, name in enumerate(var_names):
-                    unit = "time" if idx == 0 else "voltage"
+                    unit = "time" if name == "time" else ("frequency" if "freq" in str(name).lower() else "voltage")
                     f.write(f"{idx}\t{name}\t{unit}\n")
                 f.write("Values:\n")
                 for row in range(n_points):
@@ -2158,6 +2171,17 @@ class SimulatorBridge:
         waveforms: dict[str, list[float]] = {}
         table_signal_names: list[str] = []
         for line in output.splitlines():
+            if line.startswith("PSS summary:"):
+                summary_values = {
+                    key.lower(): float(value)
+                    for key, value in re.findall(r"([A-Za-z_]+)=([-+0-9.eE]+)", line)
+                }
+                if summary_values:
+                    waveforms.setdefault("sample", []).append(0.0)
+                    for key in ("frequency", "period", "residual"):
+                        if key in summary_values:
+                            waveforms.setdefault(f"PSS_{key}", []).append(summary_values[key])
+                    continue
             if "Node " in line and "=" in line:
                 for node, value in re.findall(r"Node\s+(\d+)=([-+0-9.eE]+)V", line):
                     idx = int(node)

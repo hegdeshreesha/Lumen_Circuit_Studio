@@ -51,10 +51,13 @@ class SimulatorRuntimeManagerTest(unittest.TestCase):
             workspace = Path(tmp) / "ws"
             workspace.mkdir(parents=True, exist_ok=True)
             internal = workspace / "internal" / "gspice.exe"
+            release = workspace / "build" / "Release" / "gspice.exe"
             klu = workspace / "build-vcpkg" / "gspice.exe"
             internal.parent.mkdir(parents=True, exist_ok=True)
+            release.parent.mkdir(parents=True, exist_ok=True)
             klu.parent.mkdir(parents=True, exist_ok=True)
             internal.write_text("", encoding="utf-8")
+            release.write_text("", encoding="utf-8")
             klu.write_text("", encoding="utf-8")
 
             manager = SimulatorRuntimeManager(str(workspace))
@@ -66,7 +69,7 @@ class SimulatorRuntimeManagerTest(unittest.TestCase):
             def has_klu(path: str) -> bool:
                 return Path(path) == klu
 
-            with patch.object(manager, "_preferred_candidate_paths", return_value=[str(klu)]), \
+            with patch.object(manager, "_preferred_candidate_paths", return_value=[str(release), str(klu)]), \
                     patch.object(manager, "probe_version", return_value="GSPICE test"), \
                     patch.object(manager, "_gspice_executable_has_klu", side_effect=has_klu):
                 self.assertEqual(manager.get_active_executable("GSPICE"), str(klu))
@@ -163,12 +166,13 @@ class SimulatorRuntimeManagerTest(unittest.TestCase):
             "X1 out in vdd vdd sg13_lv_pmos l=0.5u w=0.15u\n"
             ".SAVE ALL\n"
             "C1 out 0 100f\n"
-            ".TRAN 1n 10n\n"
+            ".PSS 60M 7 OSCILLATOR=YES USE_INITIAL_CONDITIONS=YES\n"
             ".END\n"
         )
         self.assertIn('.LIB "models.lib" mos_tt', safe)
         self.assertIn("X1 out in vdd vdd sg13_lv_pmos", safe)
         self.assertIn(".SAVE ALL", safe)
+        self.assertIn(".PSS 60M 7 OSCILLATOR=YES USE_INITIAL_CONDITIONS=YES", safe)
         self.assertFalse(notes)
 
     def test_gspice_quality_rejects_stripped_or_loose_trivial_psp_transient(self):
@@ -382,6 +386,25 @@ class SimulatorRuntimeManagerTest(unittest.TestCase):
         self.assertEqual(waveforms["time"], [0.0, 1e-9])
         self.assertEqual(waveforms["V(out)"], [2.0, 0.0])
         self.assertEqual(waveforms["V(in)"], [0.0, 2.0])
+
+    def test_gspice_pss_summary_writes_one_point_raw_fallback(self):
+        bridge = SimulatorBridge("GSPICE")
+        stdout = (
+            "PSS summary: oscillator=yes autonomous=yes residual=1.2e-03 "
+            "period=1.136e-08 frequency=8.8e+07 phase_unknown=3\n"
+        )
+        waveforms = bridge._parse_gspice_stdout(stdout)
+        self.assertEqual(waveforms["sample"], [0.0])
+        self.assertEqual(waveforms["PSS_frequency"], [8.8e7])
+        self.assertEqual(waveforms["PSS_period"], [1.136e-8])
+        self.assertEqual(waveforms["PSS_residual"], [1.2e-3])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            raw_path = Path(tmp) / "pss.raw"
+        self.assertTrue(bridge._write_ascii_raw_fallback(str(raw_path), waveforms))
+        parsed = bridge._parse_raw(str(raw_path))
+        self.assertEqual(parsed["sample"], [0.0])
+        self.assertEqual(parsed["PSS_frequency"], [8.8e7])
 
 
 if __name__ == "__main__":

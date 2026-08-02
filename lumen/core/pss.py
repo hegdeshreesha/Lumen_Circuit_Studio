@@ -84,6 +84,14 @@ def _append_value_option(parts: list[str], key: str, values: Mapping, *names: st
         parts.append(f"{key}={value}")
 
 
+def _has_value(values: Mapping, *names: str) -> bool:
+    return str(_lookup(values, *names, default="") or "").strip() != ""
+
+
+def _frequency_token(value: str) -> str:
+    return re.sub(r"(?i)(\d(?:[\d.]|\.\d)*(?:e[-+]?\d+)?)m$", r"\1MEG", value.strip())
+
+
 def pss_validation_errors(values: Mapping) -> list[str]:
     """Validate the GSPICE PSS fields and return user-facing messages."""
     fundamental = _lookup(values, "Fund", "fund", default="")
@@ -136,6 +144,20 @@ def pss_validation_errors(values: Mapping) -> list[str]:
     ).strip()
     if continuation_steps and not re.fullmatch(r"[1-9]\d*", continuation_steps):
         errors.append("Continuation steps must be a positive integer when provided.")
+    max_pss_iter = str(
+        _lookup(
+            values,
+            "MaxPssIter",
+            "Max PSS Iter",
+            "max_pss_iter",
+            "max_iter",
+            "MAX_PSS_ITER",
+            default="",
+        )
+        or ""
+    ).strip()
+    if max_pss_iter and not re.fullmatch(r"[1-9]\d*", max_pss_iter):
+        errors.append("Max PSS iterations must be a positive integer when provided.")
     residual_goal = _lookup(
         values,
         "ResidualGoal",
@@ -152,7 +174,7 @@ def pss_validation_errors(values: Mapping) -> list[str]:
 
 def build_pss_statement(values: Mapping, command: str = ".PSS") -> str:
     """Build the PSS syntax supported by current GSPICE."""
-    fundamental = str(_lookup(values, "Fund", "fund", default="1G") or "1G").strip()
+    fundamental = _frequency_token(str(_lookup(values, "Fund", "fund", default="1G") or "1G"))
     harmonics = str(_lookup(values, "Harmonics", "harmonics", default="7") or "7").strip()
     mode = normalize_pss_mode(
         _lookup(
@@ -178,11 +200,16 @@ def build_pss_statement(values: Mapping, command: str = ".PSS") -> str:
         "tstab_periods",
         "pss_tstab_periods",
     )
-    if _option_enabled(values, "Adaptive", "adaptive", "PSSAdaptive", "pss_adaptive"):
+    oscillator = mode == PSS_MODE_OSCILLATOR
+    if oscillator and not _has_value(values, "Tstab", "tstab", "TSTAB", "pss_tstab") and not _has_value(
+        values, "TstabPeriods", "Tstab Periods", "tstab_periods", "pss_tstab_periods"
+    ):
+        parts.append("TSTAB_PERIODS=30")
+    if oscillator or _option_enabled(values, "Adaptive", "adaptive", "PSSAdaptive", "pss_adaptive"):
         parts.append("PSS_ADAPTIVE=YES")
-    if _option_enabled(values, "Continuation", "continuation", "PSSContinuation", "pss_continuation"):
+    if oscillator or _option_enabled(values, "Continuation", "continuation", "PSSContinuation", "pss_continuation"):
         parts.append("PSS_CONTINUATION=YES")
-    if _option_enabled(values, "UseIC", "Use Initial Conditions", "use_ic", "pss_use_ic"):
+    if oscillator or _option_enabled(values, "UseIC", "Use Initial Conditions", "use_ic", "pss_use_ic"):
         parts.append("USE_INITIAL_CONDITIONS=YES")
     _append_value_option(
         parts,
@@ -193,6 +220,19 @@ def build_pss_statement(values: Mapping, command: str = ".PSS") -> str:
         "continuation_steps",
         "pss_continuation_steps",
     )
+    if oscillator and not _has_value(values, "MaxPssIter", "Max PSS Iter", "max_pss_iter", "max_iter", "MAX_PSS_ITER"):
+        parts.append("MAX_PSS_ITER=50")
+    else:
+        _append_value_option(
+            parts,
+            "MAX_PSS_ITER",
+            values,
+            "MaxPssIter",
+            "Max PSS Iter",
+            "max_pss_iter",
+            "max_iter",
+            "MAX_PSS_ITER",
+        )
     _append_value_option(
         parts,
         "PSS_RESIDUAL_GOAL",
