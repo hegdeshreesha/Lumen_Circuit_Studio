@@ -295,9 +295,26 @@ class AnalysisSetupWidget(QWidget):
         if self.analysis_name == "PSS (Periodic Steady-State)":
             return pss_validation_errors(self.get_values())
         if self.analysis_name in {"Noise", "PNOISE (Periodic Noise)"}:
-            output = str(self.get_values().get("Output", "") or "").strip()
+            values = self.get_values()
+            output = str(values.get("Output", "") or "").strip()
             if not output:
                 return ["Choose an output node before running noise analysis."]
+            if self.analysis_name == "PNOISE (Periodic Noise)":
+                errors = []
+                points = str(values.get("Points", "") or "").strip()
+                try:
+                    if int(points) <= 0:
+                        errors.append("PNOISE points must be a positive integer.")
+                except Exception:
+                    errors.append("PNOISE points must be a positive integer.")
+                for key in ("Fstart", "Fstop"):
+                    text = str(values.get(key, "") or "").strip()
+                    try:
+                        if SimulatorBridge._parse_spice_number(text) <= 0.0:
+                            errors.append(f"PNOISE {key} must be a positive frequency.")
+                    except Exception:
+                        errors.append(f"PNOISE {key} must be a positive frequency.")
+                return errors
         return []
 
     def _normalize_pss_form_values(self, values: dict) -> dict:

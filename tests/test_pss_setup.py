@@ -163,6 +163,18 @@ class PssSetupTest(unittest.TestCase):
         )
         self.assertEqual(widget.get_spice_line(), ".PNOISE V(OUTNET) none DEC 25 1k 10MEG")
 
+    def test_pnoise_form_rejects_bad_frequency_fields(self):
+        widget = AnalysisSetupWidget("PNOISE (Periodic Noise)")
+        widget.set_values({"Output": "OUTNET", "Points": "0", "Fstart": "", "Fstop": "-1"})
+        self.assertEqual(
+            widget.validation_errors(),
+            [
+                "PNOISE points must be a positive integer.",
+                "PNOISE Fstart must be a positive frequency.",
+                "PNOISE Fstop must be a positive frequency.",
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
