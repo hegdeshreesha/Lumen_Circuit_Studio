@@ -1,7 +1,7 @@
 """
 Lumen Circuit Studio — Library Database (CDB)
 
-Manages the library/cell/view hierarchy similar to Cadence's OpenAccess.
+Manages the library/cell/view hierarchy similar to industry-standard's commercial design database.
 File-based storage using JSON for design data.
 
 Directory Structure:
@@ -71,7 +71,7 @@ class LibraryDatabase:
     Manages the library/cell/view file hierarchy.
     
     This is the central database for all design data in Lumen.
-    Equivalent to Cadence's cds.lib / OpenAccess library system.
+    Equivalent to industry-standard's cds.lib / commercial design database library system.
     """
 
     LIB_META = ".lumen_lib.json"

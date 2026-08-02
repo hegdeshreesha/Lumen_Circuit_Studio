@@ -1,14 +1,14 @@
 """
 Lumen Circuit Studio — Library Browser Widget
 
-Tree-based library/cell/view navigator, similar to Cadence's Library Manager.
+Tree-based library/cell/view navigator, similar to industry-standard's Library Manager.
 """
 from lumen.qt.QtWidgets import (
     QWidget, QVBoxLayout, QTreeWidget, QTreeWidgetItem,
     QLineEdit, QMenu, QMessageBox, QInputDialog, QHBoxLayout, QPushButton,
     QComboBox, QCheckBox
 )
-from lumen.qt.QtCore import Qt, pyqtSignal
+from lumen.qt.QtCore import Qt, Signal
 from lumen.qt.QtGui import QAction, QColor, QBrush, QFont
 from pathlib import Path
 
@@ -20,7 +20,7 @@ class LibraryBrowserWidget(QWidget):
     """Tree-based library browser dock widget."""
 
     # Signal: (library, cell, view) when user wants to open a view
-    view_open_requested = pyqtSignal(str, str, str)
+    view_open_requested = Signal(str, str, str)
 
     # Icons as Unicode characters (will be replaced with proper icons later)
     ICONS = {

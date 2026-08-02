@@ -2,7 +2,7 @@
 
 Date: 2026-07-14
 
-Scope: Lumen Circuit Studio, SigView, SimENV/APW, PDK integration, simulator backends, and GSPICE. The goal is not to copy Cadence feature-by-feature. The goal is to build a custom IC design platform that is reliable, transparent, automation-friendly, and eventually competitive with Virtuoso/ADE/Viva/Spectre-class workflows.
+Scope: Lumen Circuit Studio, SigView, SimENV/APW, PDK integration, simulator backends, and GSPICE. The goal is not to copy industry-standard feature-by-feature. The goal is to build a custom IC design platform that is reliable, transparent, automation-friendly, and eventually competitive with custom IC editor/ADE/Viva/signoff-class workflows.
 
 ## Product North Star
 
@@ -50,7 +50,7 @@ GSPICE should become a serious open simulator backend for Lumen, but it must be 
 
 ### Critical Reality
 
-Lumen is becoming a usable cockpit. GSPICE is not yet a signoff-accurate Spectre replacement. GSPICE must be treated as an actively developing simulator until validated against Ngspice/Xyce across a broad public regression suite.
+Lumen is becoming a usable cockpit. GSPICE is not yet a signoff-accurate signoff-simulator replacement. GSPICE must be treated as an actively developing simulator until validated against Ngspice/Xyce across a broad public regression suite.
 
 ## Architecture Target
 
@@ -107,7 +107,7 @@ Target: make simulator selection behave like a real rule profile.
   - `GSPICE`
   - `Ngspice`
   - `Xyce`
-  - future: Spectre-compatible export, HSPICE-compatible export
+  - future: simulator-compatible export, simulator-compatible export
 - For each backend define:
   - supported analyses
   - supported source syntax
@@ -398,9 +398,9 @@ Layout is deferred for current work, but it must be planned.
 - Lumen can run DRC/LVS/PEX for at least one open PDK flow.
 - Extracted simulations are handled as another view choice in hierarchy/config.
 
-## Phase 7: Better-Than-Cadence Differentiators
+## Phase 7: Better-Than-industry-standard Differentiators
 
-Cadence is powerful, but Lumen can win in transparency and automation.
+industry-standard is powerful, but Lumen can win in transparency and automation.
 
 ### Differentiators
 

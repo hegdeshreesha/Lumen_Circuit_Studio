@@ -1,7 +1,7 @@
 # Lumen Circuit Studio - Project Plan
 
 ## Vision
-Build a next-generation EDA tool that surpasses Cadence Virtuoso in every aspect:
+Build a next-generation EDA tool that surpasses commercial custom IC platforms in every aspect:
 - Modern, Python-based architecture
 - Schema-driven data integrity
 - Package manager-style PDK management
@@ -28,7 +28,7 @@ Build a next-generation EDA tool that surpasses Cadence Virtuoso in every aspect
 ### 1. Unified PDK Management System
 **File:** `lumen/core/pdk_unified.py`
 
-Features that **surpass Cadence CDF/technlib**:
+Features that **surpass device-parameter metadata/technlib**:
 - JSON Schema validation for PDK manifests
 - Automatic device discovery from SPICE model files (.MODEL, .SUBCKT)
 - Version pinning & lockfiles for reproducibility
@@ -57,13 +57,13 @@ Added to `LibraryDatabase`:
 - `tests/test_database.py` - 8 tests (library, cell, view operations)
 - `tests/test_core_smoke.py` - 3 tests (connectivity, symbols, database)
 
-## Architecture: Superior to Virtuoso
+## Architecture: Superior to custom IC editor
 
 ### Key Differentiators
 
-| Feature | Cadence Virtuoso | Lumen Circuit Studio |
+| Feature | commercial custom IC platforms | Lumen Circuit Studio |
 |---------|-----------------|---------------------|
-| **Data Format** | Proprietary binary (OpenAccess) | Open JSON with schemas |
+| **Data Format** | Proprietary binary (commercial design database) | Open JSON with schemas |
 | **Validation** | Post-hoc, error-prone | Runtime schema validation |
 | **PDK Management** | CDF/technlib, monolithic | Schema-driven, modular, versioned |
 | **Scripting** | SKILL (LISP-like) | Python (modern, typed) |
@@ -94,7 +94,7 @@ Added to `LibraryDatabase`:
 ├─────────────────────────────────────────────────────────────┤
 │  Backends                                                │
 │  ├─ SPICE Netlist Generator                              │
-│  ├─ NGSPICE/Xyce/HSPICE adapters                         │
+│  ├─ NGSPICE/Xyce/simulator adapters                         │
 │  ├─ KLayout (layout future)                              │
 │  └─ Xschem importer                                      │
 ├─────────────────────────────────────────────────────────────┤
@@ -234,7 +234,7 @@ Components:
 - **Language:** Python 3.14+
 - **UI Framework:** Qt6 (PySide6)
 - **Data:** JSON with JSON Schema
-- **Simulation:** NGSPICE (primary), Xyce, HSPICE compatibility
+- **Simulation:** NGSPICE (primary), Xyce, simulator compatibility
 - **Layout (Phase 2):** KLayout integration
 - **Testing:** pytest, unittest
 - **Packaging:** PyInstaller for distribution
@@ -283,7 +283,7 @@ Components:
 - [ ] No memory leaks over 8-hour continuous use
 - [ ] Documentation covers all features
 
-## Competitive Advantages Over Virtuoso
+## Competitive Advantages Over custom IC editor
 
 1. **Open Architecture**
    - No proprietary binary formats
@@ -355,7 +355,7 @@ Components:
 
 ## Conclusion
 
-Lumen Circuit Studio is positioned to become the modern alternative to Cadence Virtuoso. With its schema-driven architecture, unified PDK management, and Python-based extensibility, it offers a compelling value proposition for both individual designers and teams.
+Lumen Circuit Studio is positioned to become the modern alternative to commercial custom IC platforms. With its schema-driven architecture, unified PDK management, and Python-based extensibility, it offers a compelling value proposition for both individual designers and teams.
 
 The foundation is solid (Phase 1 complete). Now we build the ADE and schematic capture to deliver a working prototype that demonstrates the full workflow.
 

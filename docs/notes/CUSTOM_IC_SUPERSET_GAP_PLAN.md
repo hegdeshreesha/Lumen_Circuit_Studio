@@ -1,7 +1,7 @@
 # Lumen Circuit Studio: Database Gap Analysis and Improvement Plan
 
 Date: 2026-05-27  
-Scope: `lumen/core/database.py` primitive catalog, schematic component availability, and parity direction vs QUCS + Virtuoso-class workflows.
+Scope: `lumen/core/database.py` primitive catalog, schematic component availability, and parity direction vs QUCS + custom-IC-class workflows.
 
 ## 1) Current Database Inventory
 
@@ -31,7 +31,7 @@ To satisfy the immediate requirement, the database now includes QUCS-style compo
 - Digital additions:
   - Core logic gates, FF/latch set, encoders/converters, mux/demux blocks, pattern generators, comparators, adders, A2D/D2A shifters, `digital_source`
 
-## 3) Shortcomings (What Is Still Not Virtuoso-Class)
+## 3) Shortcomings (What Is Still Not Custom-IC-Class)
 
 ### A. Device Presence vs Device Fidelity
 - Most new QUCS-compatible entries are currently **symbol + parameter schema stubs**.
@@ -50,12 +50,12 @@ To satisfy the immediate requirement, the database now includes QUCS-style compo
 - Device-level LVS/DRC decks and setup are not yet integrated end-to-end by technology.
 - Multi-corner statistical signoff (MC/MMC) orchestration is still early.
 
-### E. Virtuoso-Superset Workflow Gaps
+### E. Custom-IC-Superset Workflow Gaps
 - No complete config-view / hierarchy binding flow yet.
 - No full ADE-XL equivalent for large campaign management and result DB comparisons.
 - Limited batch API consistency for enterprise-scale regression and CI.
 
-## 4) Plan to Become Better Than Virtuoso
+## 4) Plan to Become Better Than custom IC editor
 
 ## Phase 1: Functional Completion (Near-term)
 1. Implement netlist emission handlers for every new QUCS-compatible primitive.
@@ -69,7 +69,7 @@ To satisfy the immediate requirement, the database now includes QUCS-style compo
 3. Deterministic run manifests for reproducibility (seed, model hash, deck hash).
 4. Fast compare tools across runs/corners with tolerance and pass/fail rules.
 
-## Phase 3: Virtuoso-Superset UX/Automation
+## Phase 3: Custom-IC-Superset UX/Automation
 1. ADE-XL style run plans with distributed execution.
 2. Config-view/hierarchy manager with bind rules and variant control.
 3. Full SKILL-like automation layer (Python-first) with compatibility wrappers.

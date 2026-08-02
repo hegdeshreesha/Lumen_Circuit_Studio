@@ -216,7 +216,7 @@ class SchematicEditorWindow(QMainWindow):
         self.act_run_drc = self._make_action("Run DRC...", slot=self._on_run_drc)
         self.act_run_lvs = self._make_action("Run LVS...", slot=self._on_run_lvs)
 
-        # Cadence-style file/design commands
+        # industry-style file/design commands
         self.act_new_cellview = self._make_action("New Cellview...", "Ctrl+N", self._on_new_cellview)
         self.act_open_cellview = self._make_action("Open Cellview...", "Ctrl+O", self._on_open_cellview)
         self.act_print = self._make_action("Print / Plot...", "Ctrl+P", self._on_export_image)
@@ -224,7 +224,7 @@ class SchematicEditorWindow(QMainWindow):
         self.act_import_spice = self._make_action("Import SPICE...", slot=self._on_import_spice)
         self.act_import_verilog = self._make_action("Import Verilog-A...", slot=self._on_import_verilog)
 
-        # Cadence-style edit commands
+        # industry-style edit commands
         self.act_move = self._make_action("Move (M)", "M", lambda: self.editor.set_mode("select"))
         self.act_stretch = self._make_action("Stretch (S)", "S", self._on_stretch)
         self.act_duplicate = self._make_action(
@@ -235,14 +235,14 @@ class SchematicEditorWindow(QMainWindow):
         self.act_descend_edit = self._make_action("Descend Edit", "Shift+E", self._on_descend)
         self.act_return_read = self._make_action("Return Read", "Ctrl+Shift+E", self._on_return)
 
-        # Cadence-style display commands
+        # industry-style display commands
         self.act_redraw = self._make_action("Redraw", "Ctrl+R", self.editor.redraw)
         self.act_pan = self._make_action("Pan", slot=self.editor.set_pan_mode)
         self.act_display_options = self._make_action("Display Options...", slot=self._on_display_options)
         self.act_grid_options = self._make_action("Grid / Snap Options...", slot=self._on_grid_options)
         self.act_layer_palette = self._make_action("Layer Palette...", slot=self._on_layer_palette)
 
-        # Cadence-style create commands
+        # industry-style create commands
         self.act_bus = self._make_action("Bus (B)", "B", lambda: self.editor.set_mode("bus"))
         self.act_bus_tap = self._make_action("Bus Tap", slot=self._on_bus_tap)
         self.act_wire_name = self._make_action("Wire Name...", slot=self._on_wire_name)
@@ -252,7 +252,7 @@ class SchematicEditorWindow(QMainWindow):
         self.act_symbol = self._make_action(
             "Create Symbol From Cellview...", slot=self._on_create_symbol)
 
-        # Lumen extras beyond Virtuoso
+        # Lumen extras beyond custom IC editor
         self.act_quick_probe = self._make_action("Quick Probe Selected", slot=self._on_quick_probe)
         self.act_health_check = self._make_action(
             "Design Health Check", slot=self._on_health_check)
@@ -494,12 +494,12 @@ class SchematicEditorWindow(QMainWindow):
         self.mode_label.setText(f"Mode: {mode.capitalize()}")
 
     def _not_implemented(self, action_name: str):
-        """Show a clear placeholder for planned Virtuoso-parity commands."""
+        """Show a clear placeholder for planned workflow-parity commands."""
         self.statusBar().showMessage(f"{action_name}: UI command is planned", 4000)
         QMessageBox.information(
             self,
             "Command Planned",
-            f"'{action_name}' is part of the Cadence-style GUI surface.\n\n"
+            f"'{action_name}' is part of the industry-style GUI surface.\n\n"
             "The command is visible now so we can shape the workflow, but "
             "the underlying behavior still needs implementation.",
         )
@@ -1489,7 +1489,7 @@ class SchematicEditorWindow(QMainWindow):
         self.statusBar().showMessage("Saved", 3000)
 
     def _on_check_save(self):
-        """Cadence-style check-and-save with visible floating-terminal markers."""
+        """industry-style check-and-save with visible floating-terminal markers."""
         self.editor.save()
         self._dc_op_waveforms = {}
         self._dc_annotation_source = ""

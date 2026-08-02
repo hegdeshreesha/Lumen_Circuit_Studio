@@ -1,15 +1,15 @@
 """
-Lumen Circuit Studio — Cadence-like PDK & Library Manager
+Lumen Circuit Studio — industry-style PDK & Library Manager
 
-Implements a Cadence-compatible PDK and library management system:
+Implements a industry-compatible PDK and library management system:
 - PDK installation management (local download, path referencing)
-- .lib format model file support (Cadence .lib style)
+- .lib format model file support (Liberty .lib style)
 - Library path configuration (cds.lib equivalent)
 - Technology library binding per design
 - Corner-aware simulation library management
 - PDK health monitoring
 
-Inspired by Cadence's approach:
+Inspired by industry-standard's approach:
 - cds.lib → library_definitions.json
 - .lib → .lib model files (corner-based model files)
 - techfile → pdk_manifest.json with technology parameters
@@ -33,7 +33,7 @@ from datetime import datetime
 
 @dataclass
 class LibCorner:
-    """A process corner defined in a .lib file (Cadence-style)."""
+    """A process corner defined in a .lib file (industry-style)."""
     name: str
     description: str = ""
     temperature: float = 25.0
@@ -47,9 +47,9 @@ class LibCorner:
 @dataclass
 class LibFile:
     """
-    A .lib format library file (Cadence-compatible).
+    A .lib format library file (industry-compatible).
     
-    Cadence .lib format:
+    Liberty .lib format:
     ```
     library(library_name) {
         delay_model : "cmos";
@@ -69,7 +69,7 @@ class LibFile:
     """
     name: str
     path: str = ""
-    format_type: str = "spice"  # spice, veriloga, cdl, spectre
+    format_type: str = "spice"  # spice, veriloga, cdl, simulator
     corners: List[LibCorner] = field(default_factory=list)
     devices: List[Dict] = field(default_factory=list)
     checksum: str = ""
@@ -184,9 +184,9 @@ class LibFile:
 @dataclass
 class LibraryDefinition:
     """
-    A library definition equivalent to Cadence's cds.lib entries.
+    A library definition equivalent to industry-standard's cds.lib entries.
     
-    Cadence cds.lib format:
+    cds.lib-style format:
     ```
     DEFINE my_lib /path/to/library
     SOFTINCLUDE /path/to/other/libs
@@ -422,7 +422,7 @@ class PDKInstallManager:
         """
         Clone a PDK repository from a URL.
         
-        This provides automated PDK download similar to Cadence's
+        This provides automated PDK download similar to industry-standard's
         library manager where you can download PDKs from various sources.
         
         Args:
@@ -491,7 +491,7 @@ class PDKInstallManager:
 @dataclass
 class TechnologyLibrary:
     """
-    Technology library equivalent to Cadence's techfile.
+    Technology library equivalent to industry-standard's techfile.
     Contains layer definitions, design rules, and device parameters.
     """
     name: str
@@ -605,7 +605,7 @@ class PDKLibraryManager:
     def get_available_devices(self, pdk_name: str = "") -> List[Dict]:
         """
         Get all available devices from a PDK's .lib files.
-        Similar to Cadence's library browser.
+        Similar to industry-standard's library browser.
         """
         name = pdk_name or self._active_pdk
         if not name:
@@ -693,7 +693,7 @@ class PDKLibraryManager:
                                   pdk_name: str = "") -> str:
         """
         Create library definitions for a project.
-        Similar to Cadence creating a new library with technology binding.
+        Similar to industry-standard creating a new library with technology binding.
         
         Args:
             project_name: Name of the project/library

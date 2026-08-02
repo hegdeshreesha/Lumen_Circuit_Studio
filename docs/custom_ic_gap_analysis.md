@@ -1,4 +1,4 @@
-# Lumen Circuit Studio: Virtuoso-Class Gap Analysis
+# Lumen Circuit Studio: Custom-IC-Class Gap Analysis
 
 This document is a working map for turning Lumen Circuit Studio from a promising
 prototype into a competitive custom IC design environment. Layout integration is
@@ -41,7 +41,7 @@ single reliable design platform.
 
 ## PDK Management Gaps
 
-Virtuoso is strong because the PDK is not just a list of devices. Lumen currently
+custom IC editor is strong because the PDK is not just a list of devices. Lumen currently
 has catalog discovery and model parsing, but lacks a complete PDK contract.
 
 Missing or weak:
@@ -117,7 +117,7 @@ Missing or weak:
 
 Competitive target:
 
-- The schematic editor should feel more deterministic than Virtuoso: instant
+- The schematic editor should feel more deterministic than custom IC editor: instant
   connectivity highlighting, explicit net conflict markers, robust undoable
   property edits, and a validation panel that explains every issue.
 
@@ -203,7 +203,7 @@ Competitive target:
   - Merge duplicate PDK dataclasses or provide adapters to one canonical model.
   - Add PDK health checks and deterministic model/corner selection.
 
-- M3: Virtuoso-grade schematic loop
+- M3: production-grade schematic loop
   - Save rotation/mirror, ports, and property changes correctly.
   - Add check-and-save errors for floating pins, duplicate names, missing symbols,
     bad pin order, and net conflicts.
@@ -215,7 +215,7 @@ Competitive target:
   - Implement specs and pass/fail summaries.
   - Add result browser and waveform/output linking.
 
-The product goal should not be "clone Virtuoso." The sharper goal is: make the
+The product goal should not be "clone custom IC editor." The sharper goal is: make the
 custom IC loop more transparent, reproducible, scriptable, and debuggable than
-Virtuoso while keeping familiar library/cell/view workflows.
+custom IC editor while keeping familiar library/cell/view workflows.
 

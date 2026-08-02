@@ -471,7 +471,7 @@ def _gen_mosfet_symbol(dev, pdk_name):
     dev_name = str(getattr(dev, "name", "")).lower()
     is_pmos = ("pmos" in symbol_name) or ("pfet" in dev_name) or ("pmos" in dev_name)
     
-    # Virtuoso MOSFET (4-Terminal)
+    # custom IC editor MOSFET (4-Terminal)
     # Channel and gate
     s["shapes"] = [
         {"type": "line", "x1": 0, "y1": -15, "x2": 0, "y2": 15},     # channel
@@ -504,7 +504,7 @@ def _gen_mosfet_symbol(dev, pdk_name):
 
 def _gen_resistor_symbol(dev, pdk_name):
     s = _base_symbol(dev, pdk_name)
-    # Virtuoso zigzag resistor
+    # custom IC editor zigzag resistor
     s["shapes"] = [
         {"type": "line", "x1": 0, "y1": -30, "x2": 0, "y2": -16},
         {"type": "polyline", "points": [
@@ -520,7 +520,7 @@ def _gen_resistor_symbol(dev, pdk_name):
 
 def _gen_capacitor_symbol(dev, pdk_name):
     s = _base_symbol(dev, pdk_name)
-    # Virtuoso parallel plate capacitor
+    # custom IC editor parallel plate capacitor
     s["shapes"] = [
         {"type": "line", "x1": 0, "y1": -30, "x2": 0, "y2": -4},
         {"type": "line", "x1": -12, "y1": -4, "x2": 12, "y2": -4},   # top plate
@@ -536,7 +536,7 @@ def _gen_capacitor_symbol(dev, pdk_name):
 
 def _gen_diode_symbol(dev, pdk_name):
     s = _base_symbol(dev, pdk_name)
-    # Virtuoso diode
+    # custom IC editor diode
     s["shapes"] = [
         {"type": "line", "x1": 0, "y1": -30, "x2": 0, "y2": -8},
         {"type": "polygon", "points": [[-10, -8], [10, -8], [0, 8]]},  # triangle (anode)
@@ -555,7 +555,7 @@ def _gen_bjt_symbol(dev, pdk_name):
     symbol_name = str(getattr(dev, "symbol", "")).lower()
     dev_name = str(getattr(dev, "name", "")).lower()
     is_pnp = ("pnp" in symbol_name) or ("pnp" in dev_name)
-    # Virtuoso BJT
+    # custom IC editor BJT
     s["shapes"] = [
         {"type": "line", "x1": -10, "y1": -15, "x2": -10, "y2": 15},  # base bar
         {"type": "line", "x1": -30, "y1": 0, "x2": -10, "y2": 0},     # base lead
@@ -582,7 +582,7 @@ def _gen_bjt_symbol(dev, pdk_name):
 
 def _gen_inductor_symbol(dev, pdk_name):
     s = _base_symbol(dev, pdk_name)
-    # Virtuoso inductor (3 loops)
+    # custom IC editor inductor (3 loops)
     s["shapes"] = [
         {"type": "line", "x1": 0, "y1": -30, "x2": 0, "y2": -15},
         {"type": "arc", "cx": 0, "cy": -10, "rx": 5, "ry": 5, "start": -90, "span": 180},

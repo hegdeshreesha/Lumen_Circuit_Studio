@@ -20,7 +20,7 @@ from lumen.qt.QtWidgets import (
     QFileDialog, QInputDialog, QProgressBar
 )
 from lumen.qt.QtWidgets import QAbstractItemView, QMenu
-from lumen.qt.QtCore import Qt, QSize, QUrl, QObject, QThread, QTimer, pyqtSignal
+from lumen.qt.QtCore import Qt, QSize, QUrl, QObject, QThread, QTimer, Signal
 from lumen.qt.QtGui import QAction, QFont, QColor, QKeySequence, QDesktopServices
 
 from lumen.core.database import LibraryDatabase
@@ -60,7 +60,7 @@ ANALYSES = {
         ("MaxStep", "", "Optional internal timestep cap; Auto/blank lets GSPICE adapt"),
         ("UIC", False, "Use initial conditions")]},
     "AC Small-Signal": {"cmd": ".AC", "category": "Standard", "params": [
-        ("BiasOP", True, "Run from the DC operating point, Cadence-style"),
+        ("BiasOP", True, "Run from the DC operating point, industry-style"),
         ("Sweep", "DEC", "DEC/OCT/LIN"), ("Points", "100", "Points per decade"),
         ("Fstart", "1", "Start freq (Hz)"), ("Fstop", "10G", "Stop freq (Hz)")]},
     "Noise": {"cmd": ".NOISE", "category": "Standard", "params": [
@@ -157,7 +157,7 @@ def gspice_transient_defaults(accuracy: str = "High", stop: str = "10u") -> dict
 
 class AnalysisSetupWidget(QWidget):
     """Tab for configuring a single analysis."""
-    pick_output_requested = pyqtSignal(object)
+    pick_output_requested = Signal(object)
 
     def __init__(self, analysis_name: str, parent=None):
         super().__init__(parent)
@@ -594,10 +594,10 @@ class SimulationMonitorWindow(QDialog):
 class SimEnvSimulationWorker(QObject):
     """Run simulator jobs away from the Qt UI thread."""
 
-    progress = pyqtSignal(str)
-    result_ready = pyqtSignal(str, object)
-    failed = pyqtSignal(str)
-    finished = pyqtSignal()
+    progress = Signal(str)
+    result_ready = Signal(str, object)
+    failed = Signal(str)
+    finished = Signal()
 
     def __init__(self, simulator: str, exe_path: str, work_dir: str,
                  jobs: list[tuple[str, str, str]], threads: int = 1,
@@ -858,7 +858,7 @@ class OutputsWidget(QWidget):
         if not ok or not pick:
             return
         inst, pin = pick.split(".", 1)
-        # Cadence-style terminal-current expression placeholder for post-processing.
+        # industry-style terminal-current expression placeholder for post-processing.
         expr = f"I({inst}.{pin})"
         self._add_entry(f"{inst}.{pin}", expr)
 
@@ -1271,7 +1271,7 @@ class StimulusEditorWidget(QWidget):
 
 
 class ConvergenceHelpersWidget(QWidget):
-    """Convergence helpers: .NODESET, .IC, .LOADBIAS, .SAVEBIAS with Cadence ADE style UI."""
+    """Convergence helpers: .NODESET, .IC, .LOADBIAS, .SAVEBIAS with simulation setup style UI."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -2178,7 +2178,7 @@ class ADEWindow(QMainWindow):
 
     def _configure_pdk_model_directives(self, directives: NetlistDirectives,
                                         pdk_name: str, process: str = ""):
-        """Add Cadence-style model library selections to the netlist."""
+        """Add industry-style model library selections to the netlist."""
         registry = self._ensure_pdk_registry()
         if not pdk_name or not registry:
             return
@@ -2576,7 +2576,7 @@ class ADEWindow(QMainWindow):
         self.save_mode_combo = QComboBox()
         self.save_mode_combo.addItems(["All", "Selected", "None"])
         self.save_mode_combo.setCurrentText(self._sim_save_mode_label())
-        self.save_mode_combo.setToolTip("GSPICE waveform save policy. All matches Cadence-style save-all; Selected writes only output expressions; None writes time only.")
+        self.save_mode_combo.setToolTip("GSPICE waveform save policy. All matches industry-style save-all; Selected writes only output expressions; None writes time only.")
         self.save_mode_combo.currentTextChanged.connect(self._on_save_mode_changed)
         save_box.addWidget(self.save_mode_combo)
         controls_row.addLayout(save_box)
@@ -4362,7 +4362,7 @@ class ADEWindow(QMainWindow):
             return f"{val:.3e} {unit}".strip()
 
     def _handle_simulation_result(self, result, run_name: str, plot_waveforms: dict | None = None):
-        """Handle simulation result and update Cadence-style Corner Results Matrix."""
+        """Handle simulation result and update industry-style Corner Results Matrix."""
         plot_waveforms = plot_waveforms or {}
         self._ensure_results_corner_section(run_name)
         r = self.results_table.rowCount()
@@ -4488,7 +4488,7 @@ class ADEWindow(QMainWindow):
         self.statusBar().showMessage("Done" if result.success else "Failed", 5000)
 
     def _ensure_results_corner_section(self, run_name: str):
-        """Insert a Cadence-style section header before corner result rows."""
+        """Insert a industry-style section header before corner result rows."""
         corner = self._results_corner_from_run_name(run_name)
         if not corner or corner.lower() == "single":
             return

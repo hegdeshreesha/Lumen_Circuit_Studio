@@ -152,7 +152,7 @@ class LayoutXLServiceTest(unittest.TestCase):
             self.assertGreater(view.get("layer_count", 0), 50)
             self.assertEqual(view.get("interoperability", {}).get("owner"), "external_klayout")
             self.assertEqual(
-                view.get("interoperability", {}).get("view_mapping", {}).get("cadence_like_role"),
+                view.get("interoperability", {}).get("view_mapping", {}).get("layout_role"),
                 "maskLayout",
             )
 

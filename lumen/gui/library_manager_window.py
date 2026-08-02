@@ -2,7 +2,7 @@
 Lumen Circuit Studio — Library Manager Window
 
 Standalone window for managing libraries, cells, and views.
-Analogous to Cadence's Library Manager (CDB Browser).
+Analogous to industry-standard's Library Manager (CDB Browser).
 """
 from lumen.qt.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,

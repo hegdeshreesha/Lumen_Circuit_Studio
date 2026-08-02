@@ -18,7 +18,7 @@ from lumen.qt.QtWidgets import (
     QListWidgetItem, QLabel, QPushButton, QFormLayout, QLineEdit,
     QComboBox, QCheckBox, QMessageBox, QToolBar, QRubberBand
 )
-from lumen.qt.QtCore import Qt, QPointF, QRect, QRectF, pyqtSignal, QLineF
+from lumen.qt.QtCore import Qt, QPointF, QRect, QRectF, Signal, QLineF
 from lumen.qt.QtGui import (
     QPen, QBrush, QColor, QPainter, QPainterPath, QFont,
     QTransform, QWheelEvent, QKeyEvent, QAction, QCursor
@@ -77,7 +77,7 @@ class PinItem(QGraphicsItemGroup):
         }.get(self.pin_orientation, (1, 0))
 
     def _build_graphics(self):
-        """Build a Virtuoso-like symbol terminal: square anchor, stub, name."""
+        """Build a industry-style symbol terminal: square anchor, stub, name."""
         for item in list(self.childItems()):
             self.removeFromGroup(item)
             if item.scene():
@@ -139,7 +139,7 @@ class PinItem(QGraphicsItemGroup):
 class SymbolCanvas(QGraphicsView):
     """Canvas for symbol editing."""
 
-    coord_changed = pyqtSignal(float, float)
+    coord_changed = Signal(float, float)
 
     def __init__(self, scene: QGraphicsScene, parent=None):
         super().__init__(scene, parent)
@@ -277,7 +277,7 @@ class SymbolCanvas(QGraphicsView):
 class SymbolEditor(QWidget):
     """Interactive symbol editor widget."""
 
-    coord_changed = pyqtSignal(float, float)
+    coord_changed = Signal(float, float)
 
     def __init__(self, db: LibraryDatabase, library: str, cell: str,
                  view: str = "symbol", parent=None):

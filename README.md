@@ -54,7 +54,7 @@ For the current dogfood flow, start with `BETA_TESTING.md`. The beta focus is sc
 - ADE-style setup for analyses/corners/sweeps
 - IHP SG13G2 KLayout integration with `SG13_dev` PCells, schematic/device
   correspondence, layer setup, and DRC/LVS command flow. See
-  [IHP KLayout setup and Cadence-style workflow](docs/ihp_klayout_integration.md).
+  [IHP KLayout setup and industry-style workflow](docs/ihp_klayout_integration.md).
 
 ## License
 

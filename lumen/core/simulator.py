@@ -1411,7 +1411,7 @@ class SimulatorBridge:
 
         SPICE small-signal AC is linearized at the DC operating point. GSPICE
         does this internally, but inserting .OP before .AC makes SimENV decks
-        read like Cadence ADE and keeps direct script-generated decks clear.
+        read like simulation setup and keeps direct script-generated decks clear.
         """
         text = str(netlist or "")
         if not re.search(r"(?im)^\s*\.AC\b", text):

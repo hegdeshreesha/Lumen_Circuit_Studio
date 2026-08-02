@@ -2,7 +2,7 @@
 Lumen Circuit Studio - PDK System Demo
 
 Run this script to see the complete PDK management system in action.
-Shows how Cadence Virtuoso-style PDK management works.
+Shows how commercial custom IC platforms-style PDK management works.
 """
 import sys
 import os
@@ -11,7 +11,7 @@ import json
 # Add project to path
 sys.path.insert(0, os.path.dirname(__file__))
 
-from lumen.core.cadence_pdk_manager import CadencePDKManager
+from lumen.core.pdk_workflow_manager import PDKWorkflowManager
 from lumen.core import skywater_symbols, ihp_symbols, gf180mcu_symbols
 
 
@@ -53,9 +53,9 @@ def demo_symbols():
 
 def demo_pdk_installation():
     """Demo: Install and configure PDKs."""
-    print_header("2. PDK INSTALLATION (Cadence-style)")
+    print_header("2. PDK INSTALLATION (industry-style)")
     
-    manager = CadencePDKManager()
+    manager = PDKWorkflowManager()
     
     # Install IHP PDK
     ihp_path = os.path.join(os.path.dirname(__file__), "..", "ihp_pdk")
@@ -77,7 +77,7 @@ def demo_pdk_installation():
 
 def demo_corners(manager):
     """Demo: Show available process corners."""
-    print_header("3. PROCESS CORNERS (like Cadence ADE)")
+    print_header("3. PROCESS CORNERS (like simulation setup)")
     
     corners = manager.get_available_corners("ihp_sg13g2")
     print(f"\n  Available corners for IHP SG13G2 ({len(corners)} total):")
@@ -102,7 +102,7 @@ def demo_cdf_devices(manager):
     """Demo: Show CDF device definitions."""
     print_header("4. CDF DEVICES (Component Description Format)")
     
-    print("\n  Built-in CDF devices (like Cadence CDF database):")
+    print("\n  Built-in CDF devices (like device-parameter metadata database):")
     for name, device in sorted(manager.cdf.devices.items()):
         params = ", ".join([f"{p.name}={p.def_value}" for p in device.parameters[:4]])
         print(f"    {name:20s} -> {device.prefix}  model={device.spice_model_name:15s}  params=[{params}]")
@@ -123,7 +123,7 @@ def demo_cdf_devices(manager):
 
 def demo_netlist(manager):
     """Demo: Generate SPICE netlist header."""
-    print_header("5. NETLIST GENERATION (like Cadence simulation)")
+    print_header("5. NETLIST GENERATION (like SPICE simulation)")
     
     print("\n  Generated SPICE netlist header with .LIB includes:")
     print()
@@ -134,7 +134,7 @@ def demo_netlist(manager):
 
 def demo_cds_lib(manager):
     """Demo: Generate cds.lib file."""
-    print_header("6. CDS.LIB GENERATION (like Cadence Library Manager)")
+    print_header("6. CDS.LIB GENERATION (like library manager)")
     
     print("\n  Generating project 'my_design' with cds.lib...")
     cds_path = manager.generate_cds_lib("my_design", ".")
@@ -167,11 +167,11 @@ def demo_health_report(manager):
 
 
 def demo_workflow():
-    """Demo: Complete Cadence-like workflow."""
-    print_header("8. COMPLETE CADENCE-LIKE WORKFLOW")
+    """Demo: Complete industry-style workflow."""
+    print_header("8. COMPLETE INDUSTRY-STYLE WORKFLOW")
     
     print("""
-  This is how you would use Lumen Circuit Studio like Cadence Virtuoso:
+  This is how you would use Lumen Circuit Studio like commercial custom IC platforms:
 
   +-----------------------------------------------------------+
   |  1. DOWNLOAD PDK locally (like getting TSMC PDK)          |
@@ -203,7 +203,7 @@ if __name__ == "__main__":
     print()
     print("+" + "-" * 66 + "+")
     print("|   Lumen Circuit Studio - PDK System Demo               |")
-    print("|   Cadence Virtuoso-style PDK Management                |")
+    print("|   commercial custom IC platforms-style PDK Management                |")
     print("+" + "-" * 66 + "+")
     
     # Run all demos

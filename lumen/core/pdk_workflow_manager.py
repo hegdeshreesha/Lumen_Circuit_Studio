@@ -1,7 +1,7 @@
 """
-Lumen Circuit Studio — Cadence Virtuoso-style PDK Management System
+Lumen Circuit Studio — commercial custom IC platforms-style PDK Management System
 
-Implements the exact PDK management workflow used by Cadence Virtuoso:
+Implements the exact PDK management workflow used by commercial custom IC platforms:
 1. cds.lib — Library path definitions (DEFINE library_name path)
 2. .lib files — Model library files with process corners (.LIB tt .MODEL ... .ENDS)
 3. Technology library — Layer definitions, design rules, device parameters
@@ -9,11 +9,11 @@ Implements the exact PDK management workflow used by Cadence Virtuoso:
 5. PDK setup — Installation, path configuration, environment variables
 
 This system allows users to:
-- Download PDKs locally and point to them (like Cadence PDK install)
+- Download PDKs locally and point to them (like PDK install)
 - Select model libraries (.lib files) for specific process corners
-- Link symbols to models (like Cadence CDF)
+- Link symbols to models (like device-parameter metadata)
 - Create projects with proper library bindings
-- Generate cds.lib files compatible with Cadence tools
+- Generate cds.lib files compatible with industry-standard tools
 """
 import json
 import os
@@ -29,7 +29,7 @@ from enum import Enum
 
 
 # ═══════════════════════════════════════════════════════════════════
-# 1. cds.lib — Library Definition (EXACT Cadence format)
+# 1. cds.lib — Library Definition (EXACT cds.lib-style format)
 # ═══════════════════════════════════════════════════════════════════
 
 @dataclass
@@ -37,7 +37,7 @@ class CDSLibEntry:
     """
     A single entry in cds.lib file.
     
-    Cadence format:
+    cds.lib-style format:
         DEFINE library_name path
         SOFTINCLUDE /path/to/other/cds.lib
         INCLUDE /path/to/techfile
@@ -48,7 +48,7 @@ class CDSLibEntry:
     comment: str = ""
     
     def to_cds_line(self) -> str:
-        """Export to exact Cadence cds.lib format."""
+        """Export to exact cds.lib-style format."""
         comment_str = f"  # {self.comment}" if self.comment else ""
         return f"{self.entry_type} {self.name} {self.path}{comment_str}"
     
@@ -85,14 +85,14 @@ class CDSLib:
     """
     Complete cds.lib file manager.
     
-    Cadence Virtuoso uses cds.lib to define all available libraries.
+    commercial custom IC platforms uses cds.lib to define all available libraries.
     This class reads, writes, and manages cds.lib files in the exact
-    Cadence format.
+    cds.lib-style format.
     
     Example cds.lib:
         # Lumen Circuit Studio Library Definitions
-        DEFINE basic /usr/local/cadence/tools/dfII/etc/cdslib/basic
-        DEFINE analogLib /usr/local/cadence/tools/dfII/etc/cdslib/artist/analogLib
+        DEFINE basic /opt/pdk/examples/basic
+        DEFINE analogLib /opt/pdk/examples/analogLib
         DEFINE my_tech_lib /home/user/techlib
         SOFTINCLUDE /home/user/custom_cds.lib
     """
@@ -122,7 +122,7 @@ class CDSLib:
                         self.entries.append(entry)
     
     def save(self, filepath: str = ""):
-        """Save cds.lib to file in exact Cadence format."""
+        """Save cds.lib to file in exact cds.lib-style format."""
         path = filepath or self.filepath
         if not path:
             raise ValueError("No filepath specified")
@@ -191,7 +191,7 @@ class ModelCorner:
     """
     A process corner from a .lib file.
     
-    Cadence .lib format:
+    Liberty .lib format:
         .LIB tt
         .MODEL nmos ...
         .MODEL pmos ...
@@ -212,7 +212,7 @@ class ModelLibrary:
     """
     A .lib model library file.
     
-    In Cadence, you select model libraries for simulation:
+    In industry-standard, you select model libraries for simulation:
     - Model libraries contain process-specific SPICE models
     - You include the .lib file and select a corner (TT, FF, SS, etc.)
     - Multiple .lib files can be stacked for different device types
@@ -224,7 +224,7 @@ class ModelLibrary:
     """
     name: str
     filepath: str = ""
-    format: str = "spice"  # spice, spectre, veriloga, cdl
+    format: str = "spice"  # spice, simulator, veriloga, cdl
     corners: List[ModelCorner] = field(default_factory=list)
     devices: List[Dict] = field(default_factory=list)
     checksum: str = ""
@@ -236,14 +236,14 @@ class ModelLibrary:
         """
         Parse a .lib file to extract corners and models.
         
-        Handles both Cadence .lib format and SPICE .lib format:
+        Handles both Liberty .lib format and SPICE .lib format:
         
         SPICE format:
             .LIB tt
             .MODEL nmos nmos (level=49 ...)
             .ENDS tt
         
-        Cadence .lib format:
+        Liberty .lib format:
             library(name) {
                 delay_model : "cmos";
                 cell(name) { ... }
@@ -267,8 +267,8 @@ class ModelLibrary:
         
         # Detect format
         if content.strip().startswith('library('):
-            lib.format = "cadence_lib"
-            lib._parse_cadence_lib(content)
+            lib.format = "liberty_lib"
+            lib._parse_liberty_lib(content)
         else:
             lib.format = "spice"
             lib._parse_spice_lib(content)
@@ -367,8 +367,8 @@ class ModelLibrary:
                 is_default=True
             ))
     
-    def _parse_cadence_lib(self, content: str):
-        """Parse Cadence .lib format (Liberty)."""
+    def _parse_liberty_lib(self, content: str):
+        """Parse Liberty .lib format (Liberty)."""
         # Extract library name
         match = re.match(r'library\s*\(\s*(\w+)\s*\)\s*{', content)
         if match:
@@ -417,7 +417,7 @@ class CDFParameter:
     """
     A device parameter in CDF format.
     
-    Cadence CDF parameters include:
+    device-parameter metadata parameters include:
     - name: Parameter name
     - defValue: Default value
     - description: Description
@@ -459,7 +459,7 @@ class CDFDevice:
     """
     A device definition in CDF format.
     
-    In Cadence Virtuoso, CDF defines:
+    In commercial custom IC platforms, CDF defines:
     - Which model file to use
     - Which symbol to display
     - What parameters the device has
@@ -479,7 +479,7 @@ class CDFDevice:
     # SPICE info
     prefix: str = "M"  # M, R, C, Q, D, V, I
     spice_model_name: str = ""
-    simulator: str = "ngspice"  # ngspice, spectre, hspice
+    simulator: str = "ngspice"  # ngspice, simulator
     
     # Symbol
     symbol_name: str = ""
@@ -489,7 +489,7 @@ class CDFDevice:
     parameters: List[CDFParameter] = field(default_factory=list)
     
     # Simulation views
-    sim_views: List[str] = field(default_factory=lambda: ["symbol", "spectre", "spice", "veriloga"])
+    sim_views: List[str] = field(default_factory=lambda: ["symbol", "simulator", "spice", "veriloga"])
     
     # Callbacks
     callbacks: Dict[str, str] = field(default_factory=dict)
@@ -588,7 +588,7 @@ class CDFDatabase:
     """
     CDF (Component Description Format) Database.
     
-    In Cadence Virtuoso, CDF defines how devices behave:
+    In commercial custom IC platforms, CDF defines how devices behave:
     - What parameters they have
     - What model files they reference
     - What symbols they use
@@ -672,7 +672,7 @@ class PDKSetupConfig:
     """
     PDK setup configuration.
     
-    In Cadence, PDK setup typically involves:
+    In industry-standard, PDK setup typically involves:
     1. Setting PDK_DIR environment variable
     2. Running a setup script (e.g., pdkSetup.csh)
     3. Configuring cds.lib to include PDK libraries
@@ -715,12 +715,12 @@ class PDKSetupConfig:
     setup_script: str = ""
 
 
-class CadencePDKManager:
+class PDKWorkflowManager:
     """
-    Complete PDK manager that mirrors Cadence Virtuoso's workflow.
+    Complete PDK manager that mirrors commercial custom IC platforms's workflow.
     
-    How Cadence Virtuoso handles PDKs:
-    1. PDK is installed to a directory (e.g., /cadence/PDK/tsmcN65)
+    How commercial custom IC platforms handles PDKs:
+    1. PDK is installed to a directory (e.g., /opt/pdk/example_process)
     2. cds.lib is configured with DEFINE statements pointing to PDK libs
     3. Model libraries (.lib files) are selected for simulation
     4. CDF defines device parameters and links symbols to models
@@ -729,7 +729,7 @@ class CadencePDKManager:
     This manager implements the exact same workflow.
     
     Usage:
-        manager = CadencePDKManager()
+        manager = PDKWorkflowManager()
         
         # 1. Install/register a PDK (like running PDK setup script)
         manager.install_pdk("sky130", "/path/to/skywater-pdk")
@@ -740,7 +740,7 @@ class CadencePDKManager:
         # 3. Set active corner (like choosing TT/FF/SS in simulation)
         manager.set_active_corner("sky130", "tt")
         
-        # 4. Generate cds.lib (like Cadence library manager)
+        # 4. Generate cds.lib (like industry-standard library manager)
         manager.generate_cds_lib("my_project", "./project")
         
         # 5. Get device with CDF (like placing a device in schematic)
@@ -795,7 +795,7 @@ class CadencePDKManager:
         self.cds_lib = CDSLib()
         
         # Config path
-        self._config_path = self.workspace / "cadence_pdk_config.json"
+        self._config_path = self.workspace / "pdk_workflow_config.json"
         self._load_config()
         
         # Register built-in CDF devices
@@ -1036,7 +1036,7 @@ class CadencePDKManager:
         """
         Install/register a PDK.
         
-        This is equivalent to running a Cadence PDK setup script.
+        This is equivalent to running a PDK setup script.
         It:
         1. Registers the PDK path
         2. Scans for .lib model files
@@ -1147,7 +1147,7 @@ class CadencePDKManager:
         """
         Select a model library for use.
         
-        In Cadence Virtuoso, you select model libraries in ADE (Analog Design
+        In commercial custom IC platforms, you select model libraries in ADE (Analog Design
         Environment) by choosing .lib files and their corners.
         
         This is equivalent to:
@@ -1177,7 +1177,7 @@ class CadencePDKManager:
         """
         Set the active process corner.
         
-        In Cadence Virtuoso, you select the corner in ADE:
+        In commercial custom IC platforms, you select the corner in ADE:
         - tt (typical-typical)
         - ff (fast-fast)  
         - ss (slow-slow)
@@ -1215,7 +1215,7 @@ class CadencePDKManager:
         """
         Get the CDF definition for a device.
         
-        In Cadence Virtuoso, CDF defines:
+        In commercial custom IC platforms, CDF defines:
         - What parameters the device has
         - What model it references
         - What symbol it uses
@@ -1278,7 +1278,7 @@ class CadencePDKManager:
         """
         Get all available devices from model libraries.
         
-        This is equivalent to browsing the Cadence library manager
+        This is equivalent to browsing the industry-standard library manager
         to see what devices are available in a PDK.
         """
         name = pdk_name or self._active_pdk
@@ -1318,7 +1318,7 @@ class CadencePDKManager:
         """
         Generate the SPICE netlist header with model library includes.
         
-        This is equivalent to what Cadence Virtuoso generates when
+        This is equivalent to what commercial custom IC platforms generates when
         you run a simulation - it includes the .lib files with the
         selected corner.
         
@@ -1357,7 +1357,7 @@ class CadencePDKManager:
         """
         Generate a cds.lib file for a project.
         
-        This is equivalent to creating a new library in Cadence
+        This is equivalent to creating a new library in industry-standard
         Library Manager and attaching a technology library.
         
         The generated cds.lib will contain:
@@ -1509,18 +1509,18 @@ class CadencePDKManager:
 # Convenience Functions
 # ═══════════════════════════════════════════════════════════════════
 
-def create_manager(workspace: str = "") -> CadencePDKManager:
-    """Create a Cadence-style PDK manager."""
-    return CadencePDKManager(workspace)
+def create_manager(workspace: str = "") -> PDKWorkflowManager:
+    """Create a industry-style PDK manager."""
+    return PDKWorkflowManager(workspace)
 
 
 if __name__ == "__main__":
     import sys
     
-    print("Lumen Circuit Studio — Cadence-style PDK Manager")
+    print("Lumen Circuit Studio — industry-style PDK Manager")
     print("=" * 60)
     
-    manager = CadencePDKManager()
+    manager = PDKWorkflowManager()
     
     if len(sys.argv) > 1 and sys.argv[1] == "install":
         name = sys.argv[2] if len(sys.argv) > 2 else ""
@@ -1586,7 +1586,7 @@ if __name__ == "__main__":
     
     else:
         print("\nUsage:")
-        print("  python cadence_pdk_manager.py install <pdk_name> <path>")
-        print("  python cadence_pdk_manager.py status")
-        print("  python cadence_pdk_manager.py corners [pdk_name]")
-        print("  python cadence_pdk_manager.py devices [pdk_name]")
+        print("  python pdk_workflow_manager.py install <pdk_name> <path>")
+        print("  python pdk_workflow_manager.py status")
+        print("  python pdk_workflow_manager.py corners [pdk_name]")
+        print("  python pdk_workflow_manager.py devices [pdk_name]")

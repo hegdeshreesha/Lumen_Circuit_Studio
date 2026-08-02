@@ -72,7 +72,7 @@ If SigView shows unexpected waveforms, attach the whole run folder when reportin
 
 ## Known Limitations
 
-- GSPICE is not yet Spectre-class or VACASK-class for all compact-model cases.
+- GSPICE is not yet signoff-class or mature-reference-class for all compact-model cases.
 - PSP/OSDI support is active but still being validated against Ngspice/Xyce.
 - Xyce PSP flows require the matching Xyce plugin to be installed.
 - Ngspice PSP flows require OSDI setup.

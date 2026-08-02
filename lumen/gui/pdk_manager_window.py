@@ -1,7 +1,7 @@
 """
 Lumen Circuit Studio — PDK Manager Window
 
-Virtuoso-style PDK browser and configuration. Select active PDK,
+industry-style PDK browser and configuration. Select active PDK,
 browse devices, layers, corners, and install/configure PDK data.
 """
 from lumen.qt.QtWidgets import (

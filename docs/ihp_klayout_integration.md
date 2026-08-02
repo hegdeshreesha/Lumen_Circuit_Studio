@@ -24,7 +24,7 @@ installation.
    `klayout_app.exe` if it was not found automatically.  KLayout 0.30.2 or
    newer is required by the current IHP GUI LVS macro.
 
-3. Optional, but recommended for an IIC-OSIC/Cadence-like editing workflow:
+3. Optional, but recommended for an IIC-OSIC/industry-style editing workflow:
    open KLayout's **Tools > Manage Packages**, install the
    `KLayoutProductivitySuite` meta-package, and restart KLayout.  It installs
    the IIC align, move, pin, layer-shortcut, library-manager, backup, and
@@ -51,7 +51,7 @@ The equivalent command is `klayout -e -n sg13g2 <layout.gds>`, but use the
 launcher unless you have already set the environment below.  `-e` is important:
 it enables editor mode rather than read-only viewer mode.
 
-## Cadence Layout Editor style workspace
+## layout editor style workspace
 
 After launch, arrange these panels once; KLayout persists the arrangement in
 the workspace-local `.klayout` profile:
@@ -59,7 +59,7 @@ the workspace-local `.klayout` profile:
 1. Enable **View > Panels > Layers**, **Cells**, **Libraries**, and **Navigator**.
 2. Dock Layers and Libraries on the left, Cells/Navigator on the right, and keep
    the large canvas in the center.  This is the closest KLayout equivalent of
-   Virtuoso's LSW/library browser/layout canvas.
+   custom IC editor's LSW/library browser/layout canvas.
 3. In the Libraries panel expand **SG13_dev**.  Insert a device from there, or
    press **Insert**, select library `SG13_dev`, then choose `nmos`, `pmos`,
    `cmim`, `rppd`, `npn13G2`, and so on.  Press **F3** to edit the selected
@@ -69,7 +69,7 @@ the workspace-local `.klayout` profile:
    corresponding metal/via group, `8` focuses gate poly, `9` diffusion, `0`
    restores default layers, and Shift+number extends the visible group.
 5. Use the IIC **Pin**, **Align**, and **Move Quickly** tools for a more
-   Virtuoso-like interactive editing flow.  Enable automatic backups from
+   industry-style interactive editing flow.  Enable automatic backups from
    **File > Automatic Backups**.
 
 Expected checks after startup:

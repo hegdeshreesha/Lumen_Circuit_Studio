@@ -74,7 +74,7 @@ class SchematicClipboardTest(unittest.TestCase):
             dst.instances.append(SimpleNamespace(instance_name="R1"))
             self.assertEqual(dst._next_instance_name("R"), "R2")
 
-    def test_junction_dots_follow_cadence_crossing_rules(self):
+    def test_junction_dots_follow_schematic_crossing_rules(self):
         _ = _app()
         with tempfile.TemporaryDirectory() as tmp:
             db = LibraryDatabase(tmp)

@@ -263,7 +263,7 @@ class SymbolEditorWindow(QMainWindow):
         QMessageBox.information(
             self,
             "Command Planned",
-            f"'{action_name}' is part of the Cadence-style symbol GUI surface.\n\n"
+            f"'{action_name}' is part of the industry-style symbol GUI surface.\n\n"
             "The command is visible now so the workflow can be designed, but "
             "the underlying behavior still needs implementation.",
         )

@@ -592,6 +592,6 @@ class LayoutXLService:
             "view_mapping": {
                 "lumen": "layout",
                 "klayout": profile.technology_name,
-                "cadence_like_role": "maskLayout",
+                "layout_role": "maskLayout",
             },
         }

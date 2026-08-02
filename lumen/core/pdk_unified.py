@@ -14,7 +14,7 @@ canonical, schema-driven system that provides:
 - PDK health monitoring and audit trail
 - Plugin architecture for custom PDK adapters
 
-This system is designed to be superior to Cadence's CDF/technology file approach.
+This system is designed to be superior to industry-standard's CDF/technology file approach.
 """
 import json
 import os
@@ -129,7 +129,7 @@ class PDKDevice:
     category: DeviceCategory
     prefix: str  # SPICE prefix: M, R, C, Q, D, etc.
     model: str  # SPICE model name
-    # Cadence CDF-style linkage fields used by netlisting.
+    # device-parameter metadata-style linkage fields used by netlisting.
     component_name: str = ""  # Netlist component/model/subckt token
     term_order: List[str] = field(default_factory=list)  # Ordered terminal names
     inst_parameters: List[str] = field(default_factory=list)  # Ordered instance params
@@ -1026,7 +1026,7 @@ class PDKRegistry:
         return str(root)
 
     def _discover_model_files(self, root: Path) -> List[PDKModelFile]:
-        """Discover SPICE/Spectre model files and their .LIB sections."""
+        """Discover SPICE/simulator model files and their .LIB sections."""
         patterns = ["*.lib", "*.scs", "*.model", "*.spice", "*.sp"]
         model_files: List[PDKModelFile] = []
         seen = set()

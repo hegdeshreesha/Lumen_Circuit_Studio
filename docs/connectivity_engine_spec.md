@@ -149,7 +149,7 @@ class NetlistGenerator:
 
 ## Acceptance Criteria
 
-1. Netlist generated matches Virtuoso/Ocean output for same schematic
+1. Netlist generated matches custom IC editor/Ocean output for same schematic
 2. No "floating pin" errors for properly connected instances
 3. Net names correctly propagate from labels
 4. Wire crossing without junction dot stays isolated (standard schematic rule)

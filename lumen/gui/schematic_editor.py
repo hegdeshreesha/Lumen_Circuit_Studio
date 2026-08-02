@@ -20,7 +20,7 @@ from lumen.qt.QtWidgets import (
     QInputDialog, QDialog, QDialogButtonBox, QListWidget, QMenu,
     QListWidgetItem, QLabel, QHBoxLayout, QApplication, QRubberBand
 )
-from lumen.qt.QtCore import Qt, QPointF, QRect, QRectF, pyqtSignal, QLineF, QTimer, QMimeData
+from lumen.qt.QtCore import Qt, QPointF, QRect, QRectF, Signal, QLineF, QTimer, QMimeData
 from lumen.qt.QtGui import (
     QPen, QBrush, QColor, QPainter, QPainterPath, QFont,
     QTransform, QWheelEvent, QKeyEvent, QAction
@@ -119,7 +119,7 @@ class NetLabelItem(QGraphicsTextItem):
 
 
 class SchematicPinItem(QGraphicsItemGroup):
-    """Cadence-style schematic terminal with an anchor, direction, and label."""
+    """industry-style schematic terminal with an anchor, direction, and label."""
 
     DIRECTIONS = ["input", "output", "inout", "power", "ground"]
     USAGES = ["signal", "power", "ground", "clock", "analog"]
@@ -451,7 +451,7 @@ class InstanceItem(QGraphicsItemGroup):
         self.update()
 
     def _substitute_display_text(self, text: str) -> str:
-        """Evaluate Cadence-CDF-style display labels such as @name and w=@w."""
+        """Evaluate industry-standard-CDF-style display labels such as @name and w=@w."""
         if not text:
             return ""
 
@@ -506,7 +506,7 @@ class JunctionDot(QGraphicsEllipseItem):
 class SchematicCanvas(QGraphicsView):
     """The main schematic drawing canvas with zoom/pan."""
 
-    coord_changed = pyqtSignal(float, float)
+    coord_changed = Signal(float, float)
 
     def __init__(self, scene: QGraphicsScene, parent=None):
         super().__init__(scene, parent)
@@ -675,10 +675,10 @@ class SchematicCanvas(QGraphicsView):
 class SchematicEditor(QWidget):
     """Complete schematic editor widget with canvas and interaction logic."""
 
-    coord_changed = pyqtSignal(float, float)
-    mode_changed = pyqtSignal(str)
-    output_pick_requested = pyqtSignal(str, object)
-    dc_annotation_requested = pyqtSignal(str, object)
+    coord_changed = Signal(float, float)
+    mode_changed = Signal(str)
+    output_pick_requested = Signal(str, object)
+    dc_annotation_requested = Signal(str, object)
 
     def __init__(self, db: LibraryDatabase, library: str, cell: str,
                  view: str, parent=None):
@@ -787,7 +787,7 @@ class SchematicEditor(QWidget):
         self._dc_annotation_items.clear()
 
     def annotate_dc_node_voltage(self, net_name: str, value: float, pos: QPointF | None = None):
-        """Draw a Cadence-style DC node voltage label near a net."""
+        """Draw a industry-style DC node voltage label near a net."""
         net = str(net_name or "").strip()
         if not net:
             return
@@ -2311,7 +2311,7 @@ class SchematicEditor(QWidget):
             self._execute_command(cmd)
 
     def _handle_pin_click(self, x: float, y: float):
-        """Place Cadence-style top-level schematic pin(s) at the clicked position."""
+        """Place industry-style top-level schematic pin(s) at the clicked position."""
         names_text, ok = QInputDialog.getText(
             self, "Create Pin", "Pin name(s), separated by spaces or commas:")
         if not ok or not names_text:

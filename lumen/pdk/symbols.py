@@ -2,7 +2,7 @@
 LumenStudio - Symbol Generation
 
 Generates schematic symbols for PDK devices.
-Supports Virtuoso-style symbols and custom templates.
+Supports industry-style symbols and custom templates.
 """
 from dataclasses import dataclass
 from typing import List, Dict, Optional
@@ -71,7 +71,7 @@ class SymbolGenerator:
     """
     Generates schematic symbols for PDK devices.
     
-    Creates Virtuoso-style symbols for:
+    Creates industry-style symbols for:
     - MOSFETs (NMOS, PMOS)
     - BJTs (NPN, PNP)
     - Resistors
@@ -138,7 +138,7 @@ class SymbolGenerator:
             return self._generate_generic(device)
     
     def _generate_mosfet(self, device: PDKDevice) -> SymbolData:
-        """Generate MOSFET symbol (Virtuoso-style)."""
+        """Generate MOSFET symbol (industry-style)."""
         is_pmos = "p" in device.name.lower() or "pfet" in device.name.lower()
         
         shapes = []
@@ -196,7 +196,7 @@ class SymbolGenerator:
         )
     
     def _generate_bjt(self, device: PDKDevice) -> SymbolData:
-        """Generate BJT symbol (Virtuoso-style)."""
+        """Generate BJT symbol (industry-style)."""
         is_pnp = "pnp" in device.name.lower()
         
         shapes = []
@@ -240,7 +240,7 @@ class SymbolGenerator:
         )
     
     def _generate_resistor(self, device: PDKDevice) -> SymbolData:
-        """Generate resistor symbol (Virtuoso zigzag)."""
+        """Generate resistor symbol (custom IC editor zigzag)."""
         shapes = []
         
         # Top lead
@@ -273,7 +273,7 @@ class SymbolGenerator:
         )
     
     def _generate_capacitor(self, device: PDKDevice) -> SymbolData:
-        """Generate capacitor symbol (Virtuoso parallel plates)."""
+        """Generate capacitor symbol (custom IC editor parallel plates)."""
         shapes = []
         
         # Top lead
@@ -307,7 +307,7 @@ class SymbolGenerator:
         )
     
     def _generate_diode(self, device: PDKDevice) -> SymbolData:
-        """Generate diode symbol (Virtuoso style)."""
+        """Generate diode symbol (custom IC editor style)."""
         shapes = []
         
         # Top lead
@@ -341,7 +341,7 @@ class SymbolGenerator:
         )
     
     def _generate_inductor(self, device: PDKDevice) -> SymbolData:
-        """Generate inductor symbol (Virtuoso coils)."""
+        """Generate inductor symbol (custom IC editor coils)."""
         shapes = []
         
         # Top lead

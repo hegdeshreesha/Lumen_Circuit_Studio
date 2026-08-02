@@ -1,7 +1,7 @@
 """
-Lumen Circuit Studio — Virtuoso-Class Waveform Calculator Window
+Lumen Circuit Studio — Custom-IC-Class Waveform Calculator Window
 
-Provides an interactive GUI Calculator window matching Virtuoso ADE Calculator:
+Provides an interactive GUI Calculator window matching waveform-analysis Calculator:
 - Visual signal selectors (VT, IT, VF)
 - Function pad (Math, Calculus, Measurements, Spectral)
 - Expression stack & buffer history
@@ -9,7 +9,7 @@ Provides an interactive GUI Calculator window matching Virtuoso ADE Calculator:
 """
 from __future__ import annotations
 
-from lumen.qt.QtCore import Qt, pyqtSignal
+from lumen.qt.QtCore import Qt, Signal
 from lumen.qt.QtGui import QFont
 from lumen.qt.QtWidgets import (
     QDialog,
@@ -31,10 +31,10 @@ from lumen.core.waveform_calculator import WaveformCalculator
 
 
 class CalculatorWindow(QDialog):
-    """Virtuoso ADE-Class Waveform Calculator Window."""
+    """waveform-analysis-Class Waveform Calculator Window."""
 
-    expression_evaluated = pyqtSignal(str, object)  # expression_str, result_vector_or_scalar
-    expression_pushed_to_ade = pyqtSignal(str)     # expression_str
+    expression_evaluated = Signal(str, object)  # expression_str, result_vector_or_scalar
+    expression_pushed_to_ade = Signal(str)     # expression_str
 
     def __init__(self, waveforms: dict = None, parent: QWidget = None):
         super().__init__(parent)

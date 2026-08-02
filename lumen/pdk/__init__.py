@@ -3,7 +3,7 @@ Lumen Circuit Studio — PDK Integration Package
 
 Provides a unified interface for all PDK operations:
 - Symbol generation for SkyWater, IHP, and GF180MCU
-- PDK library management (Cadence .lib style)
+- PDK library management (Liberty .lib style)
 - SPICE model file parsing (.lib format with corners)
 - Symbol catalog generation from PDK model files
 - Project library binding (cds.lib equivalent)
@@ -92,7 +92,7 @@ def get_pdk_manager(workspace: str = "") -> PDKLibraryManager:
     
     This manager supports:
     - Registering local PDK installations
-    - .lib file format parsing (Cadence-compatible)
+    - .lib file format parsing (industry-compatible)
     - Process corner management
     - Device catalog generation
     - Symbol-to-model mapping

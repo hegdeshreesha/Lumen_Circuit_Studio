@@ -19,7 +19,7 @@ from lumen.core.simulator import SIMULATOR_INFO, normalize_simulator_name
 
 # Public simulator choices exposed by Lumen.  Ngspice/Xyce bridge code is kept
 # in place for a future re-enable, but the product surface is GSPICE-only while
-# the native simulator is being brought up to Spectre-class RF coverage.
+# the native simulator is being brought up to signoff-class RF coverage.
 ACTIVE_SIMULATORS = ("GSPICE",)
 
 

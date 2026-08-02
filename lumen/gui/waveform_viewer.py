@@ -28,7 +28,7 @@ except ImportError:
     HAS_NUMPY = False
     np = None
 
-from lumen.qt.QtCore import Qt, QPoint, QPointF, QRectF, QSize, pyqtSignal
+from lumen.qt.QtCore import Qt, QPoint, QPointF, QRectF, QSize, Signal
 from lumen.qt.QtGui import (
     QAction,
     QPainter,
@@ -221,7 +221,7 @@ def _vector_freq(value) -> float:
 
 
 class SigViewCalculatorEngine:
-    """Safe expression evaluator for Cadence-style waveform calculations."""
+    """Safe expression evaluator for industry-style waveform calculations."""
 
     _ALLOWED_AST_NODES = (
         ast.Expression,
@@ -358,9 +358,9 @@ class MarkerRecord:
 class WaveformCanvas(QWidget):
     """Custom widget for high-performance waveform drawing."""
 
-    hover_text_changed = pyqtSignal(str)
-    cursor_text_changed = pyqtSignal(str)
-    signal_context_requested = pyqtSignal(str, QPoint)
+    hover_text_changed = Signal(str)
+    cursor_text_changed = Signal(str)
+    signal_context_requested = Signal(str, QPoint)
 
     TRACE_COLORS = [
         QColor("#56b6c2"),
@@ -1415,8 +1415,8 @@ class WaveformCanvas(QWidget):
 class WaveformViewerWindow(QMainWindow):
     """Standalone SigView waveform window."""
 
-    send_to_simenv_output = pyqtSignal(object)
-    send_to_simenv_measurement = pyqtSignal(object)
+    send_to_simenv_output = Signal(object)
+    send_to_simenv_measurement = Signal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)

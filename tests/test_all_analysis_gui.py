@@ -84,7 +84,7 @@ class SimEnvGuiTest(unittest.TestCase):
 
         self.assertTrue(editor.cleared)
 
-    def test_cadence_style_menus_are_present(self):
+    def test_industry_style_menus_are_present(self):
         win = self._window()
         menus = [action.text().replace("&", "") for action in win.menuBar().actions()]
         for name in ["Session", "Setup", "Analyses", "Simulation", "Results", "Tools", "Window"]:

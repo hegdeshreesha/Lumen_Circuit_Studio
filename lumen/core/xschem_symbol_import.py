@@ -136,7 +136,7 @@ class XschemSymbol:
                     "source": "xschem",
                 })
         
-        # Preserve Xschem text as interpreted label shapes. Cadence does a
+        # Preserve Xschem text as interpreted label shapes. industry-standard does a
         # similar separation through symbol graphics plus CDF display labels.
         for text in self.texts:
             label_text = text.get("text", "")

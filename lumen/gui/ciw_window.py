@@ -1,7 +1,7 @@
 """
 Lumen Circuit Studio — APW (Analog Pilot Window)
 
-The main hub window, analogous to Cadence Virtuoso's APW.
+The main hub window, analogous to commercial custom IC platforms's APW.
 - Compact window with menu bar for launching other tools
 - Command line input for scripting
 - Output log for messages
