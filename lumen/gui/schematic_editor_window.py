@@ -222,7 +222,6 @@ class SchematicEditorWindow(QMainWindow):
         self.act_print = self._make_action("Print / Plot...", "Ctrl+P", self._on_export_image)
         self.act_export_image = self._make_action("Export Image...", slot=self._on_export_image)
         self.act_import_spice = self._make_action("Import SPICE...", slot=self._on_import_spice)
-        self.act_import_verilog = self._make_action("Import Verilog-A...", slot=self._on_import_verilog)
 
         # industry-style edit commands
         self.act_move = self._make_action("Move (M)", "M", lambda: self.editor.set_mode("select"))
@@ -305,7 +304,6 @@ class SchematicEditorWindow(QMainWindow):
         file_menu.addAction(self.act_export_image)
         file_menu.addSeparator()
         file_menu.addAction(self.act_import_spice)
-        file_menu.addAction(self.act_import_verilog)
         file_menu.addSeparator()
         file_menu.addAction(self.act_close)
 
@@ -612,19 +610,6 @@ class SchematicEditorWindow(QMainWindow):
             text = f.read()
         self.netlist_view.setPlainText(text)
         self.statusBar().showMessage("SPICE imported into Netlist / Output for review", 4000)
-
-    def _on_import_verilog(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Import Verilog-A", "", "Verilog-A (*.va *.vams);;All Files (*)")
-        if not path:
-            return
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            text = f.read()
-        self.db.save_view(self.library, self.cell, "veriloga", {
-            "type": "veriloga", "name": self.cell, "library": self.library,
-            "source": text, "source_path": path,
-        })
-        self.statusBar().showMessage(f"Imported Verilog-A view from {path}", 4000)
 
     def _on_stretch(self):
         dx, ok = QInputDialog.getDouble(self, "Stretch", "Delta X:", 10.0)

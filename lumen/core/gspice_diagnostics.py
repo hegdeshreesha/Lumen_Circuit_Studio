@@ -48,7 +48,7 @@ class GspiceDiagnosticParser:
             re.IGNORECASE,
         )
         self.missing_model_re = re.compile(
-            r"(?:model\s+([a-zA-Z0-9_]+)\s+not found|unknown model|unable to load osdi|osdi plugin missing|could not open library)",
+            r"(?:model\s+([a-zA-Z0-9_]+)\s+not found|unknown model|could not open library)",
             re.IGNORECASE,
         )
         self.timestep_small_re = re.compile(
@@ -83,7 +83,7 @@ class GspiceDiagnosticParser:
                 )
 
             # 2. Missing Compact Model Check
-            elif "model" in line.lower() and ("not found" in line.lower() or "unknown" in line.lower() or "osdi" in line.lower()):
+            elif "model" in line.lower() and ("not found" in line.lower() or "unknown" in line.lower()):
                 match = self.missing_model_re.search(line)
                 model_name = match.group(1) if (match and match.lastindex) else ""
                 issues.append(
@@ -95,7 +95,7 @@ class GspiceDiagnosticParser:
                         affected_instances=[],
                         suggested_action=(
                             f"Verify PDK model includes for model '{model_name}'. "
-                            "Ensure OpenVAF/OSDI plugins are compiled and available in the run directory."
+                            "If this is a compact model, it must be supported by a native GSPICE implementation."
                         ),
                     )
                 )

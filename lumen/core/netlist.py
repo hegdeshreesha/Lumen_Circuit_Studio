@@ -1186,7 +1186,7 @@ class NetlistGenerator:
                     chk = validate_component_file(
                         str(model_file),
                         str(getattr(self.db, "workspace", "")),
-                        (".va", ".osdi", ".so", ".dll"),
+                        (".so", ".dll"),
                     )
                     if not chk.ok:
                         self._errors.extend(f"{iname}: {msg}" for msg in chk.errors)

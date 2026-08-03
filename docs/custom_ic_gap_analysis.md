@@ -130,7 +130,7 @@ Missing or weak:
 
 - No dedicated hierarchy browser/editor UI.
 - No config views or switch/stop view lists.
-- No library mapping rules for resolving symbols to schematics, Verilog-A,
+- No library mapping rules for resolving symbols to schematics, native compact-model source,
   extracted views, or simulator views.
 - Cycle detection only uses a visited set, which can hide repeated legitimate
   instances of the same cell.
@@ -162,7 +162,7 @@ Missing or weak:
 
 Competitive target:
 
-- Generate symbols from schematic interfaces, PDK device metadata, or Verilog-A
+- Generate symbols from schematic interfaces, PDK device metadata, or native compact-model source
   modules; validate pin order and netlisting metadata; allow user edits without
   losing generated intent.
 

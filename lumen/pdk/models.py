@@ -1,7 +1,7 @@
 """
 LumenStudio - PDK Model Parser
 
-Parses SPICE model libraries (.lib) and Verilog-A files.
+Parses SPICE model libraries (.lib).
 Extracts device definitions, corners, and model parameters.
 """
 import os

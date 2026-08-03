@@ -89,15 +89,15 @@ class SimulatorRuntimeManagerTest(unittest.TestCase):
     def test_bridge_collects_gspice_model_status_lines(self):
         bridge = SimulatorBridge("GSPICE", exe_path="gspice")
         statuses = bridge._collect_model_status(
-            "MODEL_STATUS: OSDI_LOADED path=\"psp103.osdi\" models=PSP103VA\n"
-            "MODEL_STATUS: OSDI_DEVICE instance=NM1 model=nch type=psp103va descriptor=PSP103VA\n",
+            "MODEL_STATUS: NATIVE_COMPACT_MODEL model=nch type=psp103\n"
+            "MODEL_STATUS: NATIVE_DEVICE instance=NM1 model=nch type=psp103\n",
             "",
         )
         self.assertEqual(
             statuses,
             [
-                'OSDI_LOADED path="psp103.osdi" models=PSP103VA',
-                "OSDI_DEVICE instance=NM1 model=nch type=psp103va descriptor=PSP103VA",
+                "NATIVE_COMPACT_MODEL model=nch type=psp103",
+                "NATIVE_DEVICE instance=NM1 model=nch type=psp103",
             ],
         )
 
@@ -110,7 +110,7 @@ class SimulatorRuntimeManagerTest(unittest.TestCase):
         self.assertIn("V1 out 0 DC 1", prepared)
         self.assertTrue(any("markdown separator" in note for note in notes))
 
-    def test_gspice_prepare_uses_be_for_psp_uic_auto_transient(self):
+    def test_gspice_prepare_preserves_method_for_psp_uic_auto_transient(self):
         bridge = SimulatorBridge("GSPICE", exe_path="gspice")
         prepared, notes = bridge._prepare_netlist_for_simulator(
             "X1 out in vdd vdd sg13_lv_pmos l=0.5u w=0.15u\n"
@@ -118,11 +118,11 @@ class SimulatorRuntimeManagerTest(unittest.TestCase):
             ".TRAN 1p 1n UIC\n"
             ".END\n"
         )
-        self.assertIn("METHOD=BE", prepared)
-        self.assertNotIn("METHOD=AUTO", prepared)
-        self.assertTrue(any("METHOD=BE selected" in note for note in notes))
+        self.assertIn("METHOD=AUTO", prepared)
+        self.assertNotIn("METHOD=BE", prepared)
+        self.assertFalse(any("METHOD=BE selected" in note for note in notes))
 
-    def test_gspice_prepare_uses_be_for_non_uic_psp_transient(self):
+    def test_gspice_prepare_preserves_method_for_non_uic_psp_transient(self):
         bridge = SimulatorBridge("GSPICE", exe_path="gspice")
         prepared, notes = bridge._prepare_netlist_for_simulator(
             "X1 out in vdd vdd sg13_lv_pmos l=0.5u w=0.15u\n"
@@ -130,11 +130,11 @@ class SimulatorRuntimeManagerTest(unittest.TestCase):
             ".TRAN 1p 1n\n"
             ".END\n"
         )
-        self.assertIn("METHOD=BE", prepared)
-        self.assertNotIn("METHOD=AUTO", prepared)
-        self.assertTrue(any("METHOD=BE selected" in note for note in notes))
+        self.assertIn("METHOD=AUTO", prepared)
+        self.assertNotIn("METHOD=BE", prepared)
+        self.assertFalse(any("METHOD=BE selected" in note for note in notes))
 
-    def test_gspice_prepare_inserts_be_for_psp_transient_without_method(self):
+    def test_gspice_prepare_does_not_insert_method_for_psp_transient(self):
         bridge = SimulatorBridge("GSPICE", exe_path="gspice")
         prepared, notes = bridge._prepare_netlist_for_simulator(
             "X1 out in vdd vdd sg13_lv_pmos l=0.5u w=0.15u\n"
@@ -142,8 +142,9 @@ class SimulatorRuntimeManagerTest(unittest.TestCase):
             ".TRAN 1p 1n\n"
             ".END\n"
         )
-        self.assertIn(".OPTIONS RELTOL=1e-4 METHOD=BE", prepared)
-        self.assertTrue(any("METHOD=BE selected" in note for note in notes))
+        self.assertIn(".OPTIONS RELTOL=1e-4", prepared)
+        self.assertNotIn("METHOD=BE", prepared)
+        self.assertFalse(any("METHOD=BE selected" in note for note in notes))
 
     def test_gspice_prepare_adds_ihp_model_library_for_naked_pdk_deck(self):
         bridge = SimulatorBridge("GSPICE", exe_path="gspice")
@@ -283,28 +284,15 @@ class SimulatorRuntimeManagerTest(unittest.TestCase):
         self.assertIn(".PREPROCESS replaceground true", prepared)
         self.assertTrue(any("Routed IHP model library to xyce" in note for note in notes))
 
-    def test_xyce_adds_ihp_psp_plugin_when_available(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            plugin = Path(tmp) / "Xyce_Plugin_PSP103_VA.so"
-            plugin.write_text("", encoding="utf-8")
-            old = os.environ.get("LUMEN_XYCE_PLUGIN_DIR")
-            os.environ["LUMEN_XYCE_PLUGIN_DIR"] = tmp
-            try:
-                deck = (
-                    '.LIB "C:\\EDA\\LumenCircuitStudio\\external\\ihp_pdk\\ihp-sg13g2\\libs.tech\\xyce\\models\\cornerMOSlv.lib" mos_tt\n'
-                    "XM1 out in vdd vdd sg13_lv_pmos l=0.13u w=0.15u\n"
-                    ".TRAN 1n 1u\n"
-                    ".END\n"
-                )
-                bridge = SimulatorBridge("Xyce", exe_path="Xyce")
-                notes = bridge._prepare_command_line_rules(deck)
-            finally:
-                if old is None:
-                    os.environ.pop("LUMEN_XYCE_PLUGIN_DIR", None)
-                else:
-                    os.environ["LUMEN_XYCE_PLUGIN_DIR"] = old
-            self.assertIn(str(plugin), bridge._xyce_plugins)
-            self.assertTrue(any("Added IHP PSP plugin" in note for note in notes))
+    def test_xyce_does_not_add_external_psp_plugin(self):
+        deck = (
+            '.LIB "C:\\EDA\\LumenCircuitStudio\\external\\ihp_pdk\\ihp-sg13g2\\libs.tech\\xyce\\models\\cornerMOSlv.lib" mos_tt\n'
+            "XM1 out in vdd vdd sg13_lv_pmos l=0.13u w=0.15u\n"
+            ".TRAN 1n 1u\n"
+            ".END\n"
+        )
+        bridge = SimulatorBridge("Xyce", exe_path="Xyce")
+        self.assertEqual(bridge._prepare_command_line_rules(deck), [])
 
     def test_xyce_prepare_adds_print_and_skips_generic_options(self):
         deck = "V1 out 0 DC 1\n.OPTIONS RELTOL=1e-4\n.TRAN 1n 10n\n.END\n"
@@ -327,28 +315,22 @@ class SimulatorRuntimeManagerTest(unittest.TestCase):
                 str(con) if os.name == "nt" else str(exe),
             )
 
-    def test_ngspice_writes_ihp_psp_osdi_startup_when_available(self):
+    def test_ngspice_does_not_write_external_model_startup(self):
         with tempfile.TemporaryDirectory() as tmp:
             bridge = SimulatorBridge("Ngspice", exe_path="ngspice", work_dir=tmp)
-            if not bridge._default_gspice_osdi_dir():
-                self.skipTest("No local OSDI directory available")
             deck = (
                 "XM1 out in vdd vdd sg13_lv_pmos l=0.13u w=0.15u\n"
                 ".TRAN 1n 1u\n"
                 ".END\n"
             )
             prepared, notes = bridge._prepare_netlist_for_simulator(deck)
-            self.assertNotIn("pre_osdi", prepared.lower())
-            self.assertTrue(any(".spiceinit" in note for note in notes))
+            self.assertNotIn(".spiceinit", prepared.lower())
+            self.assertFalse(any(".spiceinit" in note for note in notes))
 
             run_notes = bridge._prepare_simulator_run_directory(prepared)
             startup = Path(tmp) / ".spiceinit"
-            self.assertTrue(startup.exists())
-            startup_text = startup.read_text(encoding="utf-8").lower()
-            self.assertIn("osdi", startup_text)
-            self.assertIn("psp103va.osdi", startup_text)
-            self.assertIn("pspnqs103va.osdi", startup_text)
-            self.assertTrue(any(".spiceinit" in note for note in run_notes))
+            self.assertFalse(startup.exists())
+            self.assertEqual(run_notes, [])
 
     def test_ngspice_psp_load_failure_gets_actionable_diagnostic(self):
         deck = "XM1 out in vdd vdd sg13_lv_pmos l=0.13u w=0.15u\n.END\n"
@@ -359,7 +341,7 @@ class SimulatorRuntimeManagerTest(unittest.TestCase):
             deck,
         )
         self.assertTrue(notes)
-        self.assertIn("did not load the IHP PSP", notes[0])
+        self.assertIn("PSP-class compact model", notes[0])
 
     def test_ascii_raw_parser_accepts_gspice_unindexed_rows(self):
         raw = (

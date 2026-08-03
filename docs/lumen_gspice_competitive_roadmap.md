@@ -36,14 +36,14 @@ GSPICE should become a serious open simulator backend for Lumen, but it must be 
 - Schematic editor, symbol editor, hierarchy navigation, SimENV, APW, and SigView foundations exist.
 - Multi-simulator runtime plumbing exists for GSPICE, Ngspice, and Xyce.
 - IHP SG13G2 device symbols and model libraries are partially integrated.
-- Ngspice OSDI loading is now handled through run-folder `.spiceinit`.
+- External compact-model startup loading has been removed from the independent architecture.
 - Xyce backend rules now route IHP model libraries to `libs.tech/xyce/models` and require the Xyce PSP plugin when needed.
 - GSPICE RAW parsing in Lumen now handles GSPICE unindexed rows and Ngspice indexed/multi-plot RAW files.
 
 ### GSPICE Strengths
 
 - Basic OP, DC, transient, AC-related infrastructure, behavioral sources, measurements, and some advanced analysis prototypes exist.
-- OSDI/PSP plumbing has started.
+- native PSP-class plumbing has started.
 - GSPICE emits model-status diagnostics.
 - Transient progress and RAW output exist.
 - It has a growing CTest/deck regression suite.
@@ -67,7 +67,7 @@ Lumen schematic / hierarchy / config
   -> comparison/regression reports
 ```
 
-The backend rule engine is mandatory. IIC-OSIC uses this pattern implicitly: Ngspice uses Ngspice model libraries and OSDI startup loading; Xyce uses Xyce model libraries and `-plugin` compiled Verilog-A models. Lumen should make that explicit and visible.
+The backend rule engine is mandatory. IIC-OSIC uses this pattern implicitly: Ngspice uses Ngspice model libraries and native model loading; Xyce uses Xyce model libraries and `-plugin` compiled native compact-model source models. Lumen should make that explicit and visible.
 
 ## Phase 0: Stabilization Gate
 
@@ -81,7 +81,7 @@ Target: make existing features reliable enough that future work has a stable bas
 - Ensure Stop Simulation kills the correct process and records cancellation.
 - Make SimENV simulator selection persist reliably.
 - Add a visible backend-rules summary before each run.
-- Add clear errors for missing Ngspice OSDI files and missing Xyce plugins.
+- Add clear errors for unsupported native compact models.
 
 ### GSPICE Work
 
@@ -112,14 +112,14 @@ Target: make simulator selection behave like a real rule profile.
   - supported analyses
   - supported source syntax
   - model-library folder preference
-  - required plugin/OSDI setup
+  - native compact-model availability
   - required output directives
   - unsupported directives and rewrite policy
   - raw/result parser
 - Add PDK model resolver:
   - IHP Ngspice path: `libs.tech/ngspice/models`
   - IHP Xyce path: `libs.tech/xyce/models`
-  - Ngspice OSDI path: `.spiceinit` or `spinit`
+  - native compact-model registry
   - Xyce plugin path: `libs.tech/xyce/plugins`
 - Add PDK lockfile:
   - PDK name/version/hash
@@ -130,9 +130,9 @@ Target: make simulator selection behave like a real rule profile.
 ### GSPICE Work
 
 - Define a GSPICE model-loading contract:
-  - `.OSDI`
-  - `.PRE_OSDI`
-  - `GSPICE_OSDI_DIR`
+  - `native model directive`
+  - `native model directive`
+  - `GSPICE_MODEL_DIR`
   - supported compact-model ABI versions
 - Emit model fidelity status for every active compact-model instance.
 - Add a strict mode that refuses any unvalidated compact model.
@@ -256,9 +256,9 @@ Target: make GSPICE trustworthy on a defined subset before expanding scope.
   - JFET/MESFET first-pass
   - primitive MOS as educational/debug only
 - Compact models:
-  - PSP via OSDI/OpenVAF
-  - BSIM family via OSDI/OpenVAF or native integration
-  - HICUM via OSDI/OpenVAF
+  - PSP via native compact-model
+  - BSIM family via native compact-model or native integration
+  - HICUM via native compact-model
   - resistor/capacitor foundry compact models
 
 ### Solver Work
@@ -422,7 +422,7 @@ industry-standard is powerful, but Lumen can win in transparency and automation.
   - symbol coverage
   - model coverage
   - simulator backend readiness
-  - missing plugin/OSDI checks
+  - unsupported compact-model checks
 - AI-assisted debug:
   - summarize failed runs
   - identify likely schematic mistakes
@@ -494,7 +494,7 @@ industry-standard is powerful, but Lumen can win in transparency and automation.
 2. Never silently replace a foundry model with a primitive model.
 3. Never show a waveform unless the parser knows which signal column is which.
 4. Never run Xyce with Ngspice model libraries.
-5. Never run Ngspice PSP decks without OSDI setup.
+5. Never run unsupported PSP-class decks through primitive fallback.
 6. Every simulator run must be reproducible from its manifest.
 7. Every GSPICE green feature must have reference validation.
 
@@ -504,10 +504,10 @@ industry-standard is powerful, but Lumen can win in transparency and automation.
 2. Add a SimENV panel that shows active backend rules before a run.
 3. Build an IHP simulator readiness checker:
    - Ngspice executable
-   - Ngspice OSDI load
+   - native compact-model availability
    - Xyce executable
    - Xyce PSP plugin
-   - GSPICE OSDI directory
+   - GSPICE native model registry
 4. Add reference comparison for the inverter deck:
    - GSPICE vs Ngspice
    - Xyce when plugin is available

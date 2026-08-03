@@ -73,9 +73,9 @@ If SigView shows unexpected waveforms, attach the whole run folder when reportin
 ## Known Limitations
 
 - GSPICE is not yet signoff-class or mature-reference-class for all compact-model cases.
-- PSP/OSDI support is active but still being validated against Ngspice/Xyce.
+- Native PSP-class compact-model support is not production-ready yet.
 - Xyce PSP flows require the matching Xyce plugin to be installed.
-- Ngspice PSP flows require OSDI setup.
+- Unsupported PSP-class decks should fail closed until native support exists.
 - Large RAW files may still need further lazy-loading and decimation work.
 - Layout-related flows are not part of this beta gate.
 

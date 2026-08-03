@@ -14,6 +14,7 @@ import re
 import math
 import tempfile
 import json
+import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -166,7 +167,6 @@ class SimulatorBridge:
     Ngspice/Xyce preparation helpers remain for compatibility tests and future
     work, but external simulator execution is disabled in this build.
     """
-    _ngspice_osdi_probe_cache: dict[str, tuple[bool, str]] = {}
     DISABLED_EXTERNAL_SIMULATORS = {"Ngspice", "Xyce"}
     DISABLED_EXTERNAL_MESSAGE = (
         "Ngspice/Xyce execution is disabled in this Lumen build; "
@@ -205,7 +205,6 @@ class SimulatorBridge:
         self._process: subprocess.Popen | None = None
         self._cancelled = False
         self._cache: dict[str, dict] = {}
-        self._xyce_plugins: list[str] = []
 
     @staticmethod
     def _normalize_gspice_save_mode(save_mode: str) -> str:
@@ -374,7 +373,7 @@ class SimulatorBridge:
         if transient_point_estimate and transient_point_estimate >= 1_000_000:
             warning = (
                 f"[Transient size] Estimated {transient_point_estimate:,} requested output point(s). "
-                "This can run for a long time with PSP/OSDI models; consider increasing print step "
+                "This can run for a long time with native compact models; consider increasing print step "
                 "or leaving maxstep controlled by the accuracy preset."
             )
             result.warnings.append(warning)
@@ -1166,10 +1165,8 @@ class SimulatorBridge:
             )
             if psp_deck and psp_missing:
                 notes.append(
-                    "Ngspice did not load the IHP PSP OpenVAF/OSDI models. "
-                    "This deck needs an OSDI-enabled Ngspice build that can load "
-                    "psp103va.osdi and pspnqs103va.osdi, or use GSPICE with its OSDI "
-                    "loader for this IHP PSP simulation."
+                    "This deck uses a PSP-class compact model that is not available in the selected backend. "
+                    "Use a supported primitive/debug deck or a native GSPICE compact model once implemented."
                 )
         elif self.simulator == "GSPICE":
             dc_op_fail = bool(
@@ -1341,10 +1338,7 @@ class SimulatorBridge:
     def _prepare_netlist_for_simulator(self, netlist: str) -> tuple[str, list[str]]:
         """Apply small compatibility rewrites before launching a simulator.
 
-        Modern GSPICE parses standard SPICE model libraries, subcircuits,
-        dynamic sources, and OpenVAF/OSDI model cards. Keep the deck faithful
-        so PDK wrappers such as IHP sg13_lv_nmos/pmos can reach the PSP OSDI
-        model instead of being downgraded to simplified primitive MOS devices.
+        Modern GSPICE parses standard SPICE model libraries, subcircuits, and dynamic sources. Unsupported compact models fail closed until native GSPICE implementations exist.
         """
         if self.simulator == "Xyce":
             return self._prepare_netlist_for_xyce(netlist)
@@ -1359,15 +1353,9 @@ class SimulatorBridge:
         netlist, ihp_note = self._ensure_ihp_model_libraries(netlist)
         if ihp_note:
             notes.append(ihp_note)
-        netlist, method_note = self._stabilize_gspice_psp_uic_method(netlist)
-        if method_note:
-            notes.append(method_note)
         netlist, ac_note = self._ensure_ac_operating_point(netlist)
         if ac_note:
             notes.append(ac_note)
-        osdi_dir = self._default_gspice_osdi_dir()
-        if osdi_dir and not os.environ.get("GSPICE_OSDI_DIR"):
-            notes.append(f"[GSPICE OSDI] Using PSP/OSDI search folder: {osdi_dir}")
         if not self.adaptive_maxstep:
             netlist, tran_note = self._ensure_gspice_transient_maxstep(netlist)
             if tran_note:
@@ -1384,26 +1372,6 @@ class SimulatorBridge:
         suffix = "s" if removed != 1 else ""
         return "\n".join(cleaned) + ("\n" if str(netlist or "").endswith("\n") else ""), (
             f"[GSPICE syntax] Removed {removed} standalone markdown separator line{suffix}."
-        )
-
-    @staticmethod
-    def _stabilize_gspice_psp_uic_method(netlist: str) -> tuple[str, str]:
-        text = str(netlist or "")
-        if not re.search(r"(?i)\bsg13_lv_[np]mos\b|\bpsp(?:nqs)?103va\b", text):
-            return text, ""
-        if not re.search(r"(?im)^\s*\.TRAN\b", text):
-            return text, ""
-        if re.search(r"(?im)^\s*\.OPTIONS?\b[^\n]*\bMETHOD\s*=\s*BE\b", text):
-            return text, ""
-        if re.search(r"(?im)^\s*\.OPTIONS?\b[^\n]*\bMETHOD\s*=", text):
-            updated = re.sub(r"(?im)(^\s*\.OPTIONS?\b[^\n]*\bMETHOD\s*=\s*)\S+", r"\1BE", text, count=1)
-        elif re.search(r"(?im)^\s*\.OPTIONS?\b", text):
-            updated = re.sub(r"(?im)(^\s*\.OPTIONS?\b[^\n]*)", r"\1 METHOD=BE", text, count=1)
-        else:
-            updated = SimulatorBridge._insert_before_end(text, ".OPTIONS METHOD=BE")
-        return updated, (
-            "[GSPICE PSP transient] METHOD=BE selected for IHP PSP transient stability; "
-            "Auto/Trapezoidal can crash this PSP deck during startup."
         )
 
     def _ensure_ac_operating_point(self, netlist: str) -> tuple[str, str]:
@@ -1523,7 +1491,7 @@ class SimulatorBridge:
         return text, notes
 
     def _prepare_netlist_for_ngspice(self, netlist: str) -> tuple[str, list[str]]:
-        """Keep Ngspice decks faithful; model loaders are written to .spiceinit."""
+        """Keep Ngspice decks faithful without external model-loader startup files."""
         text = str(netlist or "")
         notes: list[str] = []
         rewritten_lines = []
@@ -1532,16 +1500,7 @@ class SimulatorBridge:
             if rewrite_note:
                 notes.append(rewrite_note)
             rewritten_lines.append(rewritten)
-        text = "\n".join(rewritten_lines)
-        needs_psp = bool(re.search(r"(?i)\bpsp(?:nqs)?103va\b|\bsg13_lv_[np]mos\b", text))
-        already_loads = bool(re.search(r"(?im)^\s*\.?(?:pre_)?osdi\b", text))
-        if not needs_psp:
-            return text, notes
-        if already_loads:
-            notes.append("[Ngspice OSDI] Deck already contains an OSDI loader directive.")
-        else:
-            notes.append("[Ngspice OSDI] IHP PSP deck detected; OSDI loaders will be written to the run-folder .spiceinit.")
-        return text, notes
+        return "\n".join(rewritten_lines), notes
 
     def _rewrite_ihp_model_library_for_simulator(self, line: str, backend: str) -> tuple[str, str]:
         """Route IHP model .LIB directives to the selected simulator's model folder."""
@@ -1571,23 +1530,8 @@ class SimulatorBridge:
         return rewritten, f"[{self.simulator} rules] Routed IHP model library to {target}: {os.path.basename(target_path)}"
 
     def _prepare_simulator_run_directory(self, netlist: str) -> list[str]:
-        """Create per-run simulator startup files required before netlist parsing."""
-        if self.simulator != "Ngspice":
-            return []
-        if not re.search(r"(?i)\bpsp(?:nqs)?103va\b|\bsg13_lv_[np]mos\b", netlist or ""):
-            return []
-        paths = self._ngspice_osdi_paths()
-        missing = [path for path in paths if not path or not os.path.isfile(path)]
-        if missing:
-            return [
-                "[Ngspice OSDI] Could not write .spiceinit because compiled OpenVAF/OSDI "
-                f"files are missing: {', '.join(missing)}"
-            ]
-        init_path = os.path.join(self.work_dir, ".spiceinit")
-        lines = [f"osdi {self._ngspice_path_arg(path)}" for path in paths]
-        with open(init_path, "w", encoding="utf-8", newline="\n") as f:
-            f.write("\n".join(lines) + "\n")
-        return [f"[Ngspice OSDI] Wrote per-run .spiceinit with {len(paths)} PSP model loader(s)."]
+        """No external simulator startup files are needed for the independent flow."""
+        return []
 
     def _netlist_compatibility_errors(self, netlist: str) -> list[str]:
         errors: list[str] = []
@@ -1600,19 +1544,10 @@ class SimulatorBridge:
                     "Xyce deck still points at the IHP ngspice model library after backend rules. "
                     "This should have been routed to libs.tech/xyce/models."
                 )
-            if uses_ihp_xyce and uses_ihp_lv and not self._xyce_plugin_path("Xyce_Plugin_PSP103_VA.so"):
+            if uses_ihp_xyce and uses_ihp_lv:
                 errors.append(
-                    "Xyce needs the IHP PSP plugin for sg13_lv_nmos/sg13_lv_pmos, but "
-                    "Xyce_Plugin_PSP103_VA.so was not found. Build/install the IHP Xyce plugins "
-                    "with ADMS, matching the IIC-OSIC flow."
-                )
-        elif self.simulator == "Ngspice" and uses_ihp_ngspice and uses_ihp_lv:
-            osdi_ok, reason = self._ngspice_osdi_startup_available()
-            if not osdi_ok:
-                errors.append(
-                    "Ngspice cannot run this IHP PSP deck with the configured executable. "
-                    f"{reason} Select GSPICE for this run, or install/build an Ngspice binary "
-                    "with working OpenVAF/OSDI support."
+                    "Xyce PSP plugin loading is disabled in the independent Lumen flow. "
+                    "Use GSPICE native compact models once the required model is implemented."
                 )
         elif self.simulator == "GSPICE" and uses_ihp_lv and not uses_ihp_ngspice and not self._ihp_model_root():
             errors.append(
@@ -1624,31 +1559,7 @@ class SimulatorBridge:
 
     def _prepare_command_line_rules(self, netlist: str) -> list[str]:
         """Prepare simulator-specific command-line additions."""
-        self._xyce_plugins = []
-        if self.simulator != "Xyce":
-            return []
-        notes: list[str] = []
-        uses_ihp_xyce = bool(re.search(r"(?im)^\s*\.LIB\s+\"?[^\n\"]*libs\.tech[\\/]+xyce[\\/]+models[^\n\"]*", netlist or ""))
-        uses_ihp_lv = bool(re.search(r"(?im)^\s*X\S+\s+.*\bsg13_lv_[np]mos\b", netlist or ""))
-        if uses_ihp_xyce and uses_ihp_lv:
-            plugin = self._xyce_plugin_path("Xyce_Plugin_PSP103_VA.so")
-            if plugin:
-                self._xyce_plugins.append(plugin)
-                notes.append(f"[Xyce rules] Added IHP PSP plugin: {plugin}")
-        return notes
-
-    def _xyce_plugin_path(self, filename: str) -> str:
-        roots = self._ihp_pdk_roots()
-        for root in roots:
-            candidate = os.path.join(root, "libs.tech", "xyce", "plugins", filename)
-            if os.path.isfile(candidate):
-                return candidate
-        env = os.environ.get("LUMEN_XYCE_PLUGIN_DIR") or os.environ.get("XYCE_PLUGIN_DIR") or ""
-        if env:
-            candidate = os.path.join(env, filename)
-            if os.path.isfile(candidate):
-                return candidate
-        return ""
+        return []
 
     def _ihp_pdk_roots(self) -> list[str]:
         roots: list[str] = []
@@ -1675,75 +1586,6 @@ class SimulatorBridge:
             if candidate.exists():
                 roots.append(text)
         return roots
-
-    def _ngspice_osdi_startup_available(self) -> tuple[bool, str]:
-        """Return whether Ngspice can load OSDI from a local .spiceinit before parsing."""
-        exe = self._ngspice_batch_executable()
-        cache_key = os.path.abspath(exe) if exe else ""
-        if cache_key in self._ngspice_osdi_probe_cache:
-            return self._ngspice_osdi_probe_cache[cache_key]
-
-        paths = self._ngspice_osdi_paths()
-        osdi_path = paths[0] if paths else ""
-        if not osdi_path or not os.path.isfile(osdi_path):
-            result = False, "The required psp103va.osdi file was not found."
-            self._ngspice_osdi_probe_cache[cache_key] = result
-            return result
-
-        if not (os.path.isfile(exe) or shutil.which(exe)):
-            result = False, f"Ngspice executable was not found: {exe}."
-            self._ngspice_osdi_probe_cache[cache_key] = result
-            return result
-
-        try:
-            probe_dir = tempfile.mkdtemp(prefix="lumen_ngspice_osdi_probe_", dir=self.work_dir)
-            probe_path = os.path.join(probe_dir, "input.sp")
-            init_path = os.path.join(probe_dir, ".spiceinit")
-            with open(init_path, "w", encoding="utf-8", newline="\n") as f:
-                f.write(f"osdi {self._ngspice_path_arg(osdi_path)}\n")
-            with open(probe_path, "w", encoding="utf-8", newline="\n") as f:
-                f.write("* Lumen Ngspice OSDI probe\n.END\n")
-            completed = subprocess.run(
-                [exe, "-b", "input.sp"],
-                cwd=probe_dir,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=8,
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-            )
-        except Exception as exc:
-            result = False, f"OSDI probe could not be executed ({exc})."
-            self._ngspice_osdi_probe_cache[cache_key] = result
-            return result
-        finally:
-            try:
-                if "probe_dir" in locals():
-                    shutil.rmtree(probe_dir, ignore_errors=True)
-            except OSError:
-                pass
-
-        combined = f"{completed.stdout}\n{completed.stderr}"
-        failed_osdi = re.search(
-            r"(?i)osdi.*(?:model name is not found|could not find a valid modelname)|unknown command.*osdi|cannot\s+load|failed\s+to\s+load",
-            combined,
-            re.DOTALL,
-        )
-        if failed_osdi:
-            result = False, "This Ngspice build did not load OpenVAF/OSDI models from .spiceinit."
-        else:
-            result = True, ""
-        self._ngspice_osdi_probe_cache[cache_key] = result
-        return result
-
-    def _ngspice_osdi_paths(self) -> list[str]:
-        osdi_dir = self._default_gspice_osdi_dir()
-        if not osdi_dir:
-            return []
-        return [
-            os.path.join(osdi_dir, "psp103va.osdi"),
-            os.path.join(osdi_dir, "pspnqs103va.osdi"),
-        ]
 
     @staticmethod
     def _ngspice_path_arg(path: str) -> str:
@@ -1870,150 +1712,15 @@ class SimulatorBridge:
                 return f"{value:g}{suffix}"
         return f"{seconds:.6g}"
 
-    def _build_process_env(self) -> dict[str, str]:
-        env = os.environ.copy()
-        if self.simulator == "GSPICE":
-            # Enable PSP/OSDI charge equations so transient runs include
-            # device capacitance instead of only quasi-static operating points.
-            env["GSPICE_ENABLE_OSDI_TRAN"] = "1"
-            if not env.get("GSPICE_OSDI_DIR"):
-                osdi_dir = self._default_gspice_osdi_dir()
-                if osdi_dir:
-                    env["GSPICE_OSDI_DIR"] = osdi_dir
-        return env
-
-    def _default_gspice_osdi_dir(self) -> str:
-        candidates: list[str] = []
-        exe = os.path.abspath(self.exe_path) if self.exe_path else ""
-        if exe:
-            # Common developer layout: C:\EDA\GSPICE\build\Release\gspice.exe
-            root = os.path.dirname(os.path.dirname(os.path.dirname(exe)))
-            candidates.append(os.path.join(root, "osdi"))
-            candidates.append(os.path.join(os.path.dirname(exe), "osdi"))
-        candidates.append(r"C:\EDA\GSPICE\osdi")
-        for path in candidates:
-            if path and os.path.isdir(path):
-                return path
-        return ""
-
-    def _convert_gspice_pdk_mos(self, tokens: list[str]) -> str:
-        """Convert known PDK MOS subckt instances to GSPICE primitive MOS lines."""
-        if len(tokens) < 6:
-            return ""
-
-        model_name = tokens[5].lower()
-        if not any(marker in model_name for marker in ("nmos", "pmos", "nfet", "pfet")):
-            return ""
-
-        inst_name = tokens[0]
-        if inst_name.upper().startswith("X"):
-            suffix = inst_name[1:] or inst_name
-            inst_name = suffix if suffix.upper().startswith("M") else "M" + suffix
-
-        mos_type = "PMOS" if any(marker in model_name for marker in ("pmos", "pfet")) else "NMOS"
-        params = self._normalize_gspice_mos_params(tokens[6:])
-        return " ".join([inst_name, *tokens[1:5], mos_type, *params])
-
-    def _normalize_gspice_mos_params(self, params: list[str]) -> list[str]:
-        """Keep GSPICE-supported MOS params and normalize common PDK aliases."""
-        normalized: list[str] = []
-        aliases = {
-            "w": "W",
-            "l": "L",
-        }
-        for param in params:
-            if "=" not in param:
-                continue
-            key, value = param.split("=", 1)
-            mapped_key = aliases.get(key.strip().lower())
-            if not mapped_key:
-                continue
-            normalized.append(f"{mapped_key}={value.strip()}")
-        return normalized
-
-    def _convert_dynamic_source_for_gspice(self, tokens: list[str]) -> str:
-        """Convert dynamic source syntax (PULSE/SIN/...) to a safe DC fallback."""
-        if len(tokens) < 4:
-            return ""
-        supported_wave = ("PULSE(", "SIN(", "PWL(", "EXP(", "SFFM(")
-
-        wave_token = ""
-        for tok in tokens[3:]:
-            upper_tok = tok.upper()
-            if any(upper_tok.startswith(prefix) for prefix in supported_wave):
-                wave_token = tok
-                break
-        if not wave_token:
-            return ""
-
-        # Derive a conservative DC value from the first waveform argument.
-        first_arg = "0"
-        raw = wave_token
-        if "(" in raw:
-            after = raw.split("(", 1)[1]
-            first_arg = after.split(",", 1)[0].strip()
-            first_arg = first_arg.split(")", 1)[0].strip() or "0"
-        if first_arg.upper().startswith(("PULSE", "SIN", "PWL", "EXP", "SFFM")):
-            first_arg = "0"
-
-        name = tokens[0]
-        nplus = tokens[1] if len(tokens) > 1 else "0"
-        nminus = tokens[2] if len(tokens) > 2 else "0"
-        return f"{name} {nplus} {nminus} {first_arg}"
-
-    def simulate_with_retry(self, netlist: str, sim_name: str = "sim",
-                            threads: int = 4, callback=None,
-                            timeout: int = 0, max_retries: int = 1,
-                            retry_delay: float = 1.0) -> SimulationResult:
-        """Run simulation with automatic retry on transient failures."""
-        last_result = None
-        for attempt in range(max_retries + 1):
-            if attempt > 0:
-                time.sleep(retry_delay)
-
-            result = self.simulate(
-                netlist, sim_name, threads, None, timeout
-            )
-            last_result = result
-
-            if result.success:
-                if attempt > 0:
-                    result.log += f"\n[Retry {attempt}/{max_retries} succeeded]"
-                if callback:
-                    callback(result)
-                return result
-
-            # Don't retry on cancellation
-            if self._cancelled:
-                break
-
-            # Check if error is retryable
-            retryable = any(
-                err in result.log for err in [
-                    "timed out", "connection refused", "resource temporarily unavailable",
-                    "interrupted", "signal"
-                ]
-            )
-            if not retryable and attempt < max_retries:
-                # For convergence failures, try with modified parameters
-                if "convergence" in result.log.lower() or "singular" in result.log.lower():
-                    retryable = True
-
-            if not retryable:
-                break
-
-        if callback and last_result:
-            callback(last_result)
-        return last_result
-
     def _compute_cache_key(self, netlist_path: str, output_path: str) -> str:
-        """Compute cache key from netlist and output file metadata."""
-        try:
-            net_mtime = os.path.getmtime(netlist_path)
-            raw_mtime = os.path.getmtime(output_path)
-            return f"{netlist_path}:{net_mtime}:{raw_mtime}"
-        except OSError:
-            return ""
+        digest = hashlib.sha256()
+        digest.update(self.simulator.encode("utf-8", errors="ignore"))
+        digest.update(b"\0")
+        digest.update(str(getattr(self, "save_mode", "")).encode("utf-8", errors="ignore"))
+        digest.update(b"\0")
+        with open(netlist_path, "rb") as handle:
+            digest.update(handle.read())
+        return digest.hexdigest()
 
     def _find_gspice_ssh_script(self) -> str:
         candidates = [
@@ -2022,9 +1729,9 @@ class SimulatorBridge:
             os.path.join(os.path.dirname(self.exe_path), "..", "tools", "gspice_ssh.py"),
             os.path.join(os.path.dirname(self.exe_path), "gspice_ssh.py"),
         ]
-        for p in candidates:
-            if os.path.isfile(p):
-                return os.path.abspath(p)
+        for path in candidates:
+            if os.path.isfile(path):
+                return os.path.abspath(path)
         return r"C:\EDA\GSPICE\tools\gspice_ssh.py"
 
     def _build_command(self, netlist_path, output_path, threads):
@@ -2044,27 +1751,25 @@ class SimulatorBridge:
                     cmd.extend(gspice_options)
                     cmd.extend(["--threads", str(max(1, int(threads or 1))), "-o", output_path, netlist_path])
                     return cmd
-                else:
-                    import sys
-                    script = self._find_gspice_ssh_script()
-                    cmd = [
-                        sys.executable or "python",
-                        script,
-                        netlist_path,
-                        "--host", self.ssh_host,
-                        "--user", self.ssh_user,
-                        "--output", output_path,
-                        "--deploy-binary",
-                        "--keep-remote",
-                    ]
-                    if getattr(self, "ssh_key", ""):
-                        cmd.extend(["--key", self.ssh_key])
-                    if getattr(self, "remote_gspice", ""):
-                        cmd.extend(["--remote-gspice", self.remote_gspice])
-                    if self.exe_path and os.path.isfile(self.exe_path):
-                        cmd.extend(["--local-binary", self.exe_path])
-                    cmd.extend(gspice_options)
-                    return cmd
+                import sys
+                cmd = [
+                    sys.executable or "python",
+                    self._find_gspice_ssh_script(),
+                    netlist_path,
+                    "--host", self.ssh_host,
+                    "--user", self.ssh_user,
+                    "--output", output_path,
+                    "--deploy-binary",
+                    "--keep-remote",
+                ]
+                if getattr(self, "ssh_key", ""):
+                    cmd.extend(["--key", self.ssh_key])
+                if getattr(self, "remote_gspice", ""):
+                    cmd.extend(["--remote-gspice", self.remote_gspice])
+                if self.exe_path and os.path.isfile(self.exe_path):
+                    cmd.extend(["--local-binary", self.exe_path])
+                cmd.extend(gspice_options)
+                return cmd
             return [
                 self.exe_path,
                 *gspice_options,
@@ -2074,9 +1779,7 @@ class SimulatorBridge:
                 output_path,
                 netlist_path,
             ]
-        elif self.simulator == "Ngspice":
-            raise RuntimeError(self.DISABLED_EXTERNAL_MESSAGE)
-        elif self.simulator == "Xyce":
+        if self.simulator in {"Ngspice", "Xyce"}:
             raise RuntimeError(self.DISABLED_EXTERNAL_MESSAGE)
         return [self.exe_path, netlist_path]
 
@@ -2088,6 +1791,10 @@ class SimulatorBridge:
         if rel.startswith("..") or os.path.isabs(rel):
             return path
         return rel
+
+    def _build_process_env(self) -> dict[str, str]:
+        env = os.environ.copy()
+        return env
 
     def _ngspice_batch_executable(self) -> str:
         exe = str(self.exe_path or "")
