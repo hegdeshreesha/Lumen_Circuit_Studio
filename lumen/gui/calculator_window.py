@@ -5,7 +5,7 @@ Provides an interactive GUI Calculator window matching waveform-analysis Calcula
 - Visual signal selectors (VT, IT, VF)
 - Function pad (Math, Calculus, Measurements, Spectral)
 - Expression stack & buffer history
-- Plot & Send-to-ADE output linkage
+- Plot and Send-to-Simulation-Cockpit output linkage
 """
 from __future__ import annotations
 

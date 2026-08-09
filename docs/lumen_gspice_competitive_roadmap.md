@@ -2,7 +2,7 @@
 
 Date: 2026-07-14
 
-Scope: Lumen Circuit Studio, SigView, SimENV/APW, PDK integration, simulator backends, and GSPICE. The goal is not to copy industry-standard feature-by-feature. The goal is to build a custom IC design platform that is reliable, transparent, automation-friendly, and eventually competitive with custom IC editor/ADE/Viva/signoff-class workflows.
+Scope: Lumen Circuit Studio, SigView, SimENV/APW, PDK integration, simulator backends, and GSPICE. The goal is to build a custom IC design platform that is reliable, transparent, automation-friendly, and eventually competitive with full custom IC, waveform, and signoff-class workflows.
 
 ## Product North Star
 
@@ -184,7 +184,7 @@ Target: make schematic capture deterministic and professional.
 
 ## Phase 3: SimENV, SigView, And Calculator Integration
 
-Target: reach ADE/Viva-style daily usability, then exceed it.
+Target: reach Simulation Cockpit daily usability, then exceed it.
 
 ### SimENV Work
 
@@ -330,7 +330,7 @@ Target: make GSPICE trustworthy on a defined subset before expanding scope.
 - Each yellow feature is marked experimental in Lumen.
 - Each red feature is blocked in Lumen with a clear message.
 
-## Phase 5: ADE-XL-Class Campaigns
+## Phase 5: Simulation Cockpit campaign Campaigns
 
 Target: make Lumen useful for real design exploration.
 
@@ -472,7 +472,7 @@ industry-standard is powerful, but Lumen can win in transparency and automation.
 ### v2.0: Signoff-Oriented Flow
 
 - Layout/LVS/PEX integration.
-- ADE-XL-class campaigns.
+- Simulation Cockpit campaign campaigns.
 - Production result database.
 - Broader PDK support.
 - Stronger GSPICE compact-model validation.

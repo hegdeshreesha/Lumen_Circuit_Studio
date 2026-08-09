@@ -1,4 +1,4 @@
-"""ADE-XL style run plan abstraction and batch execution."""
+"""Simulation Cockpit campaign style run plan abstraction and batch execution."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -19,7 +19,7 @@ class RunPlan:
 
 
 class RunPlanExecutor:
-    """Execute run plans against an ADE session."""
+    """Execute run plans against an Simulation Cockpit Session."""
 
     def __init__(self, session: ADESession):
         self.session = session

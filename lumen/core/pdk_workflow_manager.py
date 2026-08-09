@@ -734,7 +734,7 @@ class PDKWorkflowManager:
         # 1. Install/register a PDK (like running PDK setup script)
         manager.install_pdk("sky130", "/path/to/skywater-pdk")
         
-        # 2. Select model libraries (like choosing .lib files in ADE)
+        # 2. Select model libraries (like choosing .lib files in Simulation Cockpit)
         manager.select_model_library("sky130", "path/to/models.lib")
         
         # 3. Set active corner (like choosing TT/FF/SS in simulation)
@@ -1147,7 +1147,7 @@ class PDKWorkflowManager:
         """
         Select a model library for use.
         
-        In commercial custom IC platforms, you select model libraries in ADE (Analog Design
+        In commercial custom IC platforms, you select model libraries in Simulation Cockpit (Analog Design
         Environment) by choosing .lib files and their corners.
         
         This is equivalent to:
@@ -1177,7 +1177,7 @@ class PDKWorkflowManager:
         """
         Set the active process corner.
         
-        In commercial custom IC platforms, you select the corner in ADE:
+        In commercial custom IC platforms, you select the corner in Simulation Cockpit:
         - tt (typical-typical)
         - ff (fast-fast)  
         - ss (slow-slow)

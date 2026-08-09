@@ -1046,10 +1046,11 @@ class SchematicEditorWindow(QMainWindow):
         if kind == "operating_point":
             inst_name = str(data.get("instance", "")).strip()
             pin_voltages = self._dc_pin_voltages_for_instance(waveforms, inst_name)
-            if not pin_voltages:
-                QMessageBox.information(self, "Annotate DC Operating Point", f"No DC OP terminal voltages were found for '{inst_name}'.")
+            op_values = self._dc_op_values_for_instance(waveforms, inst_name)
+            if not pin_voltages and not op_values:
+                QMessageBox.information(self, "Annotate DC Operating Point", f"No DC OP values were found for '{inst_name}'.")
                 return
-            self.editor.annotate_dc_operating_point(inst_name, pin_voltages)
+            self.editor.annotate_dc_operating_point(inst_name, pin_voltages, op_values)
             source = self._dc_annotation_source or "simulation result"
             self.statusBar().showMessage(f"Annotated DC OP for {inst_name} from {source}", 5000)
 
@@ -1221,6 +1222,47 @@ class SchematicEditorWindow(QMainWindow):
             if value is not None:
                 pin_values[str(pin_name)] = value
         return pin_values
+
+    def _dc_op_values_for_instance(self, waveforms: dict, instance_name: str) -> dict[str, float]:
+        inst = self.editor._find_instance_by_name(instance_name)
+        if inst is None or not isinstance(waveforms, dict):
+            return {}
+        inst_keys = {
+            self._dc_trace_key(instance_name),
+            self._dc_trace_key(str(getattr(inst, "instance_name", "") or "")),
+        }
+        values: dict[str, float] = {}
+        wanted = {"id", "ids", "gm", "gds", "vth", "vdsat"}
+        for raw_name, raw_values in waveforms.items():
+            name = str(raw_name or "").strip()
+            if not name or name.startswith("_"):
+                continue
+            parsed = self._parse_dc_op_trace_name(name)
+            if not parsed:
+                continue
+            inst_key, var_key = parsed
+            if inst_key not in inst_keys or var_key not in wanted:
+                continue
+            value = self._last_finite_scalar(raw_values)
+            if value is not None:
+                values[var_key] = value
+        return values
+
+    @staticmethod
+    def _parse_dc_op_trace_name(name: str) -> tuple[str, str] | None:
+        text = str(name or "").strip()
+        patterns = [
+            r"^@?([^.\[\]\s]+)\[([A-Za-z0-9_]+)\]$",
+            r"^([^.\[\]\s]+)\.([A-Za-z0-9_]+)$",
+            r"^([A-Za-z0-9_:$]+):([A-Za-z0-9_]+)$",
+        ]
+        for pattern in patterns:
+            match = re.match(pattern, text)
+            if match:
+                inst = SchematicEditorWindow._dc_trace_key(match.group(1))
+                var = SchematicEditorWindow._dc_trace_key(match.group(2))
+                return inst, var
+        return None
 
     def _dc_value_for_net(self, waveforms: dict, net: str) -> float | None:
         target = str(net or "").strip()

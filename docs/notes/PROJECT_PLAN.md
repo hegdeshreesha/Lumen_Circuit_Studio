@@ -83,7 +83,7 @@ Added to `LibraryDatabase`:
 │  ├─ Hierarchy Browser                                      │
 │  ├─ Property Editor (with PDK constraints)                │
 │  ├─ Waveform Viewer                                        │
-│  └─ ADE (Analog Design Environment)                       │
+│  └─ Simulation Cockpit                                    │
 ├─────────────────────────────────────────────────────────────┤
 │  Core Engine                                              │
 │  ├─ LibraryDatabase (JSON file hierarchy)                 │
@@ -114,7 +114,7 @@ Added to `LibraryDatabase`:
 - [x] Add JSON schema validation
 - [x] Ensure all tests pass (11/11)
 
-### Phase 2: ADE Foundation (2-3 weeks)
+### Phase 2: Simulation Cockpit Foundation (2-3 weeks)
 **Goal:** Analog Design Environment with simulation support
 
 Components:
@@ -261,7 +261,7 @@ Components:
 - [x] Schema validation integrated
 
 ### Phase 2 Success
-- [ ] ADE can configure and run NGSPICE simulation
+- [ ] Simulation Cockpit can configure and run NGSPICE simulation
 - [ ] Waveform viewer displays results
 - [ ] Parameter sweep executes correctly
 - [ ] Results caching reduces repeat runs by 10x
@@ -332,13 +332,13 @@ Components:
 
 ## Next Steps
 
-1. **Immediate:** Begin Phase 2 (ADE Foundation)
+1. **Immediate:** Begin Phase 2 (Simulation Cockpit Foundation)
    - Design simulation configuration model
    - Implement netlist generator interface
    - Create NGSPACE backend
    - Build results database
 
-2. **Week 1-2:** Complete ADE prototype
+2. **Week 1-2:** Complete Simulation Cockpit prototype
    - Simple circuit simulation end-to-end
    - Waveform display
    - Parameter sweep
@@ -357,6 +357,6 @@ Components:
 
 Lumen Circuit Studio is positioned to become the modern alternative to commercial custom IC platforms. With its schema-driven architecture, unified PDK management, and Python-based extensibility, it offers a compelling value proposition for both individual designers and teams.
 
-The foundation is solid (Phase 1 complete). Now we build the ADE and schematic capture to deliver a working prototype that demonstrates the full workflow.
+The foundation is solid (Phase 1 complete). Now we build the Simulation Cockpit and schematic capture to deliver a working prototype that demonstrates the full workflow.
 
 **Status:** Phase 1 ✅ COMPLETE | Phase 2 🚧 READY TO START

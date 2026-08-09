@@ -114,6 +114,7 @@ class SimulatorRuntimeManager:
         sim = self._normalize_simulator(simulator)
         if not sim or sim not in ACTIVE_SIMULATORS:
             return ""
+        prefer_klu = sim == "GSPICE" and self.gspice_prefer_klu()
         configured = self._normalize_executable(
             self._config.get("simulators", {}).get(sim, {}).get("active_executable", "")
         )
@@ -124,8 +125,8 @@ class SimulatorRuntimeManager:
                     self._config.get("simulators", {}).get(sim, {}).get("active_source", "")
                 ).lower()
                 if (
-                    sim == "GSPICE"
-                    and configured_source in {"", "auto", "default", "path", "config"}
+                    prefer_klu
+                    and configured_source in {"", "auto", "default", "path", "config", "preferred"}
                     and not self._gspice_executable_has_klu(resolved)
                 ):
                     preferred = self._find_preferred_gspice_klu()
@@ -138,6 +139,26 @@ class SimulatorRuntimeManager:
             self.set_active_executable(sim, discovered[0].executable, source=discovered[0].source)
             return discovered[0].executable
         return ""
+
+    def gspice_prefer_klu(self) -> bool:
+        entry = self._config.get("simulators", {}).get("GSPICE", {})
+        return bool(entry.get("prefer_klu", True))
+
+    def set_gspice_prefer_klu(self, enabled: bool) -> bool:
+        self._config.setdefault("simulators", {}).setdefault("GSPICE", {})["prefer_klu"] = bool(enabled)
+        if enabled:
+            active = self.get_active_executable("GSPICE")
+            if not active or not self._gspice_executable_has_klu(active):
+                preferred = self._find_preferred_gspice_klu()
+                if not preferred:
+                    self._save_config()
+                    return False
+                self.set_active_executable("GSPICE", preferred, source="preferred-klu")
+        self._save_config()
+        return True
+
+    def active_gspice_has_klu(self) -> bool:
+        return self._gspice_executable_has_klu(self.get_active_executable("GSPICE"))
 
     def set_active_executable(self, simulator: str, executable: str, source: str = "manual") -> bool:
         sim = self._normalize_simulator(simulator)
@@ -512,9 +533,10 @@ class SimulatorRuntimeManager:
         if simulator != "GSPICE":
             return []
         return [
-            r"C:\EDA\GSPICE\build\Release\gspice.exe",
+            r"C:\EDA\GSPICE\build-klu\Release\gspice.exe",
             r"C:\EDA\GSPICE\build-vcpkg\Release\gspice.exe",
             r"C:\EDA\GSPICE\build-vcpkg\gspice.exe",
+            r"C:\EDA\GSPICE\build\Release\gspice.exe",
         ]
 
     def _find_preferred_gspice_klu(self) -> str:

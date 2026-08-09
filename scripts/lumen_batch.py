@@ -12,7 +12,7 @@ from lumen.core.run_plan import RunPlan, RunPlanExecutor
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run Lumen ADE plans in batch mode.")
+    parser = argparse.ArgumentParser(description="Run Lumen Simulation Cockpit plans in batch mode.")
     parser.add_argument("--workspace", required=True, help="Workspace path")
     parser.add_argument("--library", required=True, help="Top library")
     parser.add_argument("--cell", required=True, help="Top cell")
@@ -52,4 +52,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-

@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from lumen.core.simulator import SimulatorBridge
+from lumen.core.simulator import SimulatorBridge, get_simulator_timeout
 from lumen.core.simulator_compare import compare_waveforms, format_reference_report, ReferenceRunComparison
 from lumen.core.simulator_runtime import ACTIVE_SIMULATORS, SimulatorRuntimeManager
 
@@ -35,6 +35,9 @@ class SimulatorRuntimeManagerTest(unittest.TestCase):
             self.assertNotIn("Ngspice", sims)
             self.assertNotIn("Xyce", sims)
             self.assertEqual(set(ACTIVE_SIMULATORS), set(sims.keys()))
+
+    def test_gspice_default_timeout_is_bounded_for_production_runs(self):
+        self.assertEqual(get_simulator_timeout("GSPICE"), 900)
 
     def test_disabled_external_simulators_are_not_activated(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -73,6 +76,37 @@ class SimulatorRuntimeManagerTest(unittest.TestCase):
                     patch.object(manager, "probe_version", return_value="GSPICE test"), \
                     patch.object(manager, "_gspice_executable_has_klu", side_effect=has_klu):
                 self.assertEqual(manager.get_active_executable("GSPICE"), str(klu))
+
+    def test_gspice_klu_preference_selects_klu_runtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "ws"
+            workspace.mkdir(parents=True, exist_ok=True)
+            internal = workspace / "internal" / "gspice.exe"
+            klu = workspace / "build-vcpkg" / "gspice.exe"
+            internal.parent.mkdir(parents=True, exist_ok=True)
+            klu.parent.mkdir(parents=True, exist_ok=True)
+            internal.write_text("", encoding="utf-8")
+            klu.write_text("", encoding="utf-8")
+
+            manager = SimulatorRuntimeManager(str(workspace))
+            manager.set_active_executable("GSPICE", str(internal))
+
+            def has_klu(path: str) -> bool:
+                return Path(path) == klu
+
+            with patch.object(manager, "_preferred_candidate_paths", return_value=[str(klu)]), \
+                    patch.object(manager, "probe_version", return_value="GSPICE test"), \
+                    patch.object(manager, "_gspice_executable_has_klu", side_effect=has_klu):
+                self.assertTrue(manager.set_gspice_prefer_klu(True))
+                self.assertEqual(manager.get_active_executable("GSPICE"), str(klu))
+
+    def test_gspice_preferred_paths_try_vcpkg_before_plain_release(self):
+        manager = SimulatorRuntimeManager(tempfile.gettempdir())
+        preferred = manager._preferred_candidate_paths("GSPICE")
+        self.assertLess(
+            preferred.index(r"C:\EDA\GSPICE\build-vcpkg\gspice.exe"),
+            preferred.index(r"C:\EDA\GSPICE\build\Release\gspice.exe"),
+        )
 
     def test_external_raw_backends_are_not_launchable(self):
         for name in ("NGSPICE", "xyce"):

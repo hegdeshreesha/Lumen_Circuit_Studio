@@ -621,7 +621,8 @@ class SimEnvSimulationWorker(QObject):
                  timeout: int = 0, workspace: str = "", compare_references: bool = True,
                  sim_env: str = "local", ssh_host: str = "", ssh_user: str = "",
                  ssh_key: str = "", remote_gspice: str = "",
-                 save_mode: str = "all", adaptive_maxstep: bool = True):
+                 save_mode: str = "all", adaptive_maxstep: bool = True,
+                 verbose_compat: bool = False):
         super().__init__()
         self.simulator = simulator
         self.exe_path = exe_path
@@ -638,6 +639,7 @@ class SimEnvSimulationWorker(QObject):
         self.remote_gspice = remote_gspice
         self.save_mode = save_mode
         self.adaptive_maxstep = bool(adaptive_maxstep)
+        self.verbose_compat = bool(verbose_compat)
         self._bridge: SimulatorBridge | None = None
         self._cancelled = False
 
@@ -654,6 +656,7 @@ class SimEnvSimulationWorker(QObject):
                 remote_gspice=self.remote_gspice,
                 save_mode=self.save_mode,
                 adaptive_maxstep=self.adaptive_maxstep,
+                verbose_compat=self.verbose_compat,
             )
             for run_name, netlist, sim_name in self.jobs:
                 if self._cancelled:
@@ -1507,11 +1510,15 @@ class ADEWindow(QMainWindow):
         self._missing_sim_prompted: set[str] = set()
         self._sim_dump_dir = self._default_sim_dump_dir()
         self._sim_threads = 1
+        self._sim_timeout = 0
         self._sim_accuracy = "High"
         self._sim_tolerance_override = ""
         self._sim_method = "Auto"
         self._sim_save_mode = "all"
         self._sim_adaptive_maxstep = True
+        self._sim_save_adaptive_points = True
+        self._sim_prefer_klu = True
+        self._sim_verbose_compat = False
         self._simenv_autosave_suspended = False
         self._build_ui()
         self._apply_ade_workbench_style()
@@ -1562,6 +1569,7 @@ class ADEWindow(QMainWindow):
             work_dir=dump_dir,
             save_mode=self._sim_save_mode,
             adaptive_maxstep=self._sim_adaptive_maxstep,
+            verbose_compat=self._sim_verbose_compat,
         )
 
     def _sim_thread_count(self) -> int:
@@ -1600,12 +1608,14 @@ class ADEWindow(QMainWindow):
             f"METHOD={method}",
             "ADAPTIVE=1",
             f"SAVE={self._sim_save_mode_token()}",
-            "SOLVER=AUTO",
+            f"SOLVER={'KLU' if getattr(self, '_sim_prefer_klu', True) else 'AUTO'}",
             "TRAN_STAMP_CACHE=1",
             *[f"{key}={value}" for key, value in preset.items()],
         ]
         if self._sim_adaptive_maxstep:
             parts.append("MAXSTEP=AUTO")
+        if getattr(self, "_sim_save_adaptive_points", True):
+            parts.append("SAVEADAPTIVE=1")
         return ".OPTIONS " + " ".join(parts)
 
     @staticmethod
@@ -1693,6 +1703,19 @@ class ADEWindow(QMainWindow):
         self._refresh_run_plan()
         self._save_simenv_view_silent()
 
+    def _sim_timeout_seconds(self) -> int:
+        value = self._sim_timeout
+        if hasattr(self, "timeout_spin"):
+            value = self.timeout_spin.value()
+        return max(0, min(86400, int(value or 0)))
+
+    def _on_timeout_changed(self, value: int):
+        self._sim_timeout = self._sim_timeout_seconds()
+        label = "Auto" if self._sim_timeout <= 0 else f"{self._sim_timeout}s"
+        self._log(f"{self._current_simulator} timeout set to: {label}")
+        self._refresh_run_plan()
+        self._save_simenv_view_silent()
+
     def _on_tolerance_override_changed(self, text: str):
         value = str(text or "").strip()
         if value:
@@ -1738,6 +1761,30 @@ class ADEWindow(QMainWindow):
         self._sim_adaptive_maxstep = bool(checked)
         state = "enabled" if self._sim_adaptive_maxstep else "disabled"
         self._log(f"{self._current_simulator} adaptive transient maxstep {state}")
+        self._refresh_run_plan()
+        self._save_simenv_view_silent()
+
+    def _on_save_adaptive_points_changed(self, checked: bool):
+        self._sim_save_adaptive_points = bool(checked)
+        state = "enabled" if self._sim_save_adaptive_points else "disabled"
+        self._log(f"{self._current_simulator} transient internal-point RAW output {state}")
+        self._refresh_run_plan()
+        self._save_simenv_view_silent()
+
+    def _on_klu_changed(self, checked: bool):
+        self._sim_prefer_klu = bool(checked)
+        runtime = SimulatorRuntimeManager(str(getattr(self.db, "workspace", "")))
+        ok = runtime.set_gspice_prefer_klu(self._sim_prefer_klu)
+        if checked and not ok:
+            self._sim_prefer_klu = False
+            if hasattr(self, "klu_check"):
+                self.klu_check.blockSignals(True)
+                self.klu_check.setChecked(False)
+                self.klu_check.blockSignals(False)
+            self._log("GSPICE KLU build not found; build/select a SuiteSparse-KLU GSPICE runtime.")
+        else:
+            self._log(f"GSPICE KLU solver {'enabled' if self._sim_prefer_klu else 'disabled'}")
+        self._schedule_simulator_status_refresh()
         self._refresh_run_plan()
         self._save_simenv_view_silent()
 
@@ -2315,7 +2362,7 @@ class ADEWindow(QMainWindow):
         return sections[0]
 
     def _apply_ade_workbench_style(self):
-        """Apply a dense ADE-style local skin for this window."""
+        """Apply a dense Simulation Cockpit local skin for this window."""
         self.setStyleSheet(
             """
             QMainWindow {
@@ -2546,6 +2593,22 @@ class ADEWindow(QMainWindow):
         thread_box.addWidget(self.thread_spin)
         controls_row.addLayout(thread_box)
 
+        timeout_box = QHBoxLayout()
+        timeout_box.setSpacing(6)
+        timeout_label = QLabel("Timeout")
+        timeout_box.addWidget(timeout_label)
+        self.timeout_spin = QSpinBox()
+        self.timeout_spin.setRange(0, 86400)
+        self.timeout_spin.setSingleStep(60)
+        self.timeout_spin.setSpecialValueText("Auto")
+        self.timeout_spin.setValue(self._sim_timeout)
+        self.timeout_spin.setToolTip(
+            "Maximum runtime per simulation in seconds. Auto uses the GSPICE production default."
+        )
+        self.timeout_spin.valueChanged.connect(self._on_timeout_changed)
+        timeout_box.addWidget(self.timeout_spin)
+        controls_row.addLayout(timeout_box)
+
         accuracy_box = QHBoxLayout()
         accuracy_box.setSpacing(6)
         accuracy_label = QLabel("Accuracy")
@@ -2608,6 +2671,34 @@ class ADEWindow(QMainWindow):
             lambda state: self._on_adaptive_maxstep_changed(state == Qt.CheckState.Checked.value)
         )
         controls_row.addWidget(self.adaptive_maxstep_check)
+
+        self.save_adaptive_points_check = QCheckBox("Save internal points")
+        self.save_adaptive_points_check.setChecked(self._sim_save_adaptive_points)
+        self.save_adaptive_points_check.setToolTip(
+            "Write accepted transient solver timesteps to RAW in addition to the .TRAN print grid. "
+            "This gives smoother fast-edge waveforms and can increase RAW file size."
+        )
+        self.save_adaptive_points_check.stateChanged.connect(
+            lambda state: self._on_save_adaptive_points_changed(state == Qt.CheckState.Checked.value)
+        )
+        controls_row.addWidget(self.save_adaptive_points_check)
+
+        runtime = SimulatorRuntimeManager(str(getattr(self.db, "workspace", "")))
+        self._sim_prefer_klu = runtime.gspice_prefer_klu()
+        self.klu_check = QCheckBox("KLU")
+        self.klu_check.setChecked(self._sim_prefer_klu)
+        self.klu_check.setToolTip("Use a SuiteSparse-KLU GSPICE runtime and request SOLVER=KLU for sparse matrix solves.")
+        self.klu_check.stateChanged.connect(
+            lambda state: self._on_klu_changed(state == Qt.CheckState.Checked.value)
+        )
+        controls_row.addWidget(self.klu_check)
+        self.compat_diag_check = QCheckBox("Compat diagnostics")
+        self.compat_diag_check.setChecked(self._sim_verbose_compat)
+        self.compat_diag_check.setToolTip("Show native GSPICE PSP/IHP compatibility diagnostics. Leave off for quiet normal runs.")
+        self.compat_diag_check.stateChanged.connect(
+            lambda state: self._on_verbose_compat_changed(state == Qt.CheckState.Checked.value)
+        )
+        controls_row.addWidget(self.compat_diag_check)
         controls_row.addStretch(1)
         layout.addLayout(controls_row)
         return header
@@ -2850,7 +2941,8 @@ class ADEWindow(QMainWindow):
                 target = f"Remote ({user}@{host})" if user and host else "Remote SSH"
                 self.sim_status_label.setText(target)
             else:
-                self.sim_status_label.setText("Found")
+                runtime = SimulatorRuntimeManager(str(getattr(self.db, "workspace", "")))
+                self.sim_status_label.setText("Found + KLU" if runtime.active_gspice_has_klu() else "Found")
             self.sim_status_label.setStyleSheet("color:#8bc78b;background:transparent;padding:2px;")
         else:
             self.sim_status_label.setText(f"Not found: {bridge.exe_path}")
@@ -2875,6 +2967,12 @@ class ADEWindow(QMainWindow):
     def _on_machine_changed(self, _index=0):
         self._sync_machine_visibility()
         self._schedule_simulator_status_refresh()
+        self._refresh_run_plan()
+        self._save_simenv_view_silent()
+
+    def _on_verbose_compat_changed(self, checked: bool):
+        self._sim_verbose_compat = bool(checked)
+        self._log(f"GSPICE compatibility diagnostics {'enabled' if self._sim_verbose_compat else 'disabled'}")
         self._refresh_run_plan()
         self._save_simenv_view_silent()
 
@@ -3084,6 +3182,12 @@ class ADEWindow(QMainWindow):
             "Auto MaxStep",
             "On" if self._sim_adaptive_maxstep else "Off",
         ]))
+        session.addChild(QTreeWidgetItem([
+            "Save Internal Points",
+            "On" if self._sim_save_adaptive_points else "Off",
+        ]))
+        session.addChild(QTreeWidgetItem(["KLU", "On" if self._sim_prefer_klu else "Off"]))
+        session.addChild(QTreeWidgetItem(["Compat Diagnostics", "On" if self._sim_verbose_compat else "Off"]))
         session.addChild(QTreeWidgetItem(["Dump Folder", self._resolved_sim_dump_dir()]))
         session.addChild(QTreeWidgetItem(["PDK", self._selected_pdk_name(infer=False) or "None selected"]))
 
@@ -4060,6 +4164,7 @@ class ADEWindow(QMainWindow):
             bridge.work_dir,
             jobs,
             threads=self._sim_thread_count(),
+            timeout=self._sim_timeout_seconds(),
             workspace=str(getattr(self.db, "workspace", "")),
             compare_references=True,
             sim_env=bridge.sim_env,
@@ -4069,6 +4174,7 @@ class ADEWindow(QMainWindow):
             remote_gspice=bridge.remote_gspice,
             save_mode=bridge.save_mode,
             adaptive_maxstep=bridge.adaptive_maxstep,
+            verbose_compat=bridge.verbose_compat,
         )
         self._sim_worker.moveToThread(self._sim_thread)
 
@@ -4471,8 +4577,10 @@ class ADEWindow(QMainWindow):
         matrix_corner = corner_name or run_name or "single"
         self._corner_result_rows.setdefault(matrix_corner, []).append(r)
         self._refresh_corner_matrix()
+        elapsed = SimulatorBridge._format_elapsed(float(getattr(result, "elapsed_time", 0.0) or 0.0))
+        return_code = int(getattr(result, "return_code", 0) or 0)
         if result.success:
-            self._log(f"[{run_name}] Simulation completed successfully")
+            self._log(f"[{run_name}] Simulation completed successfully in {elapsed} (exit {return_code})")
             if plot_waveforms:
                 self._log(
                     f"[{run_name}] Selected waveforms available for SigView: "
@@ -4496,13 +4604,13 @@ class ADEWindow(QMainWindow):
             if result.log:
                 self.log_view.append(f"\n{result.log}")
         else:
-            self._log(f"[{run_name}] Simulation FAILED")
+            self._log(f"[{run_name}] Simulation FAILED after {elapsed} (exit {return_code})")
             if result.log:
                 self.log_view.append(f"\n{result.log}")
             for e in result.errors:
                 self._log(f"  {e}")
 
-        self.statusBar().showMessage("Done" if result.success else "Failed", 5000)
+        self.statusBar().showMessage(("Done" if result.success else "Failed") + f" in {elapsed}", 5000)
 
     def _ensure_results_corner_section(self, run_name: str):
         """Insert a industry-style section header before corner result rows."""
@@ -5117,11 +5225,15 @@ class ADEWindow(QMainWindow):
             "simulator": self._current_simulator,
             "sim_dump_dir": self._resolved_sim_dump_dir(),
             "threads": self._sim_thread_count(),
+            "timeout": self._sim_timeout_seconds(),
             "accuracy": self._sim_accuracy,
             "tolerance_override": self._sim_tolerance_override,
             "method": self._sim_method,
             "save_mode": self._sim_save_mode,
             "adaptive_maxstep": self._sim_adaptive_maxstep,
+            "save_adaptive_points": self._sim_save_adaptive_points,
+            "prefer_klu": self._sim_prefer_klu,
+            "verbose_compat": self._sim_verbose_compat,
             "pdk": self._selected_pdk_name(infer=False),
             "corner_mode": self.corner_mode_combo.currentText() if hasattr(self, "corner_mode_combo") else "Single",
             "machine": self.machine_combo.currentData() if hasattr(self, "machine_combo") else "local",
@@ -5241,6 +5353,15 @@ class ADEWindow(QMainWindow):
             self.thread_spin.setValue(self._sim_threads)
             self.thread_spin.blockSignals(False)
 
+        try:
+            self._sim_timeout = max(0, min(86400, int(setup.get("timeout", self._sim_timeout) or 0)))
+        except (TypeError, ValueError):
+            self._sim_timeout = 0
+        if hasattr(self, "timeout_spin"):
+            self.timeout_spin.blockSignals(True)
+            self.timeout_spin.setValue(self._sim_timeout)
+            self.timeout_spin.blockSignals(False)
+
         accuracy = str(setup.get("accuracy") or self._sim_accuracy or "High")
         self._sim_accuracy = accuracy if accuracy in self._accuracy_presets() else "High"
         if hasattr(self, "accuracy_combo"):
@@ -5274,6 +5395,33 @@ class ADEWindow(QMainWindow):
             self.adaptive_maxstep_check.blockSignals(True)
             self.adaptive_maxstep_check.setChecked(self._sim_adaptive_maxstep)
             self.adaptive_maxstep_check.blockSignals(False)
+
+        self._sim_save_adaptive_points = bool(setup.get(
+            "save_adaptive_points",
+            self._sim_save_adaptive_points,
+        ))
+        if hasattr(self, "save_adaptive_points_check"):
+            self.save_adaptive_points_check.blockSignals(True)
+            self.save_adaptive_points_check.setChecked(self._sim_save_adaptive_points)
+            self.save_adaptive_points_check.blockSignals(False)
+
+        self._sim_prefer_klu = bool(setup.get("prefer_klu", self._sim_prefer_klu))
+        if hasattr(self, "klu_check"):
+            self.klu_check.blockSignals(True)
+            self.klu_check.setChecked(self._sim_prefer_klu)
+            self.klu_check.blockSignals(False)
+        try:
+            SimulatorRuntimeManager(str(getattr(self.db, "workspace", ""))).set_gspice_prefer_klu(
+                self._sim_prefer_klu
+            )
+        except Exception:
+            pass
+
+        self._sim_verbose_compat = bool(setup.get("verbose_compat", self._sim_verbose_compat))
+        if hasattr(self, "compat_diag_check"):
+            self.compat_diag_check.blockSignals(True)
+            self.compat_diag_check.setChecked(self._sim_verbose_compat)
+            self.compat_diag_check.blockSignals(False)
 
         if hasattr(self, "pdk_combo"):
             pdk = setup.get("pdk", "")
@@ -5452,11 +5600,11 @@ class ADEWindow(QMainWindow):
         """Save SimENV Setup as JSON template."""
 
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export SimENV Setup", "", "SimENV Setup (*.simenv.json);;Legacy Setup (*.ade.json)"
+            self, "Export Simulation Cockpit Setup", "", "Simulation Cockpit Setup (*.simenv.json);;Legacy Setup (*.cockpit.json)"
         )
         if not path:
             return
-        if not path.endswith((".simenv.json", ".ade.json")):
+        if not path.endswith((".simenv.json", ".cockpit.json")):
             path += ".simenv.json"
 
         setup = self._collect_simenv_setup()
@@ -5469,7 +5617,7 @@ class ADEWindow(QMainWindow):
         """Load SimENV Setup from JSON template."""
 
         path, _ = QFileDialog.getOpenFileName(
-            self, "Import SimENV Setup", "", "SimENV Setup (*.simenv.json);;Legacy Setup (*.ade.json)"
+            self, "Import Simulation Cockpit Setup", "", "Simulation Cockpit Setup (*.simenv.json);;Legacy Setup (*.cockpit.json)"
         )
         if not path:
             return
@@ -5483,8 +5631,4 @@ class ADEWindow(QMainWindow):
         except Exception as exc:
             self._simenv_autosave_suspended = False
             QMessageBox.critical(self, "Import SimENV Setup", f"Could not import setup:\n{exc}")
-
-
-
-
 

@@ -27,14 +27,14 @@ either map to working code, a known partial implementation, or a future module.
 | Edit operations | Copy/paste/delete/select/rotate/mirror/properties/undo/redo | Implemented for symbol items with snapshot undo | Add granular command history |
 | Health check | Find missing pins/shapes/netlist prefix | Implemented lightweight check | Add deeper CDF/model consistency checks |
 
-## ADE And Simulation
+## Simulation Cockpit
 
 | Area | commercial custom IC platforms Behavior | Lumen Status | Next Work |
 | --- | --- | --- | --- |
 | Analysis setup | OP/DC/AC/tran/noise/corners/sweeps | Implemented for major analysis setup, variables, corners, sweeps, save/load | Add advanced analysis-specific validators |
 | Netlist generation | PDK includes, CDF params, selected outputs | Implemented for core path, PDK model includes, outputs, measurements | Add output picker from schematic probes |
 | Run simulation | Launch simulator, capture logs/results | Implemented GSPICE/ngspice-style bridge path | Add cancellation/progress streaming |
-| Waveforms | Plot selected nodes and currents | Implemented basic viewer and ADE launch | Add calculator markers and measurement browser |
+| Waveforms | Plot selected nodes and currents | Implemented basic viewer and Simulation Cockpit launch | Add calculator markers and measurement browser |
 
 ## Hierarchy And Config Views
 
@@ -51,7 +51,7 @@ either map to working code, a known partial implementation, or a future module.
 | Model linkage | Symbols/CDF bind to model/subckt names and .lib sections | Implemented through PDK device metadata and model includes | Add model-section chooser per corner |
 | Dynamic symbols | PDK devices appear without copying symbol files into user libs | Implemented via `pdk:<name>` libraries | Cache generated symbols for faster browsing |
 | Parameter mapping | CDF maps GUI params to simulator params | Implemented basic symbol CDF metadata and PDK params | Add validation, units, defaults, limits |
-| Corners | `.lib` / `.scs` sections selected by ADE | Implemented corner table and corner netlists | Add per-run manifest export |
+| Corners | `.lib` / `.scs` sections selected by Simulation Cockpit | Implemented corner table and corner netlists | Add per-run manifest export |
 
 ## Lumen Improvements Beyond custom IC editor
 

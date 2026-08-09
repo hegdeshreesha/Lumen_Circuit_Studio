@@ -20,16 +20,20 @@ class _TransientWidget:
 class _AnalysisHarness:
     _current_simulator = "GSPICE"
     _sim_accuracy = "Very High"
+    _sim_timeout = 0
     _sim_tolerance_override = ""
     _sim_method = "Auto"
     _sim_save_mode = "all"
     _sim_adaptive_maxstep = True
+    _sim_save_adaptive_points = True
+    _sim_prefer_klu = True
     _accuracy_transient_defaults = ADEWindow._accuracy_transient_defaults
     _accuracy_presets = ADEWindow._accuracy_presets
     _accuracy_options_line = ADEWindow._accuracy_options_line
     _sim_method_token = ADEWindow._sim_method_token
     _sim_save_mode_token = ADEWindow._sim_save_mode_token
     _has_transient_initial_conditions = ADEWindow._has_transient_initial_conditions
+    _sim_timeout_seconds = ADEWindow._sim_timeout_seconds
 
 
 class _ConvergenceHarness(_AnalysisHarness):
@@ -65,9 +69,25 @@ class SimEnvAccuracyTest(unittest.TestCase):
         self.assertIn("ACCURACY=VERYHIGH", line)
         self.assertIn("TRTOL=1", line)
         self.assertIn("LTE_RELTOL=3e-4", line)
-        self.assertIn("SOLVER=AUTO", line)
+        self.assertIn("SOLVER=KLU", line)
         self.assertIn("TRAN_STAMP_CACHE=1", line)
         self.assertIn("MAXSTEP=AUTO", line)
+        self.assertIn("SAVEADAPTIVE=1", line)
+
+    def test_timeout_auto_is_zero_for_bridge_default(self):
+        self.assertEqual(ADEWindow._sim_timeout_seconds(_AnalysisHarness()), 0)
+
+    def test_gspice_accuracy_options_can_leave_solver_auto(self):
+        harness = _AnalysisHarness()
+        harness._sim_prefer_klu = False
+        line = ADEWindow._accuracy_options_line(harness)
+        self.assertIn("SOLVER=AUTO", line)
+
+    def test_gspice_accuracy_options_can_disable_internal_point_save(self):
+        harness = _AnalysisHarness()
+        harness._sim_save_adaptive_points = False
+        line = ADEWindow._accuracy_options_line(harness)
+        self.assertNotIn("SAVEADAPTIVE", line)
 
     def test_tolerance_override_tightens_reltol_and_lte_reltol(self):
         harness = _AnalysisHarness()

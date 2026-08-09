@@ -51,6 +51,7 @@ SIMULATOR_INFO = {
             "STB (Stability)", "HBSTB", "PSSSTB",
         ],
         "candidates": [
+            r"C:\EDA\GSPICE\build-klu\Release\gspice.exe",
             r"C:\EDA\GSPICE\build-vcpkg\Release\gspice.exe",
             r"C:\EDA\GSPICE\build-vcpkg\gspice.exe",
             r"C:\EDA\GSPICE\build\Release\gspice.exe",
@@ -58,7 +59,7 @@ SIMULATOR_INFO = {
             r"C:\EDA\GSPICE\build\gspice.exe",
             "gspice",
         ],
-        "default_timeout": 0,
+        "default_timeout": 900,
     },
     "Ngspice": {
         "label": "Ngspice (Open Source)",
@@ -185,6 +186,7 @@ class SimulatorBridge:
         remote_gspice: str = "",
         save_mode: str = "all",
         adaptive_maxstep: bool = True,
+        verbose_compat: bool = False,
     ):
         self.simulator = normalize_simulator_name(simulator)
         self.info = SIMULATOR_INFO.get(self.simulator, SIMULATOR_INFO["GSPICE"])
@@ -195,6 +197,7 @@ class SimulatorBridge:
         self.remote_gspice = str(remote_gspice or "").strip()
         self.save_mode = self._normalize_gspice_save_mode(save_mode)
         self.adaptive_maxstep = bool(adaptive_maxstep)
+        self.verbose_compat = bool(verbose_compat)
 
         if exe_path:
             self.exe_path = exe_path
@@ -408,6 +411,11 @@ class SimulatorBridge:
 
         if timeout <= 0:
             timeout = get_simulator_timeout(self.simulator)
+        result.artifacts["effective_timeout_s"] = str(timeout)
+        if self.simulator == "GSPICE":
+            capability = self._gspice_capability_summary()
+            if capability:
+                result.artifacts["gspice_capabilities"] = capability
 
         requested_threads = max(1, int(threads or 1))
         preflight_errors = self._preflight_checks()
@@ -896,12 +904,52 @@ class SimulatorBridge:
                 "command": result.command,
                 "errors": result.errors,
                 "warnings": result.warnings,
+                "runtime": {
+                    "save_mode": self._normalize_gspice_save_mode(getattr(self, "save_mode", "all")),
+                    "adaptive_maxstep": bool(getattr(self, "adaptive_maxstep", True)),
+                    "verbose_compat": bool(getattr(self, "verbose_compat", False)),
+                    "effective_timeout_s": result.artifacts.get("effective_timeout_s", ""),
+                    "gspice_capabilities": result.artifacts.get("gspice_capabilities", ""),
+                },
             }
             os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
             with open(manifest_path, "w", encoding="utf-8", newline="\n") as f:
                 json.dump(payload, f, indent=2)
         except OSError:
             pass
+
+    def _gspice_capability_summary(self) -> str:
+        if self.simulator != "GSPICE":
+            return ""
+        exe = self._resolve_executable(self.exe_path)
+        if not exe:
+            return ""
+        try:
+            proc = subprocess.run(
+                [exe, "--capabilities"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+        text = f"{proc.stdout}\n{proc.stderr}".strip()
+        pieces = []
+        try:
+            payload = json.loads(text)
+            backend = str(payload.get("sparse_backend", ""))
+            if backend:
+                pieces.append(backend)
+            features = payload.get("features", {})
+            for feature in ("psp103_full", "bsim3_gsdi", "bsim4_gsdi", "ihp_psp_rf_full", "ihp_passive_wrapper_full"):
+                info = features.get(feature, {})
+                if info.get("available") is True:
+                    pieces.append(feature)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            if "SuiteSparse-KLU" in text:
+                pieces.append("SuiteSparse-KLU")
+        return ", ".join(pieces)
 
     def _build_crash_safe_netlist(self, netlist: str) -> tuple[str, list[str]]:
         """Build a conservative GSPICE deck by stripping crash-prone constructs."""
@@ -914,7 +962,7 @@ class SimulatorBridge:
             ".PSS", ".HB",
             ".TEMP", ".OPTIONS", ".OPTION", ".PARAM",
             ".PRINT", ".MEASURE", ".MEAS", ".IC", ".NODESET",
-            ".LIB", ".INCLUDE", ".INC", ".SAVE",
+            ".LIB", ".INCLUDE", ".INC", ".SAVE", ".GSDI", ".PRE_GSDI",
             ".END",
         }
         risky_tokens = (
@@ -1741,16 +1789,6 @@ class SimulatorBridge:
             if getattr(self, "adaptive_maxstep", True):
                 gspice_options.append("--adaptive-maxstep")
             if sim_env_lower in ("ssh", "remote"):
-                resolved = self._resolve_executable(self.exe_path)
-                if resolved:
-                    cmd = [resolved, "--sim-env", "ssh", "--ssh-host", self.ssh_host, "--ssh-user", self.ssh_user]
-                    if getattr(self, "ssh_key", ""):
-                        cmd.extend(["--ssh-key", self.ssh_key])
-                    if getattr(self, "remote_gspice", ""):
-                        cmd.extend(["--remote-gspice", self.remote_gspice])
-                    cmd.extend(gspice_options)
-                    cmd.extend(["--threads", str(max(1, int(threads or 1))), "-o", output_path, netlist_path])
-                    return cmd
                 import sys
                 cmd = [
                     sys.executable or "python",
@@ -1759,7 +1797,6 @@ class SimulatorBridge:
                     "--host", self.ssh_host,
                     "--user", self.ssh_user,
                     "--output", output_path,
-                    "--deploy-binary",
                     "--keep-remote",
                 ]
                 if getattr(self, "ssh_key", ""):
@@ -1767,8 +1804,9 @@ class SimulatorBridge:
                 if getattr(self, "remote_gspice", ""):
                     cmd.extend(["--remote-gspice", self.remote_gspice])
                 if self.exe_path and os.path.isfile(self.exe_path):
-                    cmd.extend(["--local-binary", self.exe_path])
+                    cmd.extend(["--deploy-binary", "--local-binary", self.exe_path])
                 cmd.extend(gspice_options)
+                cmd.extend(["--threads", str(max(1, int(threads or 1)))])
                 return cmd
             return [
                 self.exe_path,
@@ -1794,6 +1832,10 @@ class SimulatorBridge:
 
     def _build_process_env(self) -> dict[str, str]:
         env = os.environ.copy()
+        if self.simulator == "GSPICE" and self.verbose_compat:
+            env["GSPICE_VERBOSE_COMPAT_WARNINGS"] = "1"
+        else:
+            env.pop("GSPICE_VERBOSE_COMPAT_WARNINGS", None)
         return env
 
     def _ngspice_batch_executable(self) -> str:

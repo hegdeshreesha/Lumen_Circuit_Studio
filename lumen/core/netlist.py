@@ -187,7 +187,10 @@ class NetlistGenerator:
             else:
                 path = str(inc)
             if path:
-                lines.append(f".INCLUDE \"{path}\"")
+                if path.lower().endswith(".gsdi"):
+                    lines.append(f'.GSDI "{path}"')
+                else:
+                    lines.append(f'.INCLUDE "{path}"')
         for lib_entry in self._directives.libs:
             if isinstance(lib_entry, dict):
                 path = lib_entry.get("path", "")

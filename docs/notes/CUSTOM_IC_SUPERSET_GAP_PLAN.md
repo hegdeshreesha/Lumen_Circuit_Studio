@@ -52,7 +52,7 @@ To satisfy the immediate requirement, the database now includes QUCS-style compo
 
 ### E. Custom-IC-Superset Workflow Gaps
 - No complete config-view / hierarchy binding flow yet.
-- No full ADE-XL equivalent for large campaign management and result DB comparisons.
+- No full Simulation Cockpit campaign equivalent for large run management and result DB comparisons.
 - Limited batch API consistency for enterprise-scale regression and CI.
 
 ## 4) Plan to Become Better Than custom IC editor
@@ -70,7 +70,7 @@ To satisfy the immediate requirement, the database now includes QUCS-style compo
 4. Fast compare tools across runs/corners with tolerance and pass/fail rules.
 
 ## Phase 3: Custom-IC-Superset UX/Automation
-1. ADE-XL style run plans with distributed execution.
+1. Simulation Cockpit campaign run plans with distributed execution.
 2. Config-view/hierarchy manager with bind rules and variant control.
 3. Full SKILL-like automation layer (Python-first) with compatibility wrappers.
 4. Team collaboration: design review comments, run provenance, artifact sharing.
@@ -91,4 +91,3 @@ To satisfy the immediate requirement, the database now includes QUCS-style compo
 
 - Expression editor/calculator improvements are intentionally deferred to a separate track.
 - This document covers database/component readiness and the roadmap for simulation/signoff parity and beyond.
-

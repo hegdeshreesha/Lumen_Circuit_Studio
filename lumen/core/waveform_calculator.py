@@ -1,7 +1,7 @@
 """
 Lumen Circuit Studio — Waveform Expression Calculator Engine
 
-Provides ADE/Viva-class waveform calculator functions (bandwidth, rise_time,
+Provides Simulation Cockpit waveform calculator functions (bandwidth, rise_time,
 phase_margin, delay, RMS, peak-to-peak) for simulation output analysis.
 """
 from __future__ import annotations
@@ -43,7 +43,7 @@ class WaveformVector:
 
 
 class WaveformCalculator:
-    """Waveform expression evaluator for ADE/SigView."""
+    """Waveform expression evaluator for Simulation Cockpit/SigView."""
 
     def __init__(self, waveforms: Dict[str, Tuple[List[float], List[float]]]):
         """

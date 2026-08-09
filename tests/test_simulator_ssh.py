@@ -40,19 +40,24 @@ def test_simulator_bridge_ssh_command_with_local_binary():
         adaptive_maxstep=True,
     )
     cmd = bridge._build_command("input.sp", "waveforms.raw", threads=8)
-    assert "--sim-env" in cmd
-    assert "ssh" in cmd
-    assert "--ssh-host" in cmd
+    assert "--sim-env" not in cmd
+    assert "gspice_ssh.py" in cmd[1]
+    assert "--host" in cmd
     assert "192.168.1.100" in cmd
-    assert "--ssh-user" in cmd
+    assert "--user" in cmd
     assert "remoteuser" in cmd
-    assert "--ssh-key" in cmd
+    assert "--key" in cmd
     assert "/path/to/key.pem" in cmd
     assert "--remote-gspice" in cmd
     assert "/usr/bin/gspice" in cmd
+    assert "--deploy-binary" in cmd
+    assert "--local-binary" in cmd
+    assert gspice_bin in cmd
     assert "--save" in cmd
     assert "selected" in cmd
     assert "--adaptive-maxstep" in cmd
+    assert "--threads" in cmd
+    assert "8" in cmd
 
 
 def test_simulator_bridge_ssh_fallback_without_local_binary():
@@ -80,6 +85,8 @@ def test_simulator_bridge_ssh_fallback_without_local_binary():
     assert "--save" in cmd
     assert "all" in cmd
     assert "--adaptive-maxstep" not in cmd
+    assert "--threads" in cmd
+    assert "8" in cmd
 
 
 def test_simulator_bridge_ssh_availability():

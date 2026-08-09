@@ -1012,7 +1012,7 @@ class PDKRegistry:
         return root
 
     def _best_models_path(self, root: Path, model_files: List[PDKModelFile]) -> str:
-        """Choose the model directory ADE should show/use by default."""
+        """Choose the model directory Simulation Cockpit should show/use by default."""
         preferred = [
             root / "libs.tech" / "ngspice" / "models",
             root / "models",
@@ -1327,7 +1327,7 @@ class PDKRegistry:
         pdk.devices = self._load_devices_from_manifest(data.get("devices", []))
 
         # Model files from filesystem discovery. Manifests may point at a root
-        # model directory, while ADE needs concrete files and .LIB sections.
+        # model directory, while Simulation Cockpit needs concrete files and .LIB sections.
         pdk.model_files = self._discover_model_files(root)
         if pdk.model_files:
             pdk.models_path = self._best_models_path(root, pdk.model_files)

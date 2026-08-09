@@ -820,12 +820,16 @@ class SchematicEditor(QWidget):
                 self.annotate_dc_node_voltage(net, voltages[net], pin.scenePos())
                 placed.add(net)
 
-    def annotate_dc_operating_point(self, instance_name: str, pin_voltages: dict[str, float]):
-        """Draw a compact DC OP label for an instance using available terminal voltages."""
+    def annotate_dc_operating_point(self, instance_name: str, pin_voltages: dict[str, float], op_values: dict[str, float] | None = None):
+        """Draw a compact DC OP label for an instance using terminal voltages and OP values."""
         inst = self._find_instance_by_name(instance_name)
         if inst is None:
             return
         rows = []
+        for key in ("id", "ids", "gm", "gds", "vth", "vdsat"):
+            if op_values and key in op_values:
+                unit = "A" if key in {"id", "ids"} else ("S" if key in {"gm", "gds"} else "V")
+                rows.append(f"{key}={self._format_dc_value(op_values[key], unit)}")
         for pin_name in sorted(pin_voltages.keys(), key=lambda value: value.lower()):
             rows.append(f"{pin_name}={self._format_dc_value(pin_voltages[pin_name], 'V')}")
         if not rows:

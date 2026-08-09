@@ -2,7 +2,7 @@
 
 This document is a working map for turning Lumen Circuit Studio from a promising
 prototype into a competitive custom IC design environment. Layout integration is
-intentionally deferred; the focus here is PDK management, ADE, schematic capture,
+intentionally deferred; the focus here is PDK management, Simulation Cockpit, schematic capture,
 hierarchy, and symbol generation.
 
 ## Current Snapshot
@@ -13,7 +13,7 @@ The repository already has useful foundations:
 - Schematic editing on a `QGraphicsView` canvas with instances, wires, labels,
   selection, undo/redo, rotate/mirror, copy/paste, and netlist generation.
 - A newer explicit connectivity engine in `lumen/core/connectivity.py`.
-- An ADE core and ADE GUI with analyses, corners, sweeps, outputs, run history,
+- A Simulation Cockpit core and GUI with analyses, corners, sweeps, outputs, run history,
   convergence helpers, and simulator bridge plumbing.
 - PDK discovery/catalog work in both `lumen/core/pdk_schema.py` and
   `lumen/pdk/registry.py`.
@@ -66,9 +66,9 @@ Competitive target:
   symbol coverage, and netlisting readiness.
 - Make symbols and CDF metadata generated but editable, with clear provenance.
 
-## ADE Gaps
+## Simulation Cockpit Gaps
 
-The ADE code is ambitious, but it is not yet production-grade in behavior.
+The Simulation Cockpit code is ambitious, but it is not yet production-grade in behavior.
 
 Missing or weak:
 
@@ -84,11 +84,11 @@ Missing or weak:
 - Limited simulator abstraction. Advanced analyses listed for GSPICE/PSS/HB need
   capability checks and graceful degradation per backend.
 - Waveform viewer is basic: no buses, eye diagrams, measurements browser,
-  cursors table, calculator integration, or linked ADE outputs.
+  cursors table, calculator integration, or linked Simulation Cockpit outputs.
 
 Competitive target:
 
-- ADE should be experiment-centric: each run is reproducible, comparable, and
+- Simulation Cockpit should be experiment-centric: each run is reproducible, comparable, and
   queryable.
 - Add specs, corners, sweeps, Monte Carlo, output expressions, and run history as
   first-class project objects.
@@ -186,7 +186,7 @@ Competitive target:
 3. Make schematic save/check/netlist deterministic with tested connectivity.
 4. Build the hierarchy/config editor and resolve view selection rules.
 5. Upgrade symbol generation and symbol editing round-trip behavior.
-6. Harden ADE run management, result storage, expressions, specs, corners, and
+6. Harden Simulation Cockpit run management, result storage, expressions, specs, corners, and
    sweeps.
 7. Add import/export bridges and compatibility tests against known open-source
    PDK examples.
@@ -210,8 +210,8 @@ Competitive target:
   - Add tests using small resistor divider, inverter, and hierarchical amplifier
     examples.
 
-- M4: ADE beta
-  - Persist ADE sessions with run records and provenance.
+- M4: Simulation Cockpit beta
+  - Persist Simulation Cockpit Sessions with run records and provenance.
   - Implement specs and pass/fail summaries.
   - Add result browser and waveform/output linking.
 

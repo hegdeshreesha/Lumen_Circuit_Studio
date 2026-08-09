@@ -1,5 +1,5 @@
 """
-Lumen Circuit Studio — ADE Engine (Analog Design Environment Core)
+Lumen Circuit Studio — Simulation Cockpit Engine (Analog Design Environment Core)
 
 Advanced simulation management engine with:
 - Simulation state management (save/load .sim files)
@@ -524,11 +524,11 @@ class ConvergenceAdvisor:
         return suggestions
 
 
-# ── ADE Session ───────────────────────────────────────────────
+# ── Simulation Cockpit Session ───────────────────────────────────────────────
 
 class ADESession:
     """
-    A simulation session — the central ADE object.
+    A simulation session — the central Simulation Cockpit object.
     
     Ocean-like usage:
         session = ADESession(db, "my_lib", "amp")

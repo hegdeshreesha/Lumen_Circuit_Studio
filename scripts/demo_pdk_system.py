@@ -180,7 +180,7 @@ def demo_workflow():
   |  2. INSTALL PDK in Lumen (like running PDK setup)         |
   |     manager.install_pdk("ihp_sg13g2", "/path/to/ihp-pdk") |
   |                                                           |
-  |  3. SELECT MODEL LIBRARIES (like ADE Model Library Setup) |
+  |  3. SELECT MODEL LIBRARIES (Simulation Cockpit setup)      |
   |     manager.select_model_library("ihp_sg13g2", "models.lib")|
   |     manager.set_active_corner("ihp_sg13g2", "mos_tt")     |
   |                                                           |
@@ -192,7 +192,7 @@ def demo_workflow():
   |     device = manager.get_device_cdf("ihp_sg13g2", "nmos") |
   |     # Returns: CDF with params, model binding, symbol     |
   |                                                           |
-  |  6. RUN SIMULATION (like ADE)                             |
+  |  6. RUN SIMULATION (Simulation Cockpit)                    |
   |     header = manager.generate_netlist_header()            |
   |     # Produces: .LIB includes with selected corner        |
   +-----------------------------------------------------------+

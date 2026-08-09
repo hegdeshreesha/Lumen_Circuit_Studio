@@ -9,6 +9,7 @@ from lumen.qt.QtWidgets import QApplication
 
 from lumen.core.database import LibraryDatabase
 from lumen.gui.ade_window import ADEWindow
+from lumen.gui.schematic_editor_window import SchematicEditorWindow
 
 
 class SimEnvGuiTest(unittest.TestCase):
@@ -83,6 +84,11 @@ class SimEnvGuiTest(unittest.TestCase):
         win._clear_schematic_dc_annotations_for_run()
 
         self.assertTrue(editor.cleared)
+
+    def test_dc_op_trace_name_parser_accepts_common_device_formats(self):
+        self.assertEqual(SchematicEditorWindow._parse_dc_op_trace_name("@M1[gm]"), ("m1", "gm"))
+        self.assertEqual(SchematicEditorWindow._parse_dc_op_trace_name("M1.id"), ("m1", "id"))
+        self.assertEqual(SchematicEditorWindow._parse_dc_op_trace_name("XU1:M1:vth"), ("xu1m1", "vth"))
 
     def test_industry_style_menus_are_present(self):
         win = self._window()

@@ -520,7 +520,7 @@ class APWWindow(QMainWindow):
             self.open_cellview(lib, cell, view)
         elif verb == 'exit':
             self.close()
-        elif verb in ('simenv', 'ade') and len(parts) >= 3:
+        elif verb in ('simenv', 'cockpit') and len(parts) >= 3:
             self.open_ade(parts[1], parts[2])
         elif verb in ("sigview", "wave", "waveform"):
             self.open_sigview()
@@ -767,15 +767,15 @@ class APWWindow(QMainWindow):
 
         try:
             from lumen.gui.ade_window import ADEWindow
-            ade = ADEWindow(
+            cockpit = ADEWindow(
                 self.db,
                 library,
                 cell,
                 ciw=self,
                 pdk_registry=self.pdk_registry,
             )
-            ade.show()
-            self._simenv_windows.append(ade)
+            cockpit.show()
+            self._simenv_windows.append(cockpit)
             self.log(f"Opened SimENV: {library}/{cell}")
         except Exception as exc:
             self.log(f"Failed to open SimENV {library}/{cell}: {exc}")

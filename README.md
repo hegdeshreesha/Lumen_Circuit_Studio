@@ -1,6 +1,6 @@
 # Lumen Circuit Studio
 
-Open-source analog/mixed-signal EDA workbench with schematic capture, symbol editing, PDK management, ADE flow, and GSPICE integration.
+Open-source analog/mixed-signal EDA workbench with schematic capture, symbol editing, PDK management, Simulation Cockpit flow, and GSPICE integration.
 
 ## Quick Start
 
@@ -51,7 +51,7 @@ For the current dogfood flow, start with `BETA_TESTING.md`. The beta focus is sc
 - Library/cell/view database with analog primitive catalog
 - PDK discovery and model parsing for built-in open PDK flows
 - Netlist generation and simulator bridge
-- ADE-style setup for analyses/corners/sweeps
+- Simulation Cockpit setup for analyses/corners/sweeps
 - IHP SG13G2 KLayout integration with `SG13_dev` PCells, schematic/device
   correspondence, layer setup, and DRC/LVS command flow. See
   [IHP KLayout setup and industry-style workflow](docs/ihp_klayout_integration.md).
