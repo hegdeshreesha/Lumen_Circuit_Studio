@@ -26,6 +26,7 @@ from lumen.gui.schematic_editor import SchematicEditor
 from lumen.gui.symbol_editor import SymbolEditor
 from lumen.gui.property_editor import PropertyEditorWidget
 from lumen.gui.branding import apply_window_branding, logo_label, logo_url
+from lumen.gui.icons import editor_icon, emoji_icon
 from lumen.core.pdk_service import resolve_workspace
 from lumen.gui.simulator_manager_window import ensure_simulator_available
 
@@ -73,14 +74,17 @@ class LumenMainWindow(QMainWindow):
         self.act_new_cell.triggered.connect(self._on_new_cell)
 
         self.act_new_sch = QAction("New Schematic", self)
+        self.act_new_sch.setIcon(emoji_icon("➕"))
         self.act_new_sch.setShortcut(QKeySequence("Ctrl+N"))
         self.act_new_sch.triggered.connect(self._on_new_schematic)
 
         self.act_open = QAction("Open...", self)
+        self.act_open.setIcon(emoji_icon("📂"))
         self.act_open.setShortcut(QKeySequence("Ctrl+O"))
         self.act_open.triggered.connect(self._on_open)
 
         self.act_save = QAction("Save", self)
+        self.act_save.setIcon(emoji_icon("💾"))
         self.act_save.setShortcut(QKeySequence("Ctrl+S"))
         self.act_save.triggered.connect(self._on_save)
 
@@ -94,10 +98,12 @@ class LumenMainWindow(QMainWindow):
 
         # Edit
         self.act_undo = QAction("Undo", self)
+        self.act_undo.setIcon(emoji_icon("↶"))
         self.act_undo.setShortcut(QKeySequence("Ctrl+Z"))
         self.act_undo.triggered.connect(self._on_undo)
 
         self.act_redo = QAction("Redo", self)
+        self.act_redo.setIcon(emoji_icon("↷"))
         self.act_redo.setShortcut(QKeySequence("Ctrl+Y"))
         self.act_redo.triggered.connect(self._on_redo)
 
@@ -119,31 +125,38 @@ class LumenMainWindow(QMainWindow):
 
         # View
         self.act_zoom_in = QAction("Zoom In", self)
+        self.act_zoom_in.setIcon(editor_icon("zoom_in"))
         self.act_zoom_in.setShortcut(QKeySequence("Ctrl+="))
         self.act_zoom_in.triggered.connect(self._on_zoom_in)
 
         self.act_zoom_out = QAction("Zoom Out", self)
+        self.act_zoom_out.setIcon(editor_icon("zoom_out"))
         self.act_zoom_out.setShortcut(QKeySequence("Ctrl+-"))
         self.act_zoom_out.triggered.connect(self._on_zoom_out)
 
         self.act_zoom_fit = QAction("Zoom to Fit", self)
+        self.act_zoom_fit.setIcon(editor_icon("zoom_fit"))
         self.act_zoom_fit.setShortcut(QKeySequence("F"))
         self.act_zoom_fit.triggered.connect(self._on_zoom_fit)
 
         # Draw
         self.act_add_wire = QAction("Wire (W)", self)
+        self.act_add_wire.setIcon(editor_icon("wire"))
         self.act_add_wire.setShortcut(QKeySequence("W"))
         self.act_add_wire.triggered.connect(self._on_draw_wire)
 
         self.act_add_instance = QAction("Instance (I)", self)
+        self.act_add_instance.setIcon(emoji_icon("▣"))
         self.act_add_instance.setShortcut(QKeySequence("I"))
         self.act_add_instance.triggered.connect(self._on_add_instance)
 
         self.act_add_pin = QAction("Pin (P)", self)
+        self.act_add_pin.setIcon(emoji_icon("📍"))
         self.act_add_pin.setShortcut(QKeySequence("P"))
         self.act_add_pin.triggered.connect(self._on_add_pin)
 
         self.act_add_label = QAction("Net Label (L)", self)
+        self.act_add_label.setIcon(emoji_icon("🏷"))
         self.act_add_label.setShortcut(QKeySequence("L"))
         self.act_add_label.triggered.connect(self._on_add_label)
 
@@ -153,10 +166,12 @@ class LumenMainWindow(QMainWindow):
 
         # Simulation
         self.act_netlist = QAction("Generate Netlist", self)
+        self.act_netlist.setIcon(emoji_icon("📄"))
         self.act_netlist.setShortcut(QKeySequence("Ctrl+Shift+N"))
         self.act_netlist.triggered.connect(self._on_generate_netlist)
 
         self.act_simulate = QAction("Run Simulation", self)
+        self.act_simulate.setIcon(emoji_icon("▶"))
         self.act_simulate.setShortcut(QKeySequence("F5"))
         self.act_simulate.triggered.connect(self._on_simulate)
 
@@ -242,6 +257,7 @@ class LumenMainWindow(QMainWindow):
         # File toolbar
         file_tb = QToolBar("File")
         file_tb.setIconSize(QSize(20, 20))
+        file_tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         file_tb.addAction(self.act_new_sch)
         file_tb.addAction(self.act_save)
         self.addToolBar(file_tb)
@@ -249,6 +265,7 @@ class LumenMainWindow(QMainWindow):
         # Edit toolbar
         edit_tb = QToolBar("Edit")
         edit_tb.setIconSize(QSize(20, 20))
+        edit_tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         edit_tb.addAction(self.act_undo)
         edit_tb.addAction(self.act_redo)
         self.addToolBar(edit_tb)
@@ -256,6 +273,7 @@ class LumenMainWindow(QMainWindow):
         # Draw toolbar
         draw_tb = QToolBar("Draw")
         draw_tb.setIconSize(QSize(20, 20))
+        draw_tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         draw_tb.addAction(self.act_add_wire)
         draw_tb.addAction(self.act_add_instance)
         draw_tb.addAction(self.act_add_pin)
@@ -265,6 +283,7 @@ class LumenMainWindow(QMainWindow):
         # View toolbar
         view_tb = QToolBar("View")
         view_tb.setIconSize(QSize(20, 20))
+        view_tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         view_tb.addAction(self.act_zoom_in)
         view_tb.addAction(self.act_zoom_out)
         view_tb.addAction(self.act_zoom_fit)
@@ -273,6 +292,7 @@ class LumenMainWindow(QMainWindow):
         # Simulation toolbar
         sim_tb = QToolBar("Simulation")
         sim_tb.setIconSize(QSize(20, 20))
+        sim_tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         sim_tb.addAction(self.act_netlist)
         self.addToolBar(sim_tb)
 

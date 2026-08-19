@@ -2485,20 +2485,31 @@ class ADEWindow(QMainWindow):
                 border: 1px solid #d8b45f;
             }
             QPushButton {
-                background: #363636;
+                background: #33363a;
                 color: #f0f0f0;
-                border: 1px solid #595959;
-                border-radius: 2px;
+                border: 1px solid #535963;
+                border-radius: 5px;
                 padding: 5px 10px;
+                min-height: 22px;
+                font-weight: 600;
             }
             QPushButton:hover {
-                background: #444444;
-                border-color: #d8b45f;
+                background: #3d4652;
+                border-color: #6b9ece;
+            }
+            QPushButton:pressed {
+                background: #0e5a88;
+                border-color: #8fb8dc;
             }
             QPushButton#adePrimaryButton {
-                background: #5b4521;
-                border-color: #d8b45f;
+                background: #0e639c;
+                color: #ffffff;
+                border-color: #2f86c7;
                 font-weight: 700;
+            }
+            QPushButton#adePrimaryButton:hover {
+                background: #1177bb;
+                border-color: #63a8db;
             }
             QToolBar {
                 background: #2b2b2b;
@@ -3814,7 +3825,7 @@ class ADEWindow(QMainWindow):
         tb.addAction(act_wave)
 
         act_calc = QAction("Calculator", self)
-        act_calc.setIcon(editor_icon("wave"))
+        act_calc.setIcon(editor_icon("calculator"))
         act_calc.setToolTip("Open latest waveforms in SigView calculator")
         act_calc.triggered.connect(self._on_open_waveform_calculator)
         tb.addAction(act_calc)
@@ -4553,20 +4564,7 @@ class ADEWindow(QMainWindow):
 
         # 7: Action Pill Button (📈 Plot)
         btn_plot = QPushButton("📈 Plot")
-        btn_plot.setStyleSheet("""
-            QPushButton {
-                background-color: #1e293b;
-                color: #38bdf8;
-                border: 1px solid #334155;
-                border-radius: 3px;
-                padding: 2px 6px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #0284c7;
-                color: #ffffff;
-            }
-        """)
+        btn_plot.setObjectName("primaryButton")
         btn_plot.clicked.connect(lambda _chk=False, row_idx=r: self._plot_result_row(row_idx))
         btn_plot.deleteLater()
 

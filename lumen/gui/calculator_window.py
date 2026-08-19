@@ -126,7 +126,7 @@ class CalculatorWindow(QDialog):
         act_layout = QHBoxLayout()
 
         btn_eval = QPushButton("Evaluate & Plot")
-        btn_eval.setStyleSheet("background-color: #4361ee; color: white; font-weight: bold; padding: 6px;")
+        btn_eval.setObjectName("primaryButton")
         btn_eval.clicked.connect(self._evaluate)
         act_layout.addWidget(btn_eval)
 

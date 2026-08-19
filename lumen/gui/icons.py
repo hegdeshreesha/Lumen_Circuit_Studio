@@ -1,7 +1,7 @@
 """Small generated toolbar icons for the editor UI."""
 
 from lumen.qt.QtCore import Qt, QRectF
-from lumen.qt.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
+from lumen.qt.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap
 
 
 ICON_COLOR = QColor("#36b8d0")
@@ -9,8 +9,46 @@ ACCENT_COLOR = QColor("#ffd166")
 MUTED_COLOR = QColor("#b8c1d1")
 
 
+def emoji_icon(glyph: str) -> QIcon:
+    """Return a toolbar icon rendered from a standard emoji/symbol glyph."""
+    pixmap = QPixmap(32, 32)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pixmap)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    font = QFont("Segoe UI Emoji", 15 if len(glyph) > 1 else 19)
+    font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
+    p.setFont(font)
+    p.setPen(QColor("#f0f3f6"))
+    p.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, glyph)
+    p.end()
+    return QIcon(pixmap)
+
+
 def editor_icon(name: str) -> QIcon:
     """Return a lightweight vector-style icon for editor actions."""
+    emoji_map = {
+        "new": "➕",
+        "open": "📂",
+        "save": "💾",
+        "check": "✅",
+        "undo": "↶",
+        "redo": "↷",
+        "zoom_in": "🔍+",
+        "zoom_out": "🔎-",
+        "instance": "▣",
+        "pin": "📍",
+        "label": "🏷",
+        "netlist": "📄",
+        "run": "▶",
+        "stop": "⏹",
+        "wave": "📈",
+        "calculator": "🧮",
+        "health": "🛡",
+        "palette": "🎨",
+    }
+    if name in emoji_map:
+        return emoji_icon(emoji_map[name])
+
     pixmap = QPixmap(32, 32)
     pixmap.fill(Qt.GlobalColor.transparent)
     p = QPainter(pixmap)
@@ -21,7 +59,13 @@ def editor_icon(name: str) -> QIcon:
     muted = QPen(MUTED_COLOR, 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
     p.setPen(pen)
 
-    if name == "open":
+    if name == "new":
+        p.drawRect(8, 6, 14, 20)
+        p.drawLine(12, 11, 20, 11)
+        p.setPen(accent)
+        p.drawLine(22, 18, 22, 27)
+        p.drawLine(18, 22, 27, 22)
+    elif name == "open":
         p.drawRect(6, 11, 20, 13)
         p.drawLine(6, 11, 12, 7)
         p.drawLine(12, 7, 26, 7)
@@ -59,15 +103,10 @@ def editor_icon(name: str) -> QIcon:
         p.drawLine(5, 16, 11, 16)
         p.drawLine(21, 16, 27, 16)
     elif name == "wire":
-        path = QPainterPath()
-        path.moveTo(5, 22)
-        path.lineTo(12, 22)
-        path.lineTo(12, 10)
-        path.lineTo(24, 10)
-        p.drawPath(path)
+        p.drawLine(8, 16, 24, 16)
         p.setBrush(ACCENT_COLOR)
-        p.drawEllipse(3, 20, 4, 4)
-        p.drawEllipse(22, 8, 4, 4)
+        p.drawRect(6, 14, 4, 4)
+        p.drawRect(22, 14, 4, 4)
     elif name == "bus":
         for y in (10, 16, 22):
             p.drawLine(5, y, 27, y)

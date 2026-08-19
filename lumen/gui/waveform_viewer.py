@@ -335,6 +335,7 @@ class TraceRecord:
     source: str = ""
     np_x: Any = None
     np_y: Any = None
+    y_bounds: tuple[float, float] | None = None
     cache_key: tuple | None = None
     cache_polygon: Any = None
 
@@ -346,6 +347,20 @@ class TraceRecord:
             except Exception:
                 pass
         return self.np_x, self.np_y
+
+    def get_y_bounds(self) -> tuple[float, float] | None:
+        if self.y_bounds is None:
+            if HAS_NUMPY:
+                _np_x, np_y = self.get_np_arrays()
+                if np_y is not None and len(np_y):
+                    finite = np_y[np.isfinite(np_y)]
+                    if len(finite):
+                        self.y_bounds = (float(np.min(finite)), float(np.max(finite)))
+                        return self.y_bounds
+            vals = [v for v in self.y_data if isinstance(v, (int, float)) and math.isfinite(v)]
+            if vals:
+                self.y_bounds = (min(vals), max(vals))
+        return self.y_bounds
 
 
 @dataclass
@@ -563,8 +578,6 @@ class WaveformCanvas(QWidget):
         if y_axis and not self.stacked_mode:
             self.y_min = cy + (self.y_min - cy) * factor
             self.y_max = cy + (self.y_max - cy) * factor
-        elif x_axis and not self.stacked_mode:
-            self._fit_y_to_visible_x()
         self._normalize_ranges()
         self.update()
         self._emit_cursor_text()
@@ -741,11 +754,10 @@ class WaveformCanvas(QWidget):
         y = self._interpolate_value(trace.x_data, trace.y_data, x)
         if y is None:
             return trace.name
-        finite_y = [v for v in trace.y_data if isinstance(v, (int, float)) and math.isfinite(v)]
-        if not finite_y:
+        bounds = trace.get_y_bounds()
+        if bounds is None:
             return trace.name
-        y0 = min(finite_y)
-        y1 = max(finite_y)
+        y0, y1 = bounds
         margin = (y1 - y0) * 0.08 or 0.1
         p = self._data_to_screen(x, y, lane, y0 - margin, y1 + margin)
         return trace.name if abs(p.y() - sy) <= tolerance_px else trace.name
@@ -838,11 +850,10 @@ class WaveformCanvas(QWidget):
             top = plot.top() + idx * lane_h
             lane = QRectF(plot.left(), top, plot.width(), lane_h)
 
-            finite_y = [v for v in trace.y_data if isinstance(v, (int, float)) and math.isfinite(v)]
-            if not finite_y:
+            bounds = trace.get_y_bounds()
+            if bounds is None:
                 continue
-            y0 = min(finite_y)
-            y1 = max(finite_y)
+            y0, y1 = bounds
             margin = (y1 - y0) * 0.08 or 0.1
             y0 -= margin
             y1 += margin
