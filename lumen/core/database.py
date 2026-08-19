@@ -711,17 +711,25 @@ class LibraryDatabase:
         }
 
     def _source_parameters(self, mode: str):
+        ac_params = [
+            {"name": "acmag", "default": "", "description": "AC magnitude"},
+            {"name": "acphase", "default": "0", "description": "AC phase"},
+        ]
         if mode == "dc":
-            return [{"name": "dc", "default": "1.0", "description": "DC value"}]
+            return [
+                {"name": "dc", "default": "1.0", "description": "DC value"},
+                *ac_params,
+            ]
         if mode == "ac":
             return [
                 {"name": "dc", "default": "0", "description": "DC value"},
                 {"name": "acmag", "default": "1", "description": "AC magnitude"},
-                {"name": "phase", "default": "0", "description": "AC phase"},
+                {"name": "acphase", "default": "0", "description": "AC phase"},
             ]
         if mode == "pulse":
             return [
                 {"name": "dc", "default": "0", "description": "DC value"},
+                *ac_params,
                 {"name": "v1", "default": "0", "description": "Initial value"},
                 {"name": "v2", "default": "1.8", "description": "Pulsed value"},
                 {"name": "td", "default": "0", "description": "Delay"},
@@ -733,6 +741,7 @@ class LibraryDatabase:
         if mode == "sin":
             return [
                 {"name": "dc", "default": "0", "description": "DC value"},
+                *ac_params,
                 {"name": "vo", "default": "0", "description": "Offset"},
                 {"name": "va", "default": "1", "description": "Amplitude"},
                 {"name": "freq", "default": "1k", "description": "Frequency"},
@@ -743,6 +752,7 @@ class LibraryDatabase:
         if mode == "pwl":
             return [
                 {"name": "dc", "default": "0", "description": "DC value"},
+                *ac_params,
                 {"name": "points", "default": "0 0 1n 1", "description": "PWL time/value pairs"},
             ]
         return []
@@ -879,7 +889,7 @@ class LibraryDatabase:
             "parameters": [
                 {"name": "dc", "default": "1.8", "description": "DC voltage"},
                 {"name": "acmag", "default": "", "description": "AC magnitude"},
-                {"name": "phase", "default": "0", "description": "AC phase"},
+                {"name": "acphase", "default": "0", "description": "AC phase"},
             ],
             "label": {"text": "@name\\nDC=@dc", "x": 25, "y": 0}
         }
@@ -905,7 +915,7 @@ class LibraryDatabase:
             "parameters": [
                 {"name": "dc", "default": "1m", "description": "DC current"},
                 {"name": "acmag", "default": "", "description": "AC magnitude"},
-                {"name": "phase", "default": "0", "description": "AC phase"},
+                {"name": "acphase", "default": "0", "description": "AC phase"},
             ],
             "label": {"text": "@name\\nDC=@dc", "x": 25, "y": 0}
         }

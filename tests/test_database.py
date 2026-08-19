@@ -169,6 +169,16 @@ class TestLibraryDatabase(unittest.TestCase):
             ]
             self.assertTrue(text_shapes, f"{cell} should include text markings")
 
+    def test_independent_sources_expose_ac_parameters(self):
+        for cell in (
+            "vsource", "isource", "vdc", "idc", "vac", "iac",
+            "vpulse", "ipulse", "vsin", "isin", "vpwl", "ipwl",
+        ):
+            symbol = self.db.load_view("primitives", cell, "symbol")
+            params = {param.get("name") for param in symbol.get("parameters", [])}
+            self.assertIn("acmag", params, f"{cell} should expose AC magnitude")
+            self.assertIn("acphase", params, f"{cell} should expose AC phase")
+
     def test_existing_primitives_library_is_reconciled(self):
         """Older workspaces should receive newly added primitive cells."""
         self.db.delete_cell("primitives", "vpulse")

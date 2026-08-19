@@ -17,10 +17,11 @@ try:
         SchematicEditor,
         WireItem,
     )
-except ModuleNotFoundError as exc:
-    if exc.name in {"PySide6", "lumen.qt"}:
+except (ImportError, ModuleNotFoundError) as exc:
+    if getattr(exc, "name", "") in {"PySide6", "lumen.qt"} or "PySide6" in str(exc):
         QApplication = None
         LibraryDatabase = None
+        InstanceItem = None
         NetLabelItem = None
         SchematicEditor = None
         WireItem = None
@@ -178,6 +179,37 @@ class SchematicClipboardTest(unittest.TestCase):
             self.assertEqual(saved["instances"][0]["params"]["R"], "2k")
             self.assertEqual(saved["instances"][0]["x"], 30)
             self.assertEqual(saved["instances"][0]["y"], 40)
+
+    def test_source_ac_defaults_are_visible_in_gui_properties(self):
+        _ = _app()
+
+        class FakePropertyEditor:
+            def show_properties(self, _name, props, callback=None):
+                self.props = props
+                self.callback = callback
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = LibraryDatabase(tmp)
+            db.create_library("work")
+            db.save_view("work", "top", "schematic", {
+                "type": "schematic",
+                "name": "top",
+                "library": "work",
+                "instances": [{
+                    "name": "V1", "library": "primitives", "cell": "vdc",
+                    "x": 30, "y": 40, "params": {"dc": "0"},
+                }],
+                "wires": [],
+                "labels": [],
+                "pins": [],
+            })
+            editor = SchematicEditor(db, "work", "top", "schematic")
+            editor.prop_editor = FakePropertyEditor()
+
+            editor._show_instance_properties(editor.instances[0])
+
+            self.assertIn("acmag", editor.prop_editor.props)
+            self.assertIn("acphase", editor.prop_editor.props)
 
 
 if __name__ == "__main__":
