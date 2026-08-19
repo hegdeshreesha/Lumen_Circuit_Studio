@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "simulators": {
+    "GSPICE": {
+      "active_executable": "C:\\EDA\\GSPICE\\build-klu\\Release\\gspice.exe",
+      "active_source": "preferred-klu",
+      "active_version": "GSPICE 1.3.0-academic-beta",
+      "prefer_klu": true
+    }
+  }
+}
