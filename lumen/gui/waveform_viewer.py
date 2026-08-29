@@ -31,6 +31,7 @@ except ImportError:
 from lumen.qt.QtCore import Qt, QPoint, QPointF, QRectF, QSize, Signal
 from lumen.qt.QtGui import (
     QAction,
+    QIcon,
     QPainter,
     QPen,
     QColor,
@@ -68,7 +69,6 @@ from lumen.qt.QtWidgets import (
 )
 
 from lumen.gui.branding import apply_window_branding
-from lumen.gui.icons import editor_icon
 from lumen.core.simulator import SimulatorBridge
 from lumen.core.waveform_calculator import WaveformCalculator
 from lumen.gui.calculator_window import CalculatorWindow
@@ -826,7 +826,7 @@ class WaveformCanvas(QWidget):
         if self.show_grid:
             self._draw_grid(painter, plot, self.x_min, self.x_max, self.y_min, self.y_max)
         painter.save()
-        painter.setClipRect(plot.adjusted(0, 0, 1, 1))
+        painter.setClipRect(plot.adjusted(-4, -4, 4, 4))
         for trace in traces:
             self._draw_trace(painter, trace, plot, self.y_min, self.y_max)
         painter.restore()
@@ -851,7 +851,7 @@ class WaveformCanvas(QWidget):
                 self._draw_grid(painter, lane, self.x_min, self.x_max, y0, y1, light=True)
 
             painter.save()
-            painter.setClipRect(lane.adjusted(0, 0, 1, 1))
+            painter.setClipRect(lane.adjusted(-4, -4, 4, 4))
             self._draw_trace(painter, trace, lane, y0, y1)
             painter.restore()
             painter.setPen(QPen(QColor("#8f9daa"), 1))
@@ -992,6 +992,20 @@ class WaveformCanvas(QWidget):
                 x_sub[1::2] = x_g[rows, idx2]
                 y_sub[0::2] = y_g[rows, idx1]
                 y_sub[1::2] = y_g[rows, idx2]
+
+                tail_start = i0 + tot
+                if tail_start < i1:
+                    tail_x = np_x[tail_start:i1]
+                    tail_y = np_y[tail_start:i1]
+                    finite = np.isfinite(tail_x) & np.isfinite(tail_y)
+                    if np.any(finite):
+                        tail_x = tail_x[finite]
+                        tail_y = tail_y[finite]
+                        min_i = int(np.argmin(tail_y))
+                        max_i = int(np.argmax(tail_y))
+                        keep = sorted({min_i, max_i, len(tail_y) - 1})
+                        x_sub = np.concatenate((x_sub, tail_x[keep]))
+                        y_sub = np.concatenate((y_sub, tail_y[keep]))
 
         dx = (x_max - x_min) or 1.0
         dy = (y_max - y_min) or 1.0
@@ -1576,7 +1590,9 @@ class WaveformViewerWindow(QMainWindow):
         splitter.setSizes([280, 980])
 
     def _create_menus(self):
-        file_menu = self.menuBar().addMenu("&File")
+        menubar = self.menuBar()
+        menubar.clear()
+        file_menu = menubar.addMenu("&File")
         act_open = QAction("Open Waveform...", self)
         act_open.setShortcut("Ctrl+O")
         act_open.triggered.connect(self._on_open_waveform_file)
@@ -1610,7 +1626,7 @@ class WaveformViewerWindow(QMainWindow):
         act_close.triggered.connect(self.close)
         file_menu.addAction(act_close)
 
-        view_menu = self.menuBar().addMenu("&View")
+        view_menu = menubar.addMenu("&View")
         act_zoom_in = QAction("Zoom In", self)
         act_zoom_in.setShortcut(QKeySequence("Ctrl+="))
         act_zoom_in.triggered.connect(self.canvas.zoom_in)
@@ -1652,7 +1668,7 @@ class WaveformViewerWindow(QMainWindow):
             view_menu.addAction(action)
         self.menu_display_line.setChecked(True)
 
-        marker_menu = self.menuBar().addMenu("&Markers")
+        marker_menu = menubar.addMenu("&Markers")
         act_add_marker = QAction("Add Marker at Active Cursor", self)
         act_add_marker.triggered.connect(self._on_add_marker)
         marker_menu.addAction(act_add_marker)
@@ -1660,7 +1676,7 @@ class WaveformViewerWindow(QMainWindow):
         act_clear_markers.triggered.connect(self._on_clear_markers)
         marker_menu.addAction(act_clear_markers)
 
-        calc_menu = self.menuBar().addMenu("&Calculator")
+        calc_menu = menubar.addMenu("&Calculator")
         act_calc = QAction("Create Calculator Trace", self)
         act_calc.setShortcut("Ctrl+Return")
         act_calc.triggered.connect(self._on_create_calculator_trace)
@@ -1673,39 +1689,54 @@ class WaveformViewerWindow(QMainWindow):
     def _create_toolbar(self):
         tb = QToolBar("SigView")
         tb.setIconSize(QSize(18, 18))
+        tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        tb.setMovable(False)
+        tb.setFloatable(False)
         self.addToolBar(tb)
 
+        def add_emoji(action: QAction, emoji: str):
+            label = action.text()
+            action.setIcon(QIcon())
+            action.setIconText(emoji)
+            action.setToolTip(label)
+            action.setStatusTip(label)
+            tb.addAction(action)
+            button = tb.widgetForAction(action)
+            if button is not None:
+                button.setText(emoji)
+                button.setToolTip(label)
+                font = button.font()
+                font.setPointSize(18)
+                button.setFont(font)
+                button.setMinimumSize(34, 30)
+
         act_open = QAction("Open", self)
-        act_open.setIcon(editor_icon("open"))
         act_open.triggered.connect(self._on_open_waveform_file)
-        tb.addAction(act_open)
+        add_emoji(act_open, "📂")
 
         tb.addSeparator()
 
         act_zoom_in = QAction("Zoom In", self)
-        act_zoom_in.setIcon(editor_icon("zoom_in"))
         act_zoom_in.setShortcut(QKeySequence("Ctrl+="))
         act_zoom_in.triggered.connect(self.canvas.zoom_in)
-        tb.addAction(act_zoom_in)
+        add_emoji(act_zoom_in, "🔍")
 
         act_zoom_out = QAction("Zoom Out", self)
-        act_zoom_out.setIcon(editor_icon("zoom_out"))
         act_zoom_out.setShortcut(QKeySequence("Ctrl+-"))
         act_zoom_out.triggered.connect(self.canvas.zoom_out)
-        tb.addAction(act_zoom_out)
+        add_emoji(act_zoom_out, "🔎")
 
         act_fit = QAction("Fit All", self)
-        act_fit.setIcon(editor_icon("zoom_fit"))
         act_fit.triggered.connect(self.canvas.fit_all)
-        tb.addAction(act_fit)
+        add_emoji(act_fit, "⛶")
 
         act_fit_x = QAction("Fit X", self)
         act_fit_x.triggered.connect(self.canvas.fit_x)
-        tb.addAction(act_fit_x)
+        add_emoji(act_fit_x, "X")
 
         act_fit_y = QAction("Fit Y", self)
         act_fit_y.triggered.connect(self.canvas.fit_y)
-        tb.addAction(act_fit_y)
+        add_emoji(act_fit_y, "Y")
 
         tb.addSeparator()
 
@@ -1713,19 +1744,19 @@ class WaveformViewerWindow(QMainWindow):
         self.act_grid.setCheckable(True)
         self.act_grid.setChecked(True)
         self.act_grid.toggled.connect(self._on_toggle_grid)
-        tb.addAction(self.act_grid)
+        add_emoji(self.act_grid, "#")
 
         self.act_stack = QAction("Stacked", self)
         self.act_stack.setCheckable(True)
         self.act_stack.setChecked(False)
         self.act_stack.toggled.connect(self._on_toggle_stacked)
-        tb.addAction(self.act_stack)
+        add_emoji(self.act_stack, "⇵")
 
         self.act_points = QAction("Points", self)
         self.act_points.setCheckable(True)
         self.act_points.setToolTip("Show saved waveform samples as points instead of connected lines")
         self.act_points.toggled.connect(lambda checked: self._on_display_mode_changed("points" if checked else "line"))
-        tb.addAction(self.act_points)
+        add_emoji(self.act_points, "·")
 
         tb.addSeparator()
 
@@ -1733,42 +1764,42 @@ class WaveformViewerWindow(QMainWindow):
         self.act_cursor_a.setCheckable(True)
         self.act_cursor_a.setChecked(True)
         self.act_cursor_a.triggered.connect(lambda: self._set_cursor_mode("A"))
-        tb.addAction(self.act_cursor_a)
+        add_emoji(self.act_cursor_a, "A")
 
         self.act_cursor_b = QAction("Cursor B", self)
         self.act_cursor_b.setCheckable(True)
         self.act_cursor_b.setChecked(False)
         self.act_cursor_b.triggered.connect(lambda: self._set_cursor_mode("B"))
-        tb.addAction(self.act_cursor_b)
+        add_emoji(self.act_cursor_b, "B")
 
         act_clear_cur = QAction("Clear Cursors", self)
         act_clear_cur.triggered.connect(self.canvas.clear_cursors)
         act_clear_cur.triggered.connect(self._refresh_measurements)
-        tb.addAction(act_clear_cur)
+        add_emoji(act_clear_cur, "⌫")
 
         tb.addSeparator()
 
         act_marker = QAction("Marker", self)
         act_marker.triggered.connect(self._on_add_marker)
-        tb.addAction(act_marker)
+        add_emoji(act_marker, "◆")
 
         act_calc = QAction("Calculator", self)
         act_calc.triggered.connect(lambda: self.side_tabs.setCurrentWidget(self.calc_expr.parentWidget()))
-        tb.addAction(act_calc)
+        add_emoji(act_calc, "∑")
 
         act_image = QAction("Image", self)
         act_image.triggered.connect(self._on_save_plot_image)
-        tb.addAction(act_image)
+        add_emoji(act_image, "▧")
 
         act_export = QAction("Export Visible CSV", self)
         act_export.triggered.connect(self._on_export_visible_csv)
-        tb.addAction(act_export)
+        add_emoji(act_export, "💾")
 
         tb.addSeparator()
 
         act_clear = QAction("Clear", self)
         act_clear.triggered.connect(self._on_clear)
-        tb.addAction(act_clear)
+        add_emoji(act_clear, "×")
 
     def _create_status_bar(self):
         status = QStatusBar()

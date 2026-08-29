@@ -42,6 +42,19 @@ class TestLibraryDatabase(unittest.TestCase):
         
         nonexistent = self.db.get_library("nonexistent")
         self.assertIsNone(nonexistent)
+
+    def test_library_pdk_attachment_persists(self):
+        """Test attaching a PDK to a design library."""
+        self.db.create_library("test_lib")
+
+        self.db.set_library_pdk("test_lib", "ihp-sg13g2")
+
+        self.assertEqual(self.db.get_library_pdk("test_lib"), "ihp-sg13g2")
+        reopened = LibraryDatabase(self.test_dir)
+        self.assertEqual(reopened.get_library_pdk("test_lib"), "ihp-sg13g2")
+
+        self.db.set_library_pdk("test_lib", "")
+        self.assertEqual(self.db.get_library_pdk("test_lib"), "")
     
     def test_cell_operations(self):
         """Test cell creation and existence checking."""
@@ -168,6 +181,16 @@ class TestLibraryDatabase(unittest.TestCase):
                 if shape.get("type") == "text" and shape.get("text")
             ]
             self.assertTrue(text_shapes, f"{cell} should include text markings")
+
+    def test_independent_sources_expose_ac_parameters(self):
+        for cell in (
+            "vsource", "isource", "vdc", "idc", "vac", "iac",
+            "vpulse", "ipulse", "vsin", "isin", "vpwl", "ipwl",
+        ):
+            symbol = self.db.load_view("primitives", cell, "symbol")
+            params = {param.get("name") for param in symbol.get("parameters", [])}
+            self.assertIn("acmag", params, f"{cell} should expose AC magnitude")
+            self.assertIn("acphase", params, f"{cell} should expose AC phase")
 
     def test_existing_primitives_library_is_reconciled(self):
         """Older workspaces should receive newly added primitive cells."""

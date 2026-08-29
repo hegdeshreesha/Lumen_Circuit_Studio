@@ -8,6 +8,7 @@ import traceback
 import json
 import csv
 import math
+import concurrent.futures
 from pathlib import Path
 
 from lumen.qt.QtWidgets import (
@@ -21,10 +22,24 @@ from lumen.qt.QtWidgets import (
 )
 from lumen.qt.QtWidgets import QAbstractItemView, QMenu
 from lumen.qt.QtCore import Qt, QSize, QUrl, QObject, QThread, QTimer, Signal
-from lumen.qt.QtGui import QAction, QFont, QColor, QKeySequence, QDesktopServices
+from lumen.qt.QtGui import QAction, QFont, QColor, QIcon, QKeySequence, QDesktopServices
 
 from lumen.core.database import LibraryDatabase
+from lumen.core.ade_engine import ExpressionCalculator
 from lumen.core.netlist import NetlistGenerator, NetlistDirectives
+from lumen.core.simulation_setup import (
+    DeviceModelBinding,
+    ModelEntry,
+    ModelDirective,
+    SpecLimit,
+    build_pdk_model_manifest,
+    directives_to_netlist_entries,
+    evaluate_specs,
+    extract_lib_sections,
+    parse_model_entries,
+    validate_model_bindings,
+    validate_model_directives,
+)
 from lumen.core.simulator import (
     SIMULATOR_INFO,
     SimulatorBridge,
@@ -42,8 +57,8 @@ from lumen.core.pss import (
     pss_validation_errors,
 )
 from lumen.core.pdk_service import get_registry
+from lumen.core.pdk_unified import PDKLock
 from lumen.gui.branding import apply_window_branding
-from lumen.gui.icons import editor_icon
 from lumen.gui.simulator_manager_window import (
     SimulatorManagerWindow,
     ensure_simulator_available,
@@ -641,65 +656,95 @@ class SimEnvSimulationWorker(QObject):
         self.adaptive_maxstep = bool(adaptive_maxstep)
         self.verbose_compat = bool(verbose_compat)
         self._bridge: SimulatorBridge | None = None
+        self._bridges: list[SimulatorBridge] = []
         self._cancelled = False
 
     def run(self):
         try:
-            self._bridge = SimulatorBridge(
-                self.simulator,
-                exe_path=self.exe_path,
-                work_dir=self.work_dir,
-                sim_env=self.sim_env,
-                ssh_host=self.ssh_host,
-                ssh_user=self.ssh_user,
-                ssh_key=self.ssh_key,
-                remote_gspice=self.remote_gspice,
-                save_mode=self.save_mode,
-                adaptive_maxstep=self.adaptive_maxstep,
-                verbose_compat=self.verbose_compat,
-            )
-            for run_name, netlist, sim_name in self.jobs:
+            if self.threads <= 1 or len(self.jobs) <= 1:
+                for job in self.jobs:
+                    if self._cancelled:
+                        break
+                    run_name, result = self._run_one(job)
+                    self.result_ready.emit(run_name, result)
+                    if self._cancelled:
+                        break
+            else:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=self.threads) as pool:
+                    futures = [pool.submit(self._run_one, job) for job in self.jobs]
+                    for future in concurrent.futures.as_completed(futures):
+                        if self._cancelled:
+                            break
+                        run_name, result = future.result()
+                        self.result_ready.emit(run_name, result)
                 if self._cancelled:
-                    break
-                self.progress.emit(f"Running {run_name}...")
-                result = self._bridge.simulate(
-                    netlist,
-                    sim_name=sim_name,
-                    threads=self.threads,
-                    timeout=self.timeout,
-                    progress_callback=self.progress.emit,
-                )
-                if self.compare_references and not self._cancelled:
-                    comparisons = ReferenceComparisonRunner(
-                        self.workspace,
-                        self.work_dir,
-                    ).compare(
-                        self.simulator,
-                        netlist,
-                        result,
-                        sim_name,
-                        threads=self.threads,
-                        progress_callback=self.progress.emit,
-                    )
-                    report = format_reference_report(comparisons)
-                    if report:
-                        result.log += "\n" + report + "\n"
-                        result.warnings.extend(
-                            item.summary_line() for item in comparisons
-                        )
-                        result.artifacts["reference_comparison"] = report
-                self.result_ready.emit(run_name, result)
-                if self._cancelled:
-                    break
+                    for bridge in list(self._bridges):
+                        bridge.cancel()
         except Exception:
             self.failed.emit(traceback.format_exc())
         finally:
             self.finished.emit()
 
+    def _run_one(self, job: tuple[str, str, str]):
+        run_name, netlist, sim_name = job
+        self.progress.emit(f"Running {run_name}...")
+        bridge = SimulatorBridge(
+            self.simulator,
+            exe_path=self.exe_path,
+            work_dir=self.work_dir,
+            sim_env=self.sim_env,
+            ssh_host=self.ssh_host,
+            ssh_user=self.ssh_user,
+            ssh_key=self.ssh_key,
+            remote_gspice=self.remote_gspice,
+            save_mode=self.save_mode,
+            adaptive_maxstep=self.adaptive_maxstep,
+            verbose_compat=self.verbose_compat,
+        )
+        self._bridge = bridge
+        self._bridges.append(bridge)
+        try:
+            if self._cancelled:
+                raise RuntimeError("Simulation cancelled")
+            result = bridge.simulate(
+                    netlist,
+                    sim_name=sim_name,
+                    threads=1 if len(self.jobs) > 1 else self.threads,
+                    timeout=self.timeout,
+                    progress_callback=lambda msg: self.progress.emit(f"[{run_name}] {msg}"),
+            )
+            if self.compare_references and not self._cancelled:
+                comparisons = ReferenceComparisonRunner(
+                    self.workspace,
+                    self.work_dir,
+                ).compare(
+                    self.simulator,
+                    netlist,
+                    result,
+                    sim_name,
+                    threads=1,
+                    progress_callback=lambda msg: self.progress.emit(f"[{run_name}] {msg}"),
+                )
+                report = format_reference_report(comparisons)
+                if report:
+                    result.log += "\n" + report + "\n"
+                    result.warnings.extend(
+                        item.summary_line() for item in comparisons
+                    )
+                    result.artifacts["reference_comparison"] = report
+            return run_name, result
+        finally:
+            try:
+                self._bridges.remove(bridge)
+            except ValueError:
+                pass
+
     def cancel(self):
         self._cancelled = True
         if self._bridge is not None:
             self._bridge.cancel()
+        for bridge in list(self._bridges):
+            bridge.cancel()
 
 
 class DesignVariablesWidget(QWidget):
@@ -742,6 +787,146 @@ class DesignVariablesWidget(QWidget):
         return result
 
 
+class ExpressionEditorDialog(QDialog):
+    """Small helper for building and checking waveform expressions."""
+
+    FUNCTIONS = [
+        "V()", "I()", "dB()", "phase()", "group_delay()", "abs()", "real()", "imag()",
+        "fft()", "deriv()", "integ()", "sqrt()", "log10()",
+    ]
+
+    def __init__(self, expression: str = "", signals: list[str] | None = None,
+                 waveforms: dict | None = None, parent=None,
+                 measurement_hook=None, spec_hook=None, history: list[str] | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Expression Editor")
+        self.resize(720, 460)
+        self._waveforms = dict(waveforms or {})
+        self._calculator = ExpressionCalculator()
+        self._measurement_hook = measurement_hook
+        self._spec_hook = spec_hook
+
+        layout = QVBoxLayout(self)
+        split = QSplitter(Qt.Orientation.Horizontal)
+
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 6, 0)
+        history_items = [str(item).strip() for item in history or [] if str(item).strip()]
+        if history_items:
+            left_layout.addWidget(QLabel("History"))
+            self.history_combo = QComboBox()
+            self.history_combo.addItem("")
+            self.history_combo.addItems(history_items)
+            self.history_combo.currentTextChanged.connect(self._use_history_expression)
+            left_layout.addWidget(self.history_combo)
+        left_layout.addWidget(QLabel("Signals"))
+        self.signal_list = QTreeWidget()
+        self.signal_list.setHeaderLabels(["Name"])
+        for name in sorted({str(s) for s in signals or [] if str(s).strip()}):
+            self.signal_list.addTopLevelItem(QTreeWidgetItem([name]))
+        self.signal_list.itemDoubleClicked.connect(lambda item, _col: self._insert(item.text(0)))
+        left_layout.addWidget(self.signal_list)
+        split.addWidget(left)
+
+        right = QWidget()
+        right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(6, 0, 0, 0)
+        fn_grid = QGridLayout()
+        for idx, fn in enumerate(self.FUNCTIONS):
+            btn = QPushButton(fn)
+            btn.clicked.connect(lambda _checked=False, text=fn: self._insert_function(text))
+            fn_grid.addWidget(btn, idx // 4, idx % 4)
+        right_layout.addLayout(fn_grid)
+
+        self.expr_edit = QTextEdit()
+        self.expr_edit.setAcceptRichText(False)
+        self.expr_edit.setPlainText(expression or "V(out)")
+        right_layout.addWidget(self.expr_edit, 1)
+
+        controls = QHBoxLayout()
+        validate_btn = QPushButton("Validate")
+        validate_btn.clicked.connect(self._validate)
+        controls.addWidget(validate_btn)
+        preview_btn = QPushButton("Preview")
+        preview_btn.clicked.connect(self._preview)
+        controls.addWidget(preview_btn)
+        meas_btn = QPushButton("Add Measurement")
+        meas_btn.clicked.connect(self._add_measurement)
+        controls.addWidget(meas_btn)
+        spec_btn = QPushButton("Add Spec")
+        spec_btn.clicked.connect(self._add_spec)
+        controls.addWidget(spec_btn)
+        controls.addStretch()
+        right_layout.addLayout(controls)
+
+        self.status_label = QLabel("")
+        self.status_label.setWordWrap(True)
+        right_layout.addWidget(self.status_label)
+        split.addWidget(right)
+        split.setStretchFactor(1, 1)
+        layout.addWidget(split)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def expression(self) -> str:
+        return self.expr_edit.toPlainText().strip()
+
+    def _use_history_expression(self, text: str) -> None:
+        expr = str(text or "").strip()
+        if expr:
+            self.expr_edit.setPlainText(expr)
+
+    def _insert(self, text: str) -> None:
+        cursor = self.expr_edit.textCursor()
+        cursor.insertText(text)
+        self.expr_edit.setTextCursor(cursor)
+        self.expr_edit.setFocus()
+
+    def _insert_function(self, text: str) -> None:
+        selected = self.expr_edit.textCursor().selectedText().strip()
+        self._insert(f"{text[:-1]}{selected})" if selected and text.endswith("()") else text)
+
+    def _validate(self) -> bool:
+        expr = self.expression()
+        if not expr:
+            self.status_label.setText("Expression is empty.")
+            return False
+        if self._waveforms:
+            result = self._calculator.evaluate(expr, self._waveforms)
+            if result is None:
+                self.status_label.setText("Could not evaluate against the latest waveforms.")
+                return False
+            self.status_label.setText(f"Valid: {len(result.get('y', []))} point(s).")
+            return True
+        if not re.search(r"[A-Za-z_]\w*\(|[A-Za-z_]\w*", expr):
+            self.status_label.setText("Expression does not look like a waveform expression.")
+            return False
+        self.status_label.setText("Syntax looks usable. Run simulation for waveform preview.")
+        return True
+
+    def _preview(self) -> None:
+        if not self._waveforms:
+            self.status_label.setText("No latest waveforms available yet.")
+            return
+        self._validate()
+
+    def _add_measurement(self) -> None:
+        expr = self.expression()
+        if expr and callable(self._measurement_hook):
+            self._measurement_hook(expr)
+            self.status_label.setText("Measurement added.")
+
+    def _add_spec(self) -> None:
+        expr = self.expression()
+        if expr and callable(self._spec_hook):
+            self._spec_hook(expr)
+            self.status_label.setText("Spec added.")
+
+
 class OutputsWidget(QWidget):
     """Output expressions table with support for post-processing expressions."""
 
@@ -753,12 +938,13 @@ class OutputsWidget(QWidget):
     ]
 
     def __init__(self, parent=None, target_provider=None, visualize_hook=None,
-                 voltage_pick_hook=None, current_pick_hook=None):
+                 voltage_pick_hook=None, current_pick_hook=None, expression_edit_hook=None):
         super().__init__(parent)
         self._target_provider = target_provider
         self._visualize_hook = visualize_hook
         self._voltage_pick_hook = voltage_pick_hook
         self._current_pick_hook = current_pick_hook
+        self._expression_edit_hook = expression_edit_hook
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
@@ -779,6 +965,11 @@ class OutputsWidget(QWidget):
         add_i_btn.clicked.connect(self._on_add_current)
         hdr.addWidget(add_i_btn)
 
+        edit_expr_btn = QPushButton("Expr...")
+        edit_expr_btn.setFixedWidth(72)
+        edit_expr_btn.clicked.connect(self._edit_selected_expression)
+        hdr.addWidget(edit_expr_btn)
+
         delete_btn = QPushButton("- Delete")
         delete_btn.setToolTip("Delete selected output row(s) (Shortcut: Delete key)")
         delete_btn.clicked.connect(self._delete_selected_rows)
@@ -793,11 +984,12 @@ class OutputsWidget(QWidget):
 
         layout.addLayout(hdr)
 
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["Signal", "Expression", "Plot"])
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["Signal", "Expression", "Plot", "Edit"])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -890,7 +1082,32 @@ class OutputsWidget(QWidget):
         chk = QCheckBox()
         chk.setChecked(True)
         self.table.setCellWidget(r, 2, chk)
+        edit = QPushButton("...")
+        edit.setToolTip("Open expression editor")
+        edit.clicked.connect(lambda _checked=False, row=r: self._edit_expression_row(row))
+        self.table.setCellWidget(r, 3, edit)
         return r
+
+    def _selected_row(self) -> int:
+        rows = sorted({idx.row() for idx in self.table.selectedIndexes()})
+        return rows[0] if rows else self.table.currentRow()
+
+    def _edit_selected_expression(self):
+        row = self._selected_row()
+        if row < 0:
+            row = self._add_entry("sig", "V(out)")
+        self._edit_expression_row(row)
+
+    def _edit_expression_row(self, row: int):
+        if row < 0 or row >= self.table.rowCount() or not callable(self._expression_edit_hook):
+            return
+        item = self.table.item(row, 1)
+        updated = self._expression_edit_hook(item.text().strip() if item else "")
+        if updated:
+            self.table.setItem(row, 1, QTableWidgetItem(updated))
+            sig = self.table.item(row, 0)
+            if sig and sig.text().strip() in {"", "sig"}:
+                sig.setText(updated)
 
     def _delete_selected_rows(self):
         rows = sorted({idx.row() for idx in self.table.selectedIndexes()}, reverse=True)
@@ -1112,8 +1329,9 @@ class MeasurementSetupWidget(QWidget):
         "FIND", "WHEN", "DERIV", "INTEG", "PARAM"
     ]
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, expression_edit_hook=None):
         super().__init__(parent)
+        self._expression_edit_hook = expression_edit_hook
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
@@ -1123,11 +1341,15 @@ class MeasurementSetupWidget(QWidget):
         add_btn.setFixedWidth(60)
         add_btn.clicked.connect(self._add_row)
         hdr.addWidget(add_btn)
+        edit_btn = QPushButton("Expr...")
+        edit_btn.setFixedWidth(72)
+        edit_btn.clicked.connect(self._edit_selected_expression)
+        hdr.addWidget(edit_btn)
         layout.addLayout(hdr)
 
-        self.table = QTableWidget(0, 6)
+        self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels([
-            "Name", "Type", "Expression", "TARG/TRIG", "From", "To"
+            "Name", "Type", "Expression", "TARG/TRIG", "From", "To", "Edit"
         ])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.verticalHeader().setVisible(False)
@@ -1146,6 +1368,24 @@ class MeasurementSetupWidget(QWidget):
         self.table.setItem(r, 3, QTableWidgetItem(""))
         self.table.setItem(r, 4, QTableWidgetItem(""))
         self.table.setItem(r, 5, QTableWidgetItem(""))
+        edit = QPushButton("...")
+        edit.clicked.connect(lambda _checked=False, row=r: self._edit_expression_row(row, 2))
+        self.table.setCellWidget(r, 6, edit)
+
+    def _edit_selected_expression(self):
+        row = self.table.currentRow()
+        if row < 0:
+            self._add_row()
+            row = self.table.rowCount() - 1
+        self._edit_expression_row(row, 2)
+
+    def _edit_expression_row(self, row: int, col: int):
+        if row < 0 or row >= self.table.rowCount() or not callable(self._expression_edit_hook):
+            return
+        item = self.table.item(row, col)
+        updated = self._expression_edit_hook(item.text().strip() if item else "")
+        if updated:
+            self.table.setItem(row, col, QTableWidgetItem(updated))
 
     def get_measure_lines(self) -> list[str]:
         lines = []
@@ -1190,6 +1430,83 @@ class MeasurementSetupWidget(QWidget):
 
             lines.append(" ".join(parts))
         return lines
+
+
+class SpecSetupWidget(QWidget):
+    """Simple pass/fail specs for result waveforms."""
+
+    METRICS = ["final", "min", "max", "mean", "pp"]
+
+    def __init__(self, parent=None, expression_edit_hook=None):
+        super().__init__(parent)
+        self._expression_edit_hook = expression_edit_hook
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        hdr = QHBoxLayout()
+        hdr.addWidget(QLabel("Specs"))
+        add_btn = QPushButton("+ Add")
+        add_btn.setFixedWidth(60)
+        add_btn.clicked.connect(self._add_row)
+        hdr.addWidget(add_btn)
+        edit_btn = QPushButton("Expr...")
+        edit_btn.setFixedWidth(72)
+        edit_btn.clicked.connect(self._edit_selected_expression)
+        hdr.addWidget(edit_btn)
+        layout.addLayout(hdr)
+
+        self.table = QTableWidget(0, 7)
+        self.table.setHorizontalHeaderLabels(["Name", "Expression", "Metric", "Min", "Max", "Enable", "Edit"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.verticalHeader().setVisible(False)
+        layout.addWidget(self.table)
+
+    def _add_row(self):
+        r = self.table.rowCount()
+        self.table.insertRow(r)
+        self.table.setItem(r, 0, QTableWidgetItem(f"spec_{r}"))
+        self.table.setItem(r, 1, QTableWidgetItem("V(out)"))
+        metric = QComboBox()
+        metric.addItems(self.METRICS)
+        self.table.setCellWidget(r, 2, metric)
+        self.table.setItem(r, 3, QTableWidgetItem(""))
+        self.table.setItem(r, 4, QTableWidgetItem(""))
+        enabled = QCheckBox()
+        enabled.setChecked(True)
+        self.table.setCellWidget(r, 5, enabled)
+        edit = QPushButton("...")
+        edit.clicked.connect(lambda _checked=False, row=r: self._edit_expression_row(row))
+        self.table.setCellWidget(r, 6, edit)
+
+    def _edit_selected_expression(self):
+        row = self.table.currentRow()
+        if row < 0:
+            self._add_row()
+            row = self.table.rowCount() - 1
+        self._edit_expression_row(row)
+
+    def _edit_expression_row(self, row: int):
+        if row < 0 or row >= self.table.rowCount() or not callable(self._expression_edit_hook):
+            return
+        item = self.table.item(row, 1)
+        updated = self._expression_edit_hook(item.text().strip() if item else "")
+        if updated:
+            self.table.setItem(row, 1, QTableWidgetItem(updated))
+
+    def get_specs(self) -> list[SpecLimit]:
+        specs: list[SpecLimit] = []
+        for r in range(self.table.rowCount()):
+            name = self.table.item(r, 0).text().strip() if self.table.item(r, 0) else f"spec_{r}"
+            expr = self.table.item(r, 1).text().strip() if self.table.item(r, 1) else ""
+            metric_widget = self.table.cellWidget(r, 2)
+            metric = metric_widget.currentText() if isinstance(metric_widget, QComboBox) else "final"
+            min_value = self.table.item(r, 3).text().strip() if self.table.item(r, 3) else ""
+            max_value = self.table.item(r, 4).text().strip() if self.table.item(r, 4) else ""
+            enabled_widget = self.table.cellWidget(r, 5)
+            enabled = bool(enabled_widget.isChecked()) if isinstance(enabled_widget, QCheckBox) else True
+            if expr:
+                specs.append(SpecLimit(name, expr, metric, min_value, max_value, enabled))
+        return specs
 
 
 class StimulusEditorWidget(QWidget):
@@ -1475,11 +1792,18 @@ class ADEWindow(QMainWindow):
         self._attached_sigview = None
         self._last_sigview_waveforms: dict = {}
         self._last_sigview_payload: dict = {}
+        self._expression_history: list[str] = []
         self._result_waveforms_by_row: dict[int, dict] = {}
         self._result_all_waveforms_by_row: dict[int, dict] = {}
+        self._spec_results_by_row: dict[int, list[dict]] = {}
+        self._baseline_run_name = ""
         self._result_section_rows: set[int] = set()
         self._result_section_corners: set[str] = set()
         self._corner_result_rows: dict[str, list[int]] = {}
+        self._corner_sweep_result_rows: dict[tuple[str, str], list[int]] = {}
+        self._disabled_run_cells: set[tuple[str, str]] = set()
+        self._run_selected_cells_once: set[tuple[str, str]] = set()
+        self._run_matrix_status: dict[tuple[str, str], str] = {}
         self._sim_thread: QThread | None = None
         self._sim_worker: SimEnvSimulationWorker | None = None
         self._sim_jobs_total = 0
@@ -1493,6 +1817,10 @@ class ADEWindow(QMainWindow):
         self._pdk_combo_populated = False
         self._pending_simenv_pdk = ""
         self._sim_status_refresh_scheduled = False
+        self._corner_model_directives: dict[str, list[ModelDirective]] = {}
+        self._global_model_directives: list[ModelDirective] = []
+        self._model_bindings: list[DeviceModelBinding] = []
+        self._model_setup_name = "default"
 
         self.setWindowTitle(f"Lumen SimENV - {cell} [{library}]")
         apply_window_branding(self)
@@ -2088,6 +2416,29 @@ class ADEWindow(QMainWindow):
             self._save_simenv_view_silent()
         return row
 
+    def _add_spec_from_expression(self, expression: str, metric: str = "final") -> int:
+        expr = str(expression or "").strip()
+        if not expr or not hasattr(self, "spec_widget"):
+            return -1
+        table = self.spec_widget.table
+        for row in range(table.rowCount()):
+            if self._trace_key(self._table_text(table, row, 1)) == self._trace_key(expr):
+                table.selectRow(row)
+                return row
+        self.spec_widget._add_row()
+        row = table.rowCount() - 1
+        self._set_table_text(table, row, 0, f"spec_{row}")
+        self._set_table_text(table, row, 1, expr)
+        metric_widget = table.cellWidget(row, 2)
+        if isinstance(metric_widget, QComboBox):
+            idx = metric_widget.findText(metric)
+            if idx >= 0:
+                metric_widget.setCurrentIndex(idx)
+        table.selectRow(row)
+        self._refresh_run_plan()
+        self._save_simenv_view_silent()
+        return row
+
     def _current_waveforms_for_sigview(self) -> dict:
         selected = self.results_table.currentRow() if hasattr(self, "results_table") else -1
         if selected in self._result_all_waveforms_by_row:
@@ -2097,6 +2448,39 @@ class ADEWindow(QMainWindow):
         if self._last_sigview_waveforms:
             return dict(self._last_sigview_waveforms)
         return {}
+
+    def _edit_expression(self, expression: str = "") -> str:
+        waveforms = self._current_waveforms_for_sigview()
+        signals = [
+            str(name)
+            for name in self._plottable_signal_names(waveforms)
+        ] if waveforms else []
+        if not signals:
+            targets = self._collect_output_targets()
+            signals.extend([f"V({net})" for net in targets.get("nets", [])])
+            signals.extend([f"I({inst}.{pin})" for inst, pin in targets.get("terminals", [])])
+        dlg = ExpressionEditorDialog(
+            expression,
+            signals,
+            waveforms,
+            self,
+            measurement_hook=lambda expr: self._add_measurement_from_expression(expr, meas_type="AVG"),
+            spec_hook=lambda expr: self._add_spec_from_expression(expr, "final"),
+            history=self._expression_history,
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return ""
+        expr = dlg.expression()
+        self._remember_expression(expr)
+        return expr
+
+    def _remember_expression(self, expression: str) -> None:
+        expr = str(expression or "").strip()
+        if not expr:
+            return
+        self._expression_history = [item for item in self._expression_history if item != expr]
+        self._expression_history.insert(0, expr)
+        del self._expression_history[25:]
 
     def _show_expression_in_sigview(self, expression: str, name_hint: str = "", show_calculator: bool = False):
         expr = str(expression or "").strip()
@@ -2119,6 +2503,7 @@ class ADEWindow(QMainWindow):
             }]
         self._last_sigview_waveforms = dict(waveforms)
         self._last_sigview_payload = payload
+        self._remember_expression(expr)
         self._show_waveforms(payload, calculator=show_calculator)
 
     def _on_outputs_context_menu(self, pos):
@@ -2193,9 +2578,16 @@ class ADEWindow(QMainWindow):
             self._log(f"Could not autosave SimENV view: {exc}")
 
     def _infer_pdk_name(self) -> str:
-        """Infer the PDK from placed schematic instances or active registry state."""
+        """Infer the PDK from library attachment, schematic instances, or active registry state."""
         registry = self._ensure_pdk_registry()
         if registry:
+            try:
+                pdk_name = self.db.get_library_pdk(self.library)
+                if pdk_name and registry.get_pdk(pdk_name):
+                    return pdk_name
+            except Exception:
+                pass
+
             try:
                 data = self.db.load_view(self.library, self.cell, "schematic") or {}
                 for inst in data.get("instances", []):
@@ -2241,66 +2633,91 @@ class ADEWindow(QMainWindow):
         return devices
 
     def _configure_pdk_model_directives(self, directives: NetlistDirectives,
-                                        pdk_name: str, process: str = ""):
-        """Add industry-style model library selections to the netlist."""
-        registry = self._ensure_pdk_registry()
-        if not pdk_name or not registry:
-            return
-        pdk = registry.get_pdk(pdk_name)
-        if not pdk:
-            return
+                                        pdk_name: str, process: str = "",
+                                        corner_name: str = ""):
+        """Add explicit model directives to the netlist."""
+        resolved = self._resolved_model_directives(process, corner_name, pdk_name)
+        includes, libs = directives_to_netlist_entries(resolved)
+        directives.includes.extend(includes)
+        directives.libs.extend(libs)
 
+    def _resolved_model_directives(self, process: str = "", corner_name: str = "",
+                                   pdk_name: str = "") -> list[ModelDirective]:
+        if corner_name and corner_name in self._corner_model_directives:
+            return list(self._corner_model_directives.get(corner_name, []))
+        global_directives = self._collect_model_table_directives() if hasattr(self, "model_table") else list(self._global_model_directives)
+        if global_directives:
+            return global_directives
+        if (pdk_name or self._selected_pdk_name()) == "ihp_sg13g2":
+            return self._default_model_directives_for_process(process or "tt")
+        return []
+
+    def _section_matches_process(self, section: str, process: str) -> bool:
+        sec = str(section or "").strip().lower()
+        proc = str(process or "").strip().lower()
+        return bool(sec and proc and (sec == proc or sec.endswith(f"_{proc}") or sec.endswith(f"-{proc}")))
+
+    def _mapped_model_directives_for_corner(self, corner: dict) -> list[ModelDirective]:
+        process = str(corner.get("process", "") if isinstance(corner, dict) else "").strip()
+        mapped: list[ModelDirective] = []
+        for directive in self._collect_model_table_directives():
+            if directive.kind.lower() != "lib":
+                mapped.append(directive)
+                continue
+            sections = extract_lib_sections(directive.path)
+            match = next((section for section in sections if self._section_matches_process(section, process)), "")
+            if match:
+                mapped.append(ModelDirective(directive.kind, directive.path, match))
+            elif directive.section:
+                mapped.append(directive)
+        return mapped
+
+    def _map_model_sections_to_corners(self):
+        corners = self.get_corner_data() if hasattr(self, "corner_table") else []
+        if not corners:
+            self.statusBar().showMessage("No enabled corners to map", 4000)
+            return
+        count = 0
+        for corner in corners:
+            name = str(corner.get("name", "")).strip()
+            directives = self._mapped_model_directives_for_corner(corner)
+            if name and directives:
+                self._corner_model_directives[name] = directives
+                count += 1
+        self._refresh_corner_model_buttons()
+        self._sync_corner_inspector()
+        self._refresh_run_plan()
+        self._save_simenv_view_silent()
+        self.statusBar().showMessage(f"Mapped model sections for {count} corner(s)", 4000)
+
+    def _default_model_directives_for_process(self, process: str) -> list[ModelDirective]:
+        """Create IHP SG13G2 GSPICE wrapper directives for old/minimal setups."""
+        registry = self._ensure_pdk_registry()
+        pdk = registry.get_pdk("ihp_sg13g2") if registry else None
+        if not pdk:
+            return []
         model_files = list(getattr(pdk, "model_files", []) or [])
         if not model_files:
-            return
-
-        used_devices = self._used_pdk_devices(pdk_name)
-        added = set()
-
-        def add_lib(path: str, section: str = ""):
-            key = ("lib", path, section)
-            if path and key not in added:
-                directives.libs.append({"path": path, "section": section})
-                added.add(key)
-
-        def add_include(path: str):
-            key = ("include", path, "")
-            if path and key not in added:
-                directives.includes.append({"path": path})
-                added.add(key)
-
-        if pdk_name == "ihp_sg13g2":
-            wanted = self._ihp_model_file_names(used_devices)
-            used_wrappers = set()
-            sim_folder = "xyce" if self._current_simulator == "Xyce" else "ngspice"
-            preferred = sorted(
-                model_files,
-                key=lambda mf: (
-                    0 if f"{os.sep}{sim_folder}{os.sep}" in mf.path.lower() else 1,
-                    mf.path.lower(),
-                ),
-            )
-            for mf in preferred:
-                filename = os.path.basename(mf.path)
-                if filename in used_wrappers:
-                    continue
-                if filename not in wanted:
-                    continue
-                section = self._ihp_section_for_file(filename, process or "tt")
-                add_lib(mf.path, section)
-                used_wrappers.add(filename)
-            return
-
-        for mf in model_files:
-            suffix = os.path.splitext(mf.path)[1].lower()
-            if suffix == ".lib":
-                section = self._match_lib_section(getattr(mf, "corners", []), process)
-                if section:
-                    add_lib(mf.path, section)
-                else:
-                    add_include(mf.path)
-            elif suffix in (".scs", ".spice", ".sp", ".model"):
-                add_include(mf.path)
+            return []
+        used_devices = self._used_pdk_devices("ihp_sg13g2")
+        wanted = self._ihp_model_file_names(used_devices)
+        sim_folder = "ngspice"
+        preferred = sorted(
+            model_files,
+            key=lambda mf: (
+                0 if f"{os.sep}{sim_folder}{os.sep}" in mf.path.lower() else 1,
+                mf.path.lower(),
+            ),
+        )
+        directives: list[ModelDirective] = []
+        used_wrappers = set()
+        for mf in preferred:
+            filename = os.path.basename(mf.path)
+            if filename in used_wrappers or filename not in wanted:
+                continue
+            directives.append(ModelDirective("lib", mf.path, self._ihp_section_for_file(filename, process or "tt")))
+            used_wrappers.add(filename)
+        return directives
 
     def _ihp_model_file_names(self, devices: list) -> set[str]:
         """Choose IHP corner wrapper files needed by the placed devices."""
@@ -2394,6 +2811,36 @@ class ADEWindow(QMainWindow):
                 border-radius: 2px;
                 padding: 5px 10px;
                 font-weight: 700;
+            }
+            QFrame#adeReadinessBanner {
+                background: #18241d;
+                border: 1px solid #315a3f;
+                border-radius: 2px;
+            }
+            QLabel#adeReadinessTitle {
+                color: #d8f3dc;
+                background: transparent;
+                font-weight: 700;
+            }
+            QLabel#adeReadinessDetail {
+                color: #b7c7bc;
+                background: transparent;
+            }
+            QPushButton#adeWorkflowChip {
+                background: #303030;
+                color: #d6d6d6;
+                border: 1px solid #4a4a4a;
+                border-radius: 2px;
+                padding: 3px 8px;
+                font-weight: 600;
+            }
+            QPushButton#adeWorkflowChip[ready="true"] {
+                color: #b7f0c0;
+                border-color: #3d7350;
+            }
+            QPushButton#adeWorkflowChip[ready="false"] {
+                color: #ffd166;
+                border-color: #6c5825;
             }
             QSplitter::handle {
                 background: #3a3a3a;
@@ -2525,14 +2972,16 @@ class ADEWindow(QMainWindow):
         self.main_tabs = QTabWidget()
         self.main_tabs.setObjectName("adeMainTabs")
         self.main_tabs.setTabPosition(QTabWidget.TabPosition.North)
-        self.main_tabs.currentChanged.connect(lambda _idx: self._refresh_run_plan())
+        self.main_tabs.currentChanged.connect(self._on_main_tab_changed)
         splitter.addWidget(self.main_tabs)
 
         self._build_data_view_tab()
         self._build_analyses_tab()
+        self._build_model_libraries_tab()
         self._build_corners_tab()
         self._build_run_plan_tab()
         self._build_results_tab()
+        self._refresh_workflow_status()
 
         # Bottom: log
         self.log_view = QTextEdit()
@@ -2541,12 +2990,16 @@ class ADEWindow(QMainWindow):
         self.log_view.setFont(QFont("Consolas", 9))
         self.log_view.setMaximumHeight(180)
         splitter.addWidget(self.log_view)
-        splitter.setSizes([74, 560, 160])
+        splitter.setSizes([150, 560, 160])
+
+    def _on_main_tab_changed(self, _idx: int = 0):
+        self._refresh_run_plan()
+        self._refresh_workflow_status()
 
     def _build_session_header(self):
         header = QFrame()
         header.setObjectName("simenvHeader")
-        header.setMaximumHeight(104)
+        header.setMaximumHeight(162)
         layout = QVBoxLayout(header)
         layout.setContentsMargins(14, 8, 14, 8)
         layout.setSpacing(6)
@@ -2564,8 +3017,7 @@ class ADEWindow(QMainWindow):
         title_box.addWidget(subtitle)
         top_row.addLayout(title_box, stretch=1)
 
-        dump_btn = QPushButton("Dump Settings")
-        dump_btn.setIcon(editor_icon("open"))
+        dump_btn = QPushButton("📂 Dump Settings")
         dump_btn.setToolTip("Choose where SimENV writes input.sp, logs, RAW waveform files, and run manifests")
         dump_btn.clicked.connect(self._on_set_sim_dump_dir)
         dump_btn.setFixedWidth(126)
@@ -2576,7 +3028,50 @@ class ADEWindow(QMainWindow):
         self.session_badge.setMinimumWidth(128)
         self.session_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         top_row.addWidget(self.session_badge)
+        self.pdk_badge = QLabel("PDK: none")
+        self.pdk_badge.setObjectName("adeSessionBadge")
+        self.pdk_badge.setMinimumWidth(160)
+        self.pdk_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        top_row.addWidget(self.pdk_badge)
         layout.addLayout(top_row)
+
+        readiness = QFrame()
+        readiness.setObjectName("adeReadinessBanner")
+        ready_row = QHBoxLayout(readiness)
+        ready_row.setContentsMargins(8, 4, 8, 4)
+        ready_row.setSpacing(8)
+        self.readiness_title = QLabel("Checking setup")
+        self.readiness_title.setObjectName("adeReadinessTitle")
+        ready_row.addWidget(self.readiness_title)
+        self.readiness_detail = QLabel("")
+        self.readiness_detail.setObjectName("adeReadinessDetail")
+        self.readiness_detail.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        ready_row.addWidget(self.readiness_detail, 1)
+        self.readiness_fix_btn = QPushButton("Fix")
+        self.readiness_fix_btn.setFixedWidth(72)
+        self.readiness_fix_btn.clicked.connect(self._fix_next_setup_gap)
+        ready_row.addWidget(self.readiness_fix_btn)
+        layout.addWidget(readiness)
+
+        workflow_row = QHBoxLayout()
+        workflow_row.setSpacing(6)
+        self.workflow_buttons = {}
+        for key, label, tab in (
+            ("pdk", "1 PDK", "Model Setup"),
+            ("models", "2 Models", "Model Setup"),
+            ("corners", "3 Corners", "Corners"),
+            ("analyses", "4 Analyses", "Analyses"),
+            ("outputs", "5 Outputs", "Setup"),
+            ("run", "6 Run", "Run Plan"),
+        ):
+            btn = QPushButton(label)
+            btn.setObjectName("adeWorkflowChip")
+            btn.setProperty("ready", "false")
+            btn.clicked.connect(lambda _checked=False, name=tab: self._show_main_tab(name))
+            workflow_row.addWidget(btn)
+            self.workflow_buttons[key] = btn
+        workflow_row.addStretch(1)
+        layout.addLayout(workflow_row)
 
         controls_row = QHBoxLayout()
         controls_row.setSpacing(12)
@@ -2699,9 +3194,100 @@ class ADEWindow(QMainWindow):
             lambda state: self._on_verbose_compat_changed(state == Qt.CheckState.Checked.value)
         )
         controls_row.addWidget(self.compat_diag_check)
-        controls_row.addStretch(1)
         layout.addLayout(controls_row)
         return header
+
+    def _setup_readiness(self) -> dict[str, tuple[bool, str]]:
+        pdk_name = self._selected_pdk_name() if hasattr(self, "pdk_combo") else ""
+        model_rows = self.model_table.rowCount() if hasattr(self, "model_table") else 0
+        corner_rows = self.corner_table.rowCount() if hasattr(self, "corner_table") else 0
+        analyses = len(getattr(self, "_analysis_tabs", {}) or {})
+        output_rows = self.outputs_widget.table.rowCount() if hasattr(self, "outputs_widget") else 0
+        save_all = bool(
+            hasattr(self, "outputs_widget")
+            and (
+                self.outputs_widget.chk_save_all_nodes.isChecked()
+                or self.outputs_widget.chk_save_all_currents.isChecked()
+            )
+        )
+        return {
+            "pdk": (bool(pdk_name), pdk_name or "none"),
+            "models": (model_rows > 0, f"{model_rows} file row(s)"),
+            "corners": (corner_rows > 0, f"{corner_rows} corner(s)"),
+            "analyses": (analyses > 0, f"{analyses} enabled"),
+            "outputs": (output_rows > 0 or save_all, f"{output_rows} row(s)" if output_rows else ("save all" if save_all else "none")),
+            "run": (bool(pdk_name) and model_rows > 0 and corner_rows > 0 and analyses > 0, "ready" if analyses else "needs analysis"),
+        }
+
+    def _refresh_workflow_status(self):
+        if not hasattr(self, "readiness_title"):
+            return
+        status = self._setup_readiness()
+        blocking = [
+            name for name in ("pdk", "models", "corners", "analyses")
+            if not status.get(name, (False, ""))[0]
+        ]
+        warnings = [
+            name for name in ("outputs",)
+            if not status.get(name, (False, ""))[0]
+        ]
+        if blocking:
+            self.readiness_title.setText("Needs Setup")
+            self.readiness_fix_btn.setEnabled(True)
+        elif warnings:
+            self.readiness_title.setText("Runnable")
+            self.readiness_fix_btn.setEnabled(True)
+        else:
+            self.readiness_title.setText("Ready to Run")
+            self.readiness_fix_btn.setEnabled(False)
+
+        self.readiness_detail.setText(" | ".join(
+            f"{name.title()}: {status[name][1]}"
+            for name in ("pdk", "models", "corners", "analyses", "outputs")
+        ))
+
+        labels = {
+            "pdk": "1 PDK",
+            "models": "2 Models",
+            "corners": "3 Corners",
+            "analyses": "4 Analyses",
+            "outputs": "5 Outputs",
+            "run": "6 Run",
+        }
+        for key, btn in getattr(self, "workflow_buttons", {}).items():
+            ready, text = status.get(key, (False, ""))
+            btn.setText(f"{labels.get(key, key)} {'✓' if ready else '!'}")
+            btn.setProperty("ready", "true" if ready else "false")
+            btn.setToolTip(text)
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+
+    def _fix_next_setup_gap(self):
+        status = self._setup_readiness()
+        if not status["pdk"][0]:
+            self._show_main_tab("Model Setup")
+            self._log("Select or attach a PDK before running.")
+            return
+        if not status["models"][0]:
+            if self._apply_selected_pdk_manifest():
+                self._refresh_workflow_status()
+                return
+            self._show_main_tab("Model Setup")
+            return
+        if not status["corners"][0]:
+            self._add_corner_row()
+            self._show_main_tab("Corners")
+            self._refresh_workflow_status()
+            return
+        if not status["analyses"][0]:
+            self._add_analysis("Transient")
+            self._refresh_workflow_status()
+            return
+        if not status["outputs"][0] and hasattr(self, "outputs_widget"):
+            row = self.outputs_widget._add_entry("out", "V(out)")
+            self.outputs_widget.table.selectRow(row)
+            self._show_main_tab("Setup")
+            self._refresh_workflow_status()
 
     def _build_data_view_tab(self):
         data_tabs = QTabWidget()
@@ -2716,15 +3302,19 @@ class ADEWindow(QMainWindow):
             visualize_hook=self._visualize_output_targets,
             voltage_pick_hook=self._start_voltage_pick,
             current_pick_hook=self._start_current_pick,
+            expression_edit_hook=self._edit_expression,
         )
         self.outputs_widget.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.outputs_widget.table.customContextMenuRequested.connect(self._on_outputs_context_menu)
         data_tabs.addTab(self.outputs_widget, "Outputs")
 
-        self.measurement_widget = MeasurementSetupWidget()
+        self.measurement_widget = MeasurementSetupWidget(expression_edit_hook=self._edit_expression)
         self.measurement_widget.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.measurement_widget.table.customContextMenuRequested.connect(self._on_measurements_context_menu)
         data_tabs.addTab(self.measurement_widget, "Measurements")
+
+        self.spec_widget = SpecSetupWidget(expression_edit_hook=self._edit_expression)
+        data_tabs.addTab(self.spec_widget, "Specs")
 
         self.stimulus_widget = StimulusEditorWidget()
         data_tabs.addTab(self.stimulus_widget, "Stimuli")
@@ -2733,6 +3323,7 @@ class ADEWindow(QMainWindow):
         data_tabs.addTab(self.convergence_widget, "Convergence")
 
         self.sweep_widget = ParametricSweepWidget()
+        self.sweep_widget.sweep_table.itemChanged.connect(lambda _item: self._refresh_corner_run_matrix_preview())
         data_tabs.addTab(self.sweep_widget, "Sweeps")
 
         self.main_tabs.addTab(data_tabs, "Setup")
@@ -3025,29 +3616,108 @@ class ADEWindow(QMainWindow):
         add_btn.clicked.connect(self._add_corner_row)
         hdr.addWidget(add_btn)
 
+        preset_btn = QPushButton("Add PVT Preset")
+        preset_btn.clicked.connect(self._add_pvt_preset_corners)
+        hdr.addWidget(preset_btn)
+
+        duplicate_btn = QPushButton("Duplicate")
+        duplicate_btn.clicked.connect(self._duplicate_selected_corner)
+        hdr.addWidget(duplicate_btn)
+
+        apply_models_btn = QPushButton("Apply Shared Models")
+        apply_models_btn.setToolTip("Copy the shared model library setup to selected corners")
+        apply_models_btn.clicked.connect(self._apply_shared_models_to_selected_corners)
+        hdr.addWidget(apply_models_btn)
+
         # PDK selector for corner-aware models
         hdr.addWidget(QLabel("PDK:"))
         self.pdk_combo = QComboBox()
         self.pdk_combo.addItem("None", "")
-        self.pdk_combo.currentIndexChanged.connect(lambda _idx: self._refresh_run_plan())
+        self.pdk_combo.currentIndexChanged.connect(self._on_pdk_combo_changed)
         hdr.addWidget(self.pdk_combo)
 
         # Corner run mode
         hdr.addWidget(QLabel("Run Mode:"))
         self.corner_mode_combo = QComboBox()
         self.corner_mode_combo.addItems(["Single", "All Corners", "Selected"])
-        self.corner_mode_combo.currentIndexChanged.connect(lambda _idx: self._refresh_run_plan())
+        self.corner_mode_combo.currentIndexChanged.connect(lambda _idx: (self._refresh_corner_run_matrix_preview(), self._refresh_run_plan()))
         hdr.addWidget(self.corner_mode_combo)
 
         layout.addLayout(hdr)
 
-        self.corner_table = QTableWidget(0, 5)
+        split = QSplitter(Qt.Orientation.Horizontal)
+
+        self.corner_table = QTableWidget(0, 6)
         self.corner_table.setHorizontalHeaderLabels([
-            "Name", "Temperature", "Voltage", "Process", "Run"
+            "Name", "Temperature", "Voltage", "Process", "Run", "Models"
         ])
         self.corner_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.corner_table.verticalHeader().setVisible(False)
-        layout.addWidget(self.corner_table)
+        self.corner_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.corner_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.corner_table.itemChanged.connect(lambda _item: self._on_corner_table_changed())
+        self.corner_table.itemSelectionChanged.connect(self._sync_corner_inspector)
+        self.corner_table.setVisible(False)
+
+        self.corner_setup_matrix = QTableWidget(6, 0)
+        self.corner_setup_matrix.setVerticalHeaderLabels([
+            "Run", "Process", "Temperature", "VDD", "Models", "Validation"
+        ])
+        self.corner_setup_matrix.verticalHeader().setVisible(True)
+        self.corner_setup_matrix.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.corner_setup_matrix.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectColumns)
+        self.corner_setup_matrix.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.corner_setup_matrix.itemChanged.connect(self._on_corner_setup_matrix_changed)
+        self.corner_setup_matrix.itemSelectionChanged.connect(self._select_corner_from_setup_matrix)
+        self.corner_setup_matrix.itemDoubleClicked.connect(self._edit_corner_models_from_matrix)
+        split.addWidget(self.corner_setup_matrix)
+
+        inspector = QGroupBox("Selected Corner")
+        form = QFormLayout(inspector)
+        self.corner_name_edit = QLineEdit()
+        self.corner_temp_edit = QLineEdit()
+        self.corner_vdd_edit = QLineEdit()
+        self.corner_process_edit = QLineEdit()
+        for edit in (self.corner_name_edit, self.corner_temp_edit, self.corner_vdd_edit, self.corner_process_edit):
+            edit.editingFinished.connect(self._apply_corner_inspector)
+        form.addRow("Name", self.corner_name_edit)
+        form.addRow("Temperature", self.corner_temp_edit)
+        form.addRow("VDD", self.corner_vdd_edit)
+        form.addRow("Process", self.corner_process_edit)
+        self.corner_model_label = QLabel("Shared models")
+        self.corner_model_label.setWordWrap(True)
+        form.addRow("Models", self.corner_model_label)
+        edit_models_btn = QPushButton("Edit Models")
+        edit_models_btn.clicked.connect(lambda: self._edit_corner_models(self.corner_table.currentRow()))
+        form.addRow("", edit_models_btn)
+        self.corner_validation_label = QLabel("")
+        self.corner_validation_label.setWordWrap(True)
+        form.addRow("Validation", self.corner_validation_label)
+        split.addWidget(inspector)
+        split.setStretchFactor(0, 3)
+        split.setStretchFactor(1, 1)
+        layout.addWidget(split)
+
+        preview_label = QLabel("Run Matrix Preview")
+        preview_label.setObjectName("adePanelLabel")
+        layout.addWidget(preview_label)
+        self.corner_run_matrix_preview = QTableWidget(0, 0)
+        self.corner_run_matrix_preview.setMinimumHeight(160)
+        self.corner_run_matrix_preview.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
+        self.corner_run_matrix_preview.verticalHeader().setVisible(True)
+        self.corner_run_matrix_preview.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.corner_run_matrix_preview.setToolTip("Columns are enabled corners. Rows are variable sweep points.")
+        self.corner_run_matrix_preview.itemChanged.connect(self._on_run_matrix_preview_changed)
+        layout.addWidget(self.corner_run_matrix_preview)
+        run_buttons = QHBoxLayout()
+        run_selected_btn = QPushButton("Run Selected Cells")
+        run_selected_btn.clicked.connect(self._run_selected_matrix_cells)
+        run_buttons.addWidget(run_selected_btn)
+        rerun_failed_btn = QPushButton("Rerun Failed Cells")
+        rerun_failed_btn.clicked.connect(self._rerun_failed_matrix_cells)
+        run_buttons.addWidget(rerun_failed_btn)
+        run_buttons.addStretch()
+        layout.addLayout(run_buttons)
 
         # Add default corners
         for name, temp, vdd, proc in [
@@ -3056,6 +3726,9 @@ class ADEWindow(QMainWindow):
             ("SS_125C", "125", "1.62", "ss"),
         ]:
             self._add_corner(name, temp, vdd, proc)
+        self._refresh_corner_setup_matrix()
+        self._refresh_corner_run_matrix_preview()
+        self.corner_table.selectRow(0)
 
         self.main_tabs.addTab(widget, "Corners")
         QTimer.singleShot(0, self._populate_pdk_combo)
@@ -3087,6 +3760,10 @@ class ADEWindow(QMainWindow):
             if not target and not self.pdk_combo.currentData():
                 target = self._infer_pdk_name()
             if target:
+                if self.pdk_combo.findData(target) < 0:
+                    pdk = registry.get_pdk(target)
+                    if pdk:
+                        self.pdk_combo.addItem(pdk.display_name, pdk.name)
                 idx = self.pdk_combo.findData(target)
                 if idx >= 0:
                     self.pdk_combo.setCurrentIndex(idx)
@@ -3094,10 +3771,31 @@ class ADEWindow(QMainWindow):
             self._log(f"Could not load PDK list: {exc}")
         finally:
             self.pdk_combo.blockSignals(False)
+        self._update_pdk_badge()
+        self._refresh_pdk_model_overview()
         self._refresh_run_plan()
 
+    def _on_pdk_combo_changed(self, _idx: int = 0):
+        self._update_pdk_badge()
+        self._refresh_pdk_model_overview()
+        self._refresh_run_plan()
+
+    def _update_pdk_badge(self):
+        if not hasattr(self, "pdk_badge"):
+            return
+        pdk_name = self._selected_pdk_name(infer=True)
+        attached = ""
+        try:
+            attached = self.db.get_library_pdk(self.library)
+        except Exception:
+            attached = ""
+        label = pdk_name or "none"
+        if attached and attached == pdk_name:
+            label = f"{label} attached"
+        self.pdk_badge.setText(f"PDK: {label}")
+
     def _add_corner_row(self):
-        self._add_corner("corner", "25", "1.8", "tt")
+        self._add_corner(self._unique_corner_name("corner"), "25", "1.8", "tt")
 
     def _add_corner(self, name, temp, vdd, proc):
         r = self.corner_table.rowCount()
@@ -3108,8 +3806,1287 @@ class ADEWindow(QMainWindow):
         self.corner_table.setItem(r, 3, QTableWidgetItem(proc))
         chk = QCheckBox()
         chk.setChecked(True)
+        chk.stateChanged.connect(lambda _state: self._on_corner_table_changed())
         self.corner_table.setCellWidget(r, 4, chk)
+        edit = QPushButton(self._corner_model_summary(str(name)))
+        edit.setToolTip("Edit model directives for this corner")
+        edit.clicked.connect(lambda _checked=False, row=r: self._edit_corner_models(row))
+        self.corner_table.setCellWidget(r, 5, edit)
         self._refresh_run_plan()
+        self._refresh_corner_setup_matrix()
+        self._refresh_corner_run_matrix_preview()
+        self._refresh_model_corner_summary()
+        return r
+
+    def _corner_names(self) -> set[str]:
+        return {
+            self._table_text(self.corner_table, r, 0)
+            for r in range(self.corner_table.rowCount())
+            if self._table_text(self.corner_table, r, 0)
+        }
+
+    def _unique_corner_name(self, base: str) -> str:
+        base = str(base or "corner").strip() or "corner"
+        names = self._corner_names()
+        if base not in names:
+            return base
+        idx = 2
+        while f"{base}_{idx}" in names:
+            idx += 1
+        return f"{base}_{idx}"
+
+    def _add_pvt_preset_corners(self):
+        for name, temp, vdd, proc in [
+            ("TT_25C", "25", "1.8", "tt"),
+            ("FF_m40C", "-40", "1.98", "ff"),
+            ("SS_125C", "125", "1.62", "ss"),
+        ]:
+            if name not in self._corner_names():
+                self._add_corner(name, temp, vdd, proc)
+        self._refresh_corner_model_buttons()
+        self._refresh_corner_setup_matrix()
+        self._sync_corner_inspector()
+
+    def _duplicate_selected_corner(self):
+        row = self.corner_table.currentRow()
+        if row < 0:
+            return
+        old_name = self._table_text(self.corner_table, row, 0, "corner")
+        new_name = self._unique_corner_name(f"{old_name}_copy")
+        new_row = self._add_corner(
+            new_name,
+            self._table_text(self.corner_table, row, 1, "25"),
+            self._table_text(self.corner_table, row, 2, "1.8"),
+            self._table_text(self.corner_table, row, 3, "tt"),
+        )
+        directives = list(self._corner_model_directives.get(old_name, []))
+        if directives:
+            self._corner_model_directives[new_name] = directives
+        self.corner_table.selectRow(new_row)
+        self._refresh_corner_model_buttons()
+        self._refresh_corner_setup_matrix()
+        self._save_simenv_view_silent()
+
+    def _apply_shared_models_to_selected_corners(self):
+        directives = self._collect_model_table_directives() if hasattr(self, "model_table") else []
+        rows = sorted({idx.row() for idx in self.corner_table.selectedIndexes()})
+        if not rows:
+            row = self.corner_table.currentRow()
+            rows = [row] if row >= 0 else []
+        for row in rows:
+            name = self._table_text(self.corner_table, row, 0, "corner")
+            if directives:
+                self._corner_model_directives[name] = list(directives)
+            else:
+                self._corner_model_directives.pop(name, None)
+        self._refresh_corner_model_buttons()
+        self._refresh_corner_setup_matrix()
+        self._sync_corner_inspector()
+        self._refresh_run_plan()
+        self._save_simenv_view_silent()
+
+    def _corner_model_summary(self, name: str) -> str:
+        count = len(self._corner_model_directives.get(name, []))
+        return f"{count} model(s)" if count else "Shared"
+
+    def _refresh_corner_model_buttons(self):
+        if not hasattr(self, "corner_table"):
+            return
+        for row in range(self.corner_table.rowCount()):
+            name = self._table_text(self.corner_table, row, 0, "corner")
+            button = self.corner_table.cellWidget(row, 5)
+            if isinstance(button, QPushButton):
+                button.setText(self._corner_model_summary(name))
+        self._refresh_corner_setup_matrix()
+        self._refresh_model_corner_summary()
+
+    def _on_corner_table_changed(self):
+        self._refresh_corner_setup_matrix()
+        self._refresh_corner_run_matrix_preview()
+        self._sync_corner_inspector()
+        self._refresh_model_corner_summary()
+        self._refresh_run_plan()
+
+    def _refresh_corner_setup_matrix(self):
+        if not hasattr(self, "corner_setup_matrix") or not hasattr(self, "corner_table"):
+            return
+        if getattr(self, "_corner_matrix_syncing", False):
+            return
+        self._corner_matrix_syncing = True
+        try:
+            table = self.corner_setup_matrix
+            cols = self.corner_table.rowCount()
+            table.blockSignals(True)
+            table.setColumnCount(cols)
+            headers = [
+                self._table_text(self.corner_table, col, 0, f"corner_{col}")
+                for col in range(cols)
+            ]
+            table.setHorizontalHeaderLabels(headers)
+            for col in range(cols):
+                name = self._table_text(self.corner_table, col, 0, f"corner_{col}")
+                proc = self._table_text(self.corner_table, col, 3, "tt")
+                chk = self.corner_table.cellWidget(col, 4)
+                enabled = bool(chk.isChecked()) if isinstance(chk, QCheckBox) else True
+                values = [
+                    "Run" if enabled else "Skip",
+                    proc,
+                    self._table_text(self.corner_table, col, 1, "25"),
+                    self._table_text(self.corner_table, col, 2, "1.8"),
+                    self._corner_model_summary(name),
+                    "PASS",
+                ]
+                directives = self._resolved_model_directives(proc, name, self._selected_pdk_name())
+                errors = validate_model_directives(directives)
+                if errors:
+                    values[5] = f"{len(errors)} issue(s)"
+                for row, value in enumerate(values):
+                    item = QTableWidgetItem(value)
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                    if row == 0:
+                        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                        item.setCheckState(Qt.CheckState.Checked if enabled else Qt.CheckState.Unchecked)
+                    elif row in (4, 5):
+                        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    if row == 5:
+                        if errors:
+                            item.setForeground(QColor("#ffd166"))
+                            item.setBackground(QColor("#3a3117"))
+                            item.setToolTip("; ".join(errors[:8]))
+                        else:
+                            item.setForeground(QColor("#74c69d"))
+                            item.setBackground(QColor("#173524"))
+                    table.setItem(row, col, item)
+            table.resizeRowsToContents()
+            table.blockSignals(False)
+        finally:
+            self._corner_matrix_syncing = False
+
+    def _corner_row_for_setup_column(self, col: int) -> int:
+        return col if 0 <= col < self.corner_table.rowCount() else -1
+
+    def _on_corner_setup_matrix_changed(self, item: QTableWidgetItem):
+        if getattr(self, "_corner_matrix_syncing", False) or item is None:
+            return
+        row = item.row()
+        col = item.column()
+        corner_row = self._corner_row_for_setup_column(col)
+        if corner_row < 0:
+            return
+        self._corner_matrix_syncing = True
+        try:
+            if row == 0:
+                chk = self.corner_table.cellWidget(corner_row, 4)
+                if isinstance(chk, QCheckBox):
+                    chk.setChecked(item.checkState() == Qt.CheckState.Checked)
+            elif row == 1:
+                self._set_table_text(self.corner_table, corner_row, 3, item.text().strip() or "tt")
+            elif row == 2:
+                self._set_table_text(self.corner_table, corner_row, 1, item.text().strip() or "25")
+            elif row == 3:
+                self._set_table_text(self.corner_table, corner_row, 2, item.text().strip() or "1.8")
+        finally:
+            self._corner_matrix_syncing = False
+        self.corner_table.selectRow(corner_row)
+        self._refresh_corner_setup_matrix()
+        self._refresh_corner_run_matrix_preview()
+        self._sync_corner_inspector()
+        self._refresh_run_plan()
+        self._save_simenv_view_silent()
+
+    def _select_corner_from_setup_matrix(self):
+        if not hasattr(self, "corner_setup_matrix") or getattr(self, "_corner_matrix_syncing", False):
+            return
+        cols = sorted({idx.column() for idx in self.corner_setup_matrix.selectedIndexes()})
+        if not cols:
+            return
+        row = self._corner_row_for_setup_column(cols[0])
+        if row >= 0 and self.corner_table.currentRow() != row:
+            self.corner_table.selectRow(row)
+
+    def _edit_corner_models_from_matrix(self, item: QTableWidgetItem):
+        if item is None:
+            return
+        row = self._corner_row_for_setup_column(item.column())
+        if row < 0:
+            return
+        self.corner_table.selectRow(row)
+        if item.row() == 4:
+            self._edit_corner_models(row)
+
+    def _refresh_corner_run_matrix_preview(self):
+        if not hasattr(self, "corner_run_matrix_preview") or not hasattr(self, "corner_table"):
+            return
+        table = self.corner_run_matrix_preview
+        mode = self.corner_mode_combo.currentText() if hasattr(self, "corner_mode_combo") else "Single"
+        corners = [{"name": "Single"}] if mode == "Single" else self.get_corner_data()
+        try:
+            sweep_points = self.sweep_widget.expanded_points() if hasattr(self, "sweep_widget") else [("", {})]
+        except Exception as exc:
+            sweep_points = [(f"Invalid sweep: {exc}", {})]
+        sweep_labels = [label or "Single" for label, _overrides in sweep_points] or ["Single"]
+        table.blockSignals(True)
+        try:
+            table.setRowCount(len(sweep_labels))
+            table.setColumnCount(len(corners))
+            table.setHorizontalHeaderLabels([corner.get("name", "corner") for corner in corners])
+            table.setVerticalHeaderLabels(sweep_labels)
+            for row, sweep_label in enumerate(sweep_labels):
+                for col, corner in enumerate(corners):
+                    key = (corner.get("name", "corner"), sweep_label)
+                    status = self._run_matrix_status.get(key, "Run")
+                    text = status
+                    item = QTableWidgetItem(text)
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                    item.setFlags((item.flags() & ~Qt.ItemFlag.ItemIsEditable) | Qt.ItemFlag.ItemIsUserCheckable)
+                    item.setCheckState(Qt.CheckState.Unchecked if key in self._disabled_run_cells else Qt.CheckState.Checked)
+                    item.setData(Qt.ItemDataRole.UserRole, {
+                        "corner": key[0],
+                        "sweep": sweep_label,
+                    })
+                    if key in self._disabled_run_cells:
+                        item.setText("Skip")
+                        item.setForeground(QColor("#7f8c99"))
+                    elif status == "Pending":
+                        item.setForeground(QColor("#d7e7ef"))
+                        item.setBackground(QColor("#263340"))
+                    elif status == "Running":
+                        item.setForeground(QColor("#ffd166"))
+                        item.setBackground(QColor("#463a12"))
+                    elif status == "PASS":
+                        item.setForeground(QColor("#74c69d"))
+                        item.setBackground(QColor("#173524"))
+                    elif status == "FAIL":
+                        item.setForeground(QColor("#ff8fa3"))
+                        item.setBackground(QColor("#4a0e17"))
+                    else:
+                        item.setForeground(QColor("#74c69d"))
+                        item.setBackground(QColor("#173524"))
+                    table.setItem(row, col, item)
+            table.resizeRowsToContents()
+            table.resizeColumnsToContents()
+        finally:
+            table.blockSignals(False)
+
+    def _on_run_matrix_preview_changed(self, item: QTableWidgetItem):
+        if item is None:
+            return
+        data = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(data, dict):
+            return
+        key = (str(data.get("corner", "")).strip(), str(data.get("sweep", "")).strip() or "Single")
+        if not key[0]:
+            return
+        if item.checkState() == Qt.CheckState.Checked:
+            self._disabled_run_cells.discard(key)
+        else:
+            self._disabled_run_cells.add(key)
+        self._refresh_corner_run_matrix_preview()
+        self._refresh_run_plan()
+        self._save_simenv_view_silent()
+
+    def _run_selected_matrix_cells(self):
+        if not hasattr(self, "corner_run_matrix_preview"):
+            return
+        selected: set[tuple[str, str]] = set()
+        for idx in self.corner_run_matrix_preview.selectedIndexes():
+            item = self.corner_run_matrix_preview.item(idx.row(), idx.column())
+            data = item.data(Qt.ItemDataRole.UserRole) if item else {}
+            if isinstance(data, dict):
+                corner = str(data.get("corner", "")).strip()
+                sweep = str(data.get("sweep", "")).strip() or "Single"
+                if corner:
+                    selected.add((corner, sweep))
+        if not selected:
+            self.statusBar().showMessage("Select run matrix cell(s) first", 5000)
+            return
+        self._run_selected_cells_once = selected
+        self._on_run()
+
+    def _rerun_failed_matrix_cells(self):
+        failed = {
+            key for key, status in self._run_matrix_status.items()
+            if status == "FAIL" and key not in self._disabled_run_cells
+        }
+        if not failed:
+            self.statusBar().showMessage("No failed run matrix cells to rerun", 5000)
+            return
+        self._run_selected_cells_once = failed
+        self._on_run()
+
+    def _run_cell_enabled(self, corner: str, sweep_label: str) -> bool:
+        key = (str(corner or "Single").strip() or "Single", str(sweep_label or "Single").strip() or "Single")
+        if self._run_selected_cells_once and key not in self._run_selected_cells_once:
+            return False
+        return key not in self._disabled_run_cells
+
+    def _run_cell_key_from_name(self, run_name: str) -> tuple[str, str]:
+        corner = self._results_corner_from_run_name(run_name) or "Single"
+        return (corner, self._results_sweep_from_run_name(run_name, corner))
+
+    def _mark_run_cell_status(self, run_name: str, status: str):
+        self._run_matrix_status[self._run_cell_key_from_name(run_name)] = status
+        self._refresh_corner_run_matrix_preview()
+
+    def _mark_jobs_pending(self, jobs: list[tuple[str, str, str]]):
+        for run_name, _netlist, _sim_name in jobs:
+            self._run_matrix_status[self._run_cell_key_from_name(run_name)] = "Pending"
+        self._refresh_corner_run_matrix_preview()
+
+    def _sync_corner_inspector(self):
+        if not hasattr(self, "corner_name_edit"):
+            return
+        row = self.corner_table.currentRow()
+        enabled = row >= 0
+        for edit in (self.corner_name_edit, self.corner_temp_edit, self.corner_vdd_edit, self.corner_process_edit):
+            edit.setEnabled(enabled)
+        if not enabled:
+            self.corner_model_label.setText("")
+            self.corner_validation_label.setText("")
+            return
+        edits = [
+            (self.corner_name_edit, 0, "corner"),
+            (self.corner_temp_edit, 1, "25"),
+            (self.corner_vdd_edit, 2, "1.8"),
+            (self.corner_process_edit, 3, "tt"),
+        ]
+        for edit, col, default in edits:
+            edit.blockSignals(True)
+            edit.setText(self._table_text(self.corner_table, row, col, default))
+            edit.blockSignals(False)
+        name = self._table_text(self.corner_table, row, 0, "corner")
+        proc = self._table_text(self.corner_table, row, 3, "tt")
+        pdk_name = self._selected_pdk_name()
+        directives = self._resolved_model_directives(proc, name, pdk_name)
+        own = len(self._corner_model_directives.get(name, []))
+        self.corner_model_label.setText(f"{own or 'Shared'}; resolved {len(directives)} directive(s)")
+        errors = validate_model_directives(directives)
+        self.corner_validation_label.setText("PASS" if not errors else "; ".join(errors[:3]))
+
+    def _apply_corner_inspector(self):
+        row = self.corner_table.currentRow()
+        if row < 0:
+            return
+        old_name = self._table_text(self.corner_table, row, 0, "corner")
+        new_name = self.corner_name_edit.text().strip() or old_name
+        values = [
+            new_name,
+            self.corner_temp_edit.text().strip() or "25",
+            self.corner_vdd_edit.text().strip() or "1.8",
+            self.corner_process_edit.text().strip() or "tt",
+        ]
+        for col, value in enumerate(values):
+            self.corner_table.setItem(row, col, QTableWidgetItem(value))
+        if new_name != old_name and old_name in self._corner_model_directives:
+            self._corner_model_directives[new_name] = self._corner_model_directives.pop(old_name)
+        self._refresh_corner_model_buttons()
+        self._sync_corner_inspector()
+        self._save_simenv_view_silent()
+
+    def _build_model_libraries_tab(self):
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(8)
+        title = QLabel("Model Setup")
+        title.setObjectName("adePanelTitle")
+        toolbar.addWidget(title)
+        toolbar.addWidget(QLabel("Setup:"))
+        self.model_setup_name_edit = QLineEdit(self._model_setup_name)
+        self.model_setup_name_edit.setMaximumWidth(180)
+        self.model_setup_name_edit.editingFinished.connect(self._on_model_setup_name_changed)
+        toolbar.addWidget(self.model_setup_name_edit)
+        toolbar.addStretch()
+        load_pdk_btn = QPushButton("Load PDK Models")
+        load_pdk_btn.setToolTip("Load discovered model files from the selected PDK into the explicit model table")
+        load_pdk_btn.clicked.connect(self._load_selected_pdk_model_files)
+        toolbar.addWidget(load_pdk_btn)
+        apply_pdk_btn = QPushButton("Apply PDK Setup")
+        apply_pdk_btn.setToolTip("Load the selected PDK's model files, sections, and corner presets")
+        apply_pdk_btn.clicked.connect(self._apply_selected_pdk_manifest)
+        toolbar.addWidget(apply_pdk_btn)
+        save_setup_btn = QPushButton("Save Setup")
+        save_setup_btn.setToolTip("Save this model library setup by name")
+        save_setup_btn.clicked.connect(self._on_save_model_setup)
+        toolbar.addWidget(save_setup_btn)
+        load_setup_btn = QPushButton("Load Setup")
+        load_setup_btn.setToolTip("Load a saved model library setup")
+        load_setup_btn.clicked.connect(self._on_load_model_setup)
+        toolbar.addWidget(load_setup_btn)
+        layout.addLayout(toolbar)
+
+        pdk_frame = QFrame()
+        pdk_frame.setObjectName("adeNavigator")
+        pdk_layout = QGridLayout(pdk_frame)
+        pdk_layout.setContentsMargins(8, 6, 8, 6)
+        pdk_layout.setHorizontalSpacing(12)
+        pdk_layout.setVerticalSpacing(4)
+        pdk_title = QLabel("PDK / Model Library")
+        pdk_title.setObjectName("adePanelLabel")
+        pdk_layout.addWidget(pdk_title, 0, 0)
+        self.model_pdk_label = QLabel("PDK: none")
+        self.model_pdk_label.setStyleSheet("background:transparent;color:#f0f0f0;font-weight:700;")
+        pdk_layout.addWidget(self.model_pdk_label, 0, 1)
+        self.model_pdk_health_label = QLabel("Health: not checked")
+        self.model_pdk_health_label.setStyleSheet("background:transparent;color:#b9c2c7;")
+        pdk_layout.addWidget(self.model_pdk_health_label, 0, 2)
+        self.model_pdk_lock_label = QLabel("Lock: not written")
+        self.model_pdk_lock_label.setStyleSheet("background:transparent;color:#8fa9b8;")
+        pdk_layout.addWidget(self.model_pdk_lock_label, 1, 1, 1, 2)
+        validate_btn = QPushButton("Validate")
+        validate_btn.setToolTip("Validate selected PDK health, model files, and corner mapping")
+        validate_btn.clicked.connect(self._validate_pdk_model_setup)
+        pdk_layout.addWidget(validate_btn, 0, 3)
+        repair_btn = QPushButton("Choose Models Folder")
+        repair_btn.setToolTip("Repair selected PDK model discovery from inside SimENV")
+        repair_btn.clicked.connect(self._repair_selected_pdk_models_folder)
+        pdk_layout.addWidget(repair_btn, 1, 3)
+        pdk_layout.setColumnStretch(2, 1)
+        layout.addWidget(pdk_frame)
+
+        files_toolbar = QHBoxLayout()
+        files_toolbar.setSpacing(8)
+        files_label = QLabel("Model Files")
+        files_label.setObjectName("adePanelLabel")
+        files_toolbar.addWidget(files_label)
+        add_lib = QPushButton("+ .lib")
+        add_lib.clicked.connect(lambda: self._add_model_directive_row("lib", "", ""))
+        files_toolbar.addWidget(add_lib)
+        add_inc = QPushButton("+ include")
+        add_inc.clicked.connect(lambda: self._add_model_directive_row("include", "", ""))
+        files_toolbar.addWidget(add_inc)
+        ihp_btn = QPushButton("IHP Template")
+        ihp_btn.setToolTip("Populate shared IHP SG13G2 GSPICE model wrappers for a typical setup")
+        ihp_btn.clicked.connect(self._populate_ihp_model_template)
+        files_toolbar.addWidget(ihp_btn)
+        map_sections_btn = QPushButton("Map Sections")
+        map_sections_btn.setToolTip("Assign loaded .lib sections to corners by process name")
+        map_sections_btn.clicked.connect(self._map_model_sections_to_corners)
+        files_toolbar.addWidget(map_sections_btn)
+        remove_btn = QPushButton("Remove")
+        remove_btn.clicked.connect(self._remove_selected_model_directives)
+        files_toolbar.addWidget(remove_btn)
+        files_toolbar.addStretch()
+        delete_setup_btn = QPushButton("Delete Setup")
+        delete_setup_btn.setToolTip("Delete a saved model library setup")
+        delete_setup_btn.clicked.connect(self._on_delete_model_setup)
+        files_toolbar.addWidget(delete_setup_btn)
+        layout.addLayout(files_toolbar)
+
+        self.model_table = QTableWidget(0, 5)
+        self.model_table.setHorizontalHeaderLabels(["Type", "Path", "Browse", "Section", "Status"])
+        self.model_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.model_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.model_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.model_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.model_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self.model_table.verticalHeader().setVisible(False)
+        self.model_table.setMinimumHeight(126)
+        self.model_table.setMaximumHeight(190)
+        self.model_table.itemChanged.connect(lambda _item: self._on_model_table_changed())
+        layout.addWidget(self.model_table)
+
+        summary_label = QLabel("Corner Section Map")
+        summary_label.setObjectName("adePanelLabel")
+        layout.addWidget(summary_label)
+        self.model_corner_summary_table = QTableWidget(0, 4)
+        self.model_corner_summary_table.setHorizontalHeaderLabels(["Corner", "Process", "Section", "Models"])
+        self.model_corner_summary_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.model_corner_summary_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.model_corner_summary_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.model_corner_summary_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.model_corner_summary_table.verticalHeader().setVisible(False)
+        self.model_corner_summary_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.model_corner_summary_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.model_corner_summary_table.setMinimumHeight(82)
+        self.model_corner_summary_table.setMaximumHeight(130)
+        layout.addWidget(self.model_corner_summary_table)
+
+        self.model_advanced_tabs = QTabWidget()
+        self.model_advanced_tabs.setObjectName("adeSubTabs")
+
+        catalog_tab = QWidget()
+        catalog_layout = QVBoxLayout(catalog_tab)
+        catalog_layout.setContentsMargins(6, 6, 6, 6)
+        filter_row = QHBoxLayout()
+        filter_row.addWidget(QLabel("Filter:"))
+        self.model_catalog_filter_edit = QLineEdit()
+        self.model_catalog_filter_edit.setPlaceholderText("model, type, section, or path")
+        self.model_catalog_filter_edit.textChanged.connect(lambda _text: self._refresh_model_catalog())
+        filter_row.addWidget(self.model_catalog_filter_edit)
+        refresh_catalog_btn = QPushButton("Refresh")
+        refresh_catalog_btn.setToolTip("Parse loaded model files for .MODEL and .SUBCKT names")
+        refresh_catalog_btn.clicked.connect(self._refresh_model_catalog)
+        filter_row.addWidget(refresh_catalog_btn)
+        catalog_layout.addLayout(filter_row)
+        self.model_catalog_table = QTableWidget(0, 5)
+        self.model_catalog_table.setHorizontalHeaderLabels(["Name", "Kind", "Type / Pins", "Section", "Path"])
+        self.model_catalog_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.model_catalog_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.model_catalog_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.model_catalog_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.model_catalog_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self.model_catalog_table.verticalHeader().setVisible(False)
+        catalog_layout.addWidget(self.model_catalog_table)
+        self.model_advanced_tabs.addTab(catalog_tab, "Discovered Models")
+
+        bindings_tab = QWidget()
+        bindings_layout = QVBoxLayout(bindings_tab)
+        bindings_layout.setContentsMargins(6, 6, 6, 6)
+        binding_toolbar = QHBoxLayout()
+        add_binding_btn = QPushButton("Add From Schematic")
+        add_binding_btn.clicked.connect(self._populate_model_bindings_from_schematic)
+        binding_toolbar.addWidget(add_binding_btn)
+        apply_model_btn = QPushButton("Use Selected Model")
+        apply_model_btn.clicked.connect(self._apply_selected_catalog_model_to_binding)
+        binding_toolbar.addWidget(apply_model_btn)
+        remove_binding_btn = QPushButton("Remove Binding")
+        remove_binding_btn.clicked.connect(self._remove_selected_model_bindings)
+        binding_toolbar.addWidget(remove_binding_btn)
+        binding_toolbar.addStretch()
+        bindings_layout.addLayout(binding_toolbar)
+
+        self.model_binding_table = QTableWidget(0, 5)
+        self.model_binding_table.setHorizontalHeaderLabels(["Enable", "Instance", "Device", "Model", "Corner"])
+        self.model_binding_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.model_binding_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.model_binding_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.model_binding_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.model_binding_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self.model_binding_table.verticalHeader().setVisible(False)
+        self.model_binding_table.itemChanged.connect(lambda _item: (self._collect_model_bindings(), self._refresh_binding_statuses(), self._refresh_run_plan()))
+        bindings_layout.addWidget(self.model_binding_table)
+        self.model_advanced_tabs.addTab(bindings_tab, "Device Bindings")
+
+        layout.addWidget(self.model_advanced_tabs, 1)
+
+        hint = QLabel(
+            "Corners use these model files unless a corner has its own model list. "
+            "Use Advanced tabs only when you need catalog inspection or per-instance overrides."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color:#8c9aa8;background:transparent;padding:4px;")
+        layout.addWidget(hint)
+
+        self.main_tabs.addTab(widget, "Model Setup")
+        QTimer.singleShot(0, self._refresh_model_catalog)
+        QTimer.singleShot(0, self._refresh_model_corner_summary)
+        QTimer.singleShot(0, self._refresh_pdk_model_overview)
+
+    def _on_model_setup_name_changed(self):
+        if hasattr(self, "model_setup_name_edit"):
+            self._model_setup_name = self.model_setup_name_edit.text().strip() or "default"
+        self._refresh_run_plan()
+        self._save_simenv_view_silent()
+
+    def _refresh_pdk_model_overview(self):
+        if not hasattr(self, "model_pdk_label"):
+            return
+        pdk_name = self._selected_pdk_name()
+        attached = ""
+        try:
+            attached = self.db.get_library_pdk(self.library)
+        except Exception:
+            attached = ""
+        suffix = " inherited" if attached and attached == pdk_name else ""
+        self.model_pdk_label.setText(f"PDK: {pdk_name or 'none'}{suffix}")
+        self.model_pdk_lock_label.setText(f"Lock: {self._pdk_lock_path()}")
+
+        registry = self._ensure_pdk_registry()
+        if not pdk_name or not registry:
+            self.model_pdk_health_label.setText("Health: no PDK selected")
+            return
+        report = registry.get_pdk_health_report(pdk_name) if hasattr(registry, "get_pdk_health_report") else {}
+        issues = report.get("issues", []) or []
+        rows = self.model_table.rowCount() if hasattr(self, "model_table") else 0
+        corner_count = self.corner_table.rowCount() if hasattr(self, "corner_table") else 0
+        if not report:
+            self.model_pdk_health_label.setText(f"Health: {rows} model row(s), {corner_count} corner(s)")
+        elif issues:
+            self.model_pdk_health_label.setText(f"Health: {len(issues)} issue(s), {rows} model row(s), {corner_count} corner(s)")
+        else:
+            self.model_pdk_health_label.setText(f"Health: Ready, {rows} model row(s), {corner_count} corner(s)")
+
+    def _validate_pdk_model_setup(self):
+        pdk_name = self._selected_pdk_name()
+        registry = self._ensure_pdk_registry()
+        messages = []
+        if not pdk_name or not registry:
+            messages.append("No PDK selected.")
+        elif hasattr(registry, "get_pdk_health_report"):
+            report = registry.get_pdk_health_report(pdk_name)
+            messages.extend(report.get("issues", []) or [])
+        directives = self._collect_model_table_directives() if hasattr(self, "model_table") else []
+        messages.extend(validate_model_directives(directives))
+        if hasattr(self, "corner_table") and self.corner_table.rowCount() == 0:
+            messages.append("No corners configured.")
+        self._refresh_pdk_model_overview()
+        if messages:
+            QMessageBox.warning(self, "Validate Model Setup", "\n".join(f"- {msg}" for msg in messages[:12]))
+            return False
+        QMessageBox.information(self, "Validate Model Setup", "PDK, model files, and corners look ready.")
+        return True
+
+    def _repair_selected_pdk_models_folder(self):
+        pdk_name = self._selected_pdk_name()
+        registry = self._ensure_pdk_registry()
+        if not pdk_name or not registry:
+            QMessageBox.information(self, "Choose Models Folder", "Select a PDK first.")
+            return
+        pdk = registry.get_pdk(pdk_name)
+        start = getattr(pdk, "models_path", "") or getattr(pdk, "root_path", "") or ""
+        path = QFileDialog.getExistingDirectory(self, "Choose PDK Models Folder", start)
+        if not path:
+            return
+        repaired = registry.set_pdk_models_path(pdk_name, path)
+        if not repaired:
+            QMessageBox.warning(self, "Choose Models Folder", "Could not use that models folder.")
+            return
+        self._apply_selected_pdk_manifest()
+        self._refresh_pdk_model_overview()
+        QMessageBox.information(self, "Choose Models Folder", f"Updated model discovery for {repaired.display_name or repaired.name}.")
+
+    def _save_model_setup_named(self, name: str):
+        name = str(name or "").strip()
+        if not name:
+            return
+        if hasattr(self, "model_setup_name_edit"):
+            self.model_setup_name_edit.setText(name)
+            self._on_model_setup_name_changed()
+        store = self._load_preset_store()
+        store[name] = self._collect_named_preset("models")
+        self._save_preset_store(store)
+
+    def _model_setup_names(self) -> list[str]:
+        store = self._load_preset_store()
+        return sorted(
+            name for name, entry in store.items()
+            if isinstance(entry, dict) and entry.get("kind") == "models"
+        )
+
+    def _load_model_setup_named(self, name: str) -> bool:
+        entry = self._load_preset_store().get(str(name or "").strip())
+        if not isinstance(entry, dict) or entry.get("kind") != "models":
+            return False
+        self._apply_named_preset(entry)
+        return True
+
+    def _delete_model_setup_named(self, name: str) -> bool:
+        store = self._load_preset_store()
+        key = str(name or "").strip()
+        entry = store.get(key)
+        if not isinstance(entry, dict) or entry.get("kind") != "models":
+            return False
+        del store[key]
+        self._save_preset_store(store)
+        return True
+
+    def _on_save_model_setup(self):
+        default = self.model_setup_name_edit.text().strip() if hasattr(self, "model_setup_name_edit") else self._model_setup_name
+        name, ok = QInputDialog.getText(self, "Save Model Setup", "Setup name:", text=default or "default")
+        if not ok or not str(name).strip():
+            return
+        self._save_model_setup_named(str(name).strip())
+        self.statusBar().showMessage(f"Saved model setup: {str(name).strip()}", 4000)
+
+    def _on_load_model_setup(self):
+        names = self._model_setup_names()
+        if not names:
+            QMessageBox.information(self, "Load Model Setup", "No model setups have been saved yet.")
+            return
+        name, ok = QInputDialog.getItem(self, "Load Model Setup", "Setup:", names, 0, False)
+        if ok and name and self._load_model_setup_named(str(name)):
+            self.statusBar().showMessage(f"Loaded model setup: {name}", 4000)
+
+    def _on_delete_model_setup(self):
+        names = self._model_setup_names()
+        if not names:
+            QMessageBox.information(self, "Delete Model Setup", "No model setups have been saved yet.")
+            return
+        name, ok = QInputDialog.getItem(self, "Delete Model Setup", "Setup:", names, 0, False)
+        if ok and name and self._delete_model_setup_named(str(name)):
+            self.statusBar().showMessage(f"Deleted model setup: {name}", 4000)
+
+    def _add_model_directive_row(self, kind: str, path: str, section: str = ""):
+        if not hasattr(self, "model_table"):
+            return
+        r = self.model_table.rowCount()
+        self.model_table.insertRow(r)
+        kind_combo = QComboBox()
+        kind_combo.addItems(["lib", "include", "gsdi"])
+        idx = kind_combo.findText(str(kind or "lib").lower())
+        kind_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        kind_combo.currentIndexChanged.connect(lambda _idx: self._on_model_table_changed())
+        self.model_table.setCellWidget(r, 0, kind_combo)
+        self.model_table.setItem(r, 1, QTableWidgetItem(str(path or "")))
+        browse = QPushButton("...")
+        browse.setToolTip("Browse model file")
+        browse.clicked.connect(lambda _checked=False, row=r: self._browse_model_directive_path(row))
+        self.model_table.setCellWidget(r, 2, browse)
+        section_combo = QComboBox()
+        section_combo.setEditable(True)
+        section_combo.currentTextChanged.connect(lambda _text: self._on_model_table_changed())
+        self.model_table.setCellWidget(r, 3, section_combo)
+        self.model_table.setItem(r, 4, QTableWidgetItem(""))
+        self._refresh_model_section_combo(r, section)
+        self._on_model_table_changed()
+
+    def _on_model_table_changed(self):
+        self._sync_corner_inspector()
+        self._refresh_model_directive_statuses()
+        self._refresh_model_catalog()
+        self._refresh_model_binding_model_choices()
+        self._refresh_binding_statuses()
+        self._refresh_model_corner_summary()
+        self._refresh_pdk_model_overview()
+        self._refresh_run_plan()
+
+    def _browse_model_directive_path(self, row: int):
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Model File",
+            "",
+            "Model Files (*.lib *.sp *.spice *.cir *.model *.scs *.gsdi);;All Files (*)",
+        )
+        if not path:
+            return
+        self.model_table.setItem(row, 1, QTableWidgetItem(path))
+        suffix = os.path.splitext(path)[1].lower()
+        kind_widget = self.model_table.cellWidget(row, 0)
+        if isinstance(kind_widget, QComboBox):
+            kind_widget.setCurrentText("lib" if suffix == ".lib" else ("gsdi" if suffix == ".gsdi" else "include"))
+        self._refresh_model_section_combo(row, "")
+        self._on_model_table_changed()
+
+    def _refresh_model_section_combo(self, row: int, selected: str = ""):
+        combo = self.model_table.cellWidget(row, 3) if hasattr(self, "model_table") else None
+        if not isinstance(combo, QComboBox):
+            return
+        current = str(selected or combo.currentText() or "").strip()
+        path = self._table_text(self.model_table, row, 1)
+        sections = extract_lib_sections(path)
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("")
+        combo.addItems(sections)
+        if current:
+            idx = combo.findText(current)
+            if idx < 0:
+                combo.addItem(current)
+                idx = combo.findText(current)
+            combo.setCurrentIndex(idx)
+        combo.blockSignals(False)
+
+    def _refresh_model_directive_statuses(self):
+        if not hasattr(self, "model_table"):
+            return
+        was_blocked = self.model_table.signalsBlocked()
+        self.model_table.blockSignals(True)
+        try:
+            for row in range(self.model_table.rowCount()):
+                directive = self._model_directive_from_row(row)
+                errors = validate_model_directives([directive]) if directive.path else ["empty path"]
+                text = "OK" if not errors else errors[0]
+                item = QTableWidgetItem(text)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                if errors:
+                    item.setForeground(QColor("#ffd166"))
+                    item.setBackground(QColor("#3a3117"))
+                    item.setToolTip("; ".join(errors))
+                else:
+                    item.setForeground(QColor("#74c69d"))
+                    item.setBackground(QColor("#173524"))
+                self.model_table.setItem(row, 4, item)
+        finally:
+            self.model_table.blockSignals(was_blocked)
+
+    def _refresh_model_corner_summary(self):
+        if not hasattr(self, "model_corner_summary_table"):
+            return
+        table = self.model_corner_summary_table
+        corners = self.get_corner_data() if hasattr(self, "corner_table") else []
+        table.blockSignals(True)
+        try:
+            table.setRowCount(len(corners))
+            pdk_name = self._selected_pdk_name()
+            for row, corner in enumerate(corners):
+                name = str(corner.get("name", "") or f"corner_{row}")
+                process = str(corner.get("process", "") or "tt")
+                directives = self._resolved_model_directives(process, name, pdk_name)
+                sections = sorted({
+                    directive.section.strip()
+                    for directive in directives
+                    if directive.kind == "lib" and directive.section.strip()
+                })
+                paths = [os.path.basename(directive.path) or directive.path for directive in directives]
+                values = [
+                    name,
+                    process,
+                    ", ".join(sections) if sections else "-",
+                    ", ".join(paths[:3]) + (f" +{len(paths) - 3}" if len(paths) > 3 else ""),
+                ]
+                for col, value in enumerate(values):
+                    item = QTableWidgetItem(value)
+                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    if col == 2 and not sections and directives:
+                        item.setForeground(QColor("#ffd166"))
+                    table.setItem(row, col, item)
+            table.resizeColumnsToContents()
+            table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        finally:
+            table.blockSignals(False)
+
+    def _model_directive_from_row(self, row: int) -> ModelDirective:
+        kind_widget = self.model_table.cellWidget(row, 0)
+        kind = kind_widget.currentText() if isinstance(kind_widget, QComboBox) else "lib"
+        section_widget = self.model_table.cellWidget(row, 3)
+        section = section_widget.currentText().strip() if isinstance(section_widget, QComboBox) else self._table_text(self.model_table, row, 3)
+        return ModelDirective(kind, self._table_text(self.model_table, row, 1), section)
+
+    def _remove_selected_model_directives(self):
+        if not hasattr(self, "model_table"):
+            return
+        rows = sorted({idx.row() for idx in self.model_table.selectedIndexes()}, reverse=True)
+        for row in rows:
+            self.model_table.removeRow(row)
+        self._sync_corner_inspector()
+        self._refresh_model_catalog()
+        self._refresh_model_corner_summary()
+        self._refresh_run_plan()
+
+    def _collect_model_table_directives(self) -> list[ModelDirective]:
+        if not hasattr(self, "model_table"):
+            return list(self._global_model_directives)
+        directives: list[ModelDirective] = []
+        for r in range(self.model_table.rowCount()):
+            directive = self._model_directive_from_row(r)
+            if directive.path:
+                directives.append(directive)
+        self._global_model_directives = directives
+        return directives
+
+    def _model_catalog_entries(self) -> list[ModelEntry]:
+        directives = self._collect_model_table_directives() if hasattr(self, "model_table") else []
+        return parse_model_entries(directives)
+
+    def _refresh_model_catalog(self):
+        if not hasattr(self, "model_catalog_table"):
+            return
+        entries = self._model_catalog_entries()
+        query = self.model_catalog_filter_edit.text().strip().lower() if hasattr(self, "model_catalog_filter_edit") else ""
+        if query:
+            entries = [
+                entry for entry in entries
+                if query in " ".join([
+                    entry.name,
+                    entry.kind,
+                    entry.device_type,
+                    entry.section,
+                    entry.path,
+                    " ".join(entry.pins),
+                ]).lower()
+            ]
+        table = self.model_catalog_table
+        table.blockSignals(True)
+        try:
+            table.setRowCount(len(entries))
+            for row, entry in enumerate(entries):
+                details = entry.device_type or " ".join(entry.pins)
+                values = [entry.name, entry.kind, details, entry.section, entry.path]
+                for col, value in enumerate(values):
+                    item = QTableWidgetItem(str(value))
+                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    table.setItem(row, col, item)
+            table.resizeColumnsToContents()
+        finally:
+            table.blockSignals(False)
+        self._refresh_model_binding_model_choices()
+        self._refresh_binding_statuses()
+
+    def _schematic_model_instances(self) -> list[dict]:
+        data = self.db.load_view(self.library, self.cell, "schematic") or {}
+        rows = []
+        for inst in data.get("instances", []):
+            name = str(inst.get("name", "")).strip()
+            if not name:
+                continue
+            params = inst.get("params", {}) or {}
+            cell = str(inst.get("cell", "")).strip()
+            if "model" not in params and cell.lower() not in {
+                "nmos", "pmos", "nmos3", "pmos3", "diode", "zener",
+                "bjt_npn", "bjt_pnp", "jfet_n", "jfet_p", "switch",
+                "mos_bulk", "mos_depl", "spice_netlist", "subckt_file",
+            }:
+                continue
+            model = str(params.get("model", "")).strip()
+            rows.append({
+                "instance": name,
+                "device": f"{inst.get('library', '')}/{cell}".strip("/"),
+                "model": model,
+            })
+        return rows
+
+    def _populate_model_bindings_from_schematic(self):
+        if not hasattr(self, "model_binding_table"):
+            return
+        existing = {
+            self._table_text(self.model_binding_table, row, 1)
+            for row in range(self.model_binding_table.rowCount())
+        }
+        for inst in self._schematic_model_instances():
+            if inst["instance"] not in existing:
+                self._add_model_binding_row(
+                    inst["instance"],
+                    inst["device"],
+                    inst["model"],
+                    "",
+                    True,
+                )
+        self._collect_model_bindings()
+        self._refresh_run_plan()
+        self._save_simenv_view_silent()
+
+    def _add_model_binding_row(self, instance: str, device: str, model: str, corner: str = "", enabled: bool = True):
+        if not hasattr(self, "model_binding_table"):
+            return
+        table = self.model_binding_table
+        row = table.rowCount()
+        table.insertRow(row)
+        chk = QCheckBox()
+        chk.setChecked(bool(enabled))
+        chk.stateChanged.connect(lambda _state: (self._collect_model_bindings(), self._refresh_run_plan()))
+        table.setCellWidget(row, 0, chk)
+        table.setItem(row, 1, QTableWidgetItem(str(instance or "")))
+        table.setItem(row, 2, QTableWidgetItem(str(device or "")))
+        model_combo = QComboBox()
+        model_combo.setEditable(True)
+        model_combo.currentTextChanged.connect(lambda _text: (self._collect_model_bindings(), self._refresh_binding_statuses(), self._refresh_run_plan()))
+        table.setCellWidget(row, 3, model_combo)
+        table.setItem(row, 4, QTableWidgetItem(str(corner or "")))
+        self._refresh_model_binding_model_choices(row, model)
+
+    def _collect_model_bindings(self) -> list[DeviceModelBinding]:
+        if not hasattr(self, "model_binding_table"):
+            return list(self._model_bindings)
+        bindings: list[DeviceModelBinding] = []
+        for row in range(self.model_binding_table.rowCount()):
+            chk = self.model_binding_table.cellWidget(row, 0)
+            model_widget = self.model_binding_table.cellWidget(row, 3)
+            model = model_widget.currentText().strip() if isinstance(model_widget, QComboBox) else self._table_text(self.model_binding_table, row, 3)
+            bindings.append(DeviceModelBinding(
+                instance=self._table_text(self.model_binding_table, row, 1),
+                device=self._table_text(self.model_binding_table, row, 2),
+                model=model,
+                corner=self._table_text(self.model_binding_table, row, 4),
+                enabled=bool(chk.isChecked()) if isinstance(chk, QCheckBox) else True,
+            ))
+        self._model_bindings = bindings
+        return bindings
+
+    def _apply_selected_catalog_model_to_binding(self):
+        if not hasattr(self, "model_catalog_table") or not hasattr(self, "model_binding_table"):
+            return
+        model_row = self.model_catalog_table.currentRow()
+        bind_row = self.model_binding_table.currentRow()
+        if model_row < 0 or bind_row < 0:
+            self.statusBar().showMessage("Select one discovered model and one binding row", 5000)
+            return
+        model = self._table_text(self.model_catalog_table, model_row, 0)
+        if model:
+            model_widget = self.model_binding_table.cellWidget(bind_row, 3)
+            if isinstance(model_widget, QComboBox):
+                idx = model_widget.findText(model)
+                if idx < 0:
+                    model_widget.addItem(model)
+                    idx = model_widget.findText(model)
+                model_widget.setCurrentIndex(idx)
+            else:
+                self.model_binding_table.setItem(bind_row, 3, QTableWidgetItem(model))
+            self._collect_model_bindings()
+            self._refresh_binding_statuses()
+            self._refresh_run_plan()
+            self._save_simenv_view_silent()
+
+    def _refresh_model_binding_model_choices(self, only_row: int | None = None, selected: str = ""):
+        if not hasattr(self, "model_binding_table"):
+            return
+        names = sorted({entry.name for entry in self._model_catalog_entries()}, key=str.lower)
+        rows = [only_row] if only_row is not None else list(range(self.model_binding_table.rowCount()))
+        for row in rows:
+            combo = self.model_binding_table.cellWidget(row, 3)
+            if not isinstance(combo, QComboBox):
+                continue
+            current = str(selected or combo.currentText() or "").strip()
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem("")
+            combo.addItems(names)
+            if current:
+                idx = combo.findText(current)
+                if idx < 0:
+                    combo.addItem(current)
+                    idx = combo.findText(current)
+                combo.setCurrentIndex(idx)
+            combo.blockSignals(False)
+
+    def _refresh_binding_statuses(self):
+        if not hasattr(self, "model_binding_table"):
+            return
+        entries = self._model_catalog_entries()
+        instance_names = {item["instance"] for item in self._schematic_model_instances()}
+        errors = validate_model_bindings(self._collect_model_bindings(), entries, instance_names)
+        by_text = "\n".join(errors)
+        for row in range(self.model_binding_table.rowCount()):
+            instance = self._table_text(self.model_binding_table, row, 1)
+            model_widget = self.model_binding_table.cellWidget(row, 3)
+            model = model_widget.currentText().strip() if isinstance(model_widget, QComboBox) else self._table_text(self.model_binding_table, row, 3)
+            row_errors = [
+                err for err in errors
+                if (instance and instance in err) or (model and model in err)
+            ]
+            tooltip = "; ".join(row_errors) or by_text
+            for col in range(self.model_binding_table.columnCount()):
+                item = self.model_binding_table.item(row, col)
+                if item:
+                    item.setToolTip(tooltip)
+                    if row_errors:
+                        item.setBackground(QColor("#3a3117"))
+                    else:
+                        item.setBackground(QColor())
+
+    def _remove_selected_model_bindings(self):
+        if not hasattr(self, "model_binding_table"):
+            return
+        rows = sorted({idx.row() for idx in self.model_binding_table.selectedIndexes()}, reverse=True)
+        for row in rows:
+            self.model_binding_table.removeRow(row)
+        self._collect_model_bindings()
+        self._refresh_run_plan()
+        self._save_simenv_view_silent()
+
+    def _active_model_binding_map(self, corner: str = "") -> dict[str, str]:
+        result: dict[str, str] = {}
+        for binding in self._collect_model_bindings():
+            if not binding.enabled or not binding.instance or not binding.model:
+                continue
+            bind_corner = str(binding.corner or "").strip()
+            if bind_corner and corner and bind_corner != corner:
+                continue
+            if bind_corner and not corner:
+                continue
+            result[binding.instance] = binding.model
+        return result
+
+    def _populate_ihp_model_template(self):
+        registry = self._ensure_pdk_registry()
+        pdk_name = self._selected_pdk_name() or "ihp_sg13g2"
+        if not registry:
+            return
+        pdk = registry.get_pdk(pdk_name)
+        if not pdk or pdk.name != "ihp_sg13g2":
+            self._log("IHP template is available only when IHP SG13G2 is selected or detected.")
+            return
+        wanted = [
+            ("cornerMOSlv.lib", "mos_tt"),
+            ("cornerMOShv.lib", "mos_tt"),
+            ("cornerRES.lib", "res_typ"),
+            ("cornerCAP.lib", "cap_typ"),
+            ("cornerDIO.lib", "dio_tt"),
+            ("cornerHBT.lib", "hbt_typ"),
+        ]
+        model_files = list(getattr(pdk, "model_files", []) or [])
+        self.model_table.setRowCount(0)
+        for filename, section in wanted:
+            match = next((mf for mf in model_files if os.path.basename(mf.path) == filename and f"{os.sep}ngspice{os.sep}" in mf.path.lower()), None)
+            match = match or next((mf for mf in model_files if os.path.basename(mf.path) == filename), None)
+            if match:
+                self._add_model_directive_row("lib", match.path, section)
+        self._log("Loaded IHP SG13G2 shared model template.")
+
+    def _load_selected_pdk_model_files(self):
+        registry = self._ensure_pdk_registry()
+        pdk_name = self._selected_pdk_name()
+        if not pdk_name or not registry:
+            self._log("Select a PDK before loading discovered model files.")
+            return
+        pdk = registry.get_pdk(pdk_name)
+        model_files = list(getattr(pdk, "model_files", []) or []) if pdk else []
+        if not model_files:
+            self._log(f"No discovered model files for PDK: {pdk_name}")
+            return
+        self.model_table.setRowCount(0)
+        for mf in model_files:
+            suffix = os.path.splitext(mf.path)[1].lower()
+            sections = list(getattr(mf, "corners", []) or [])
+            if suffix == ".lib":
+                self._add_model_directive_row("lib", mf.path, sections[0] if sections else "")
+            elif suffix in (".scs", ".spice", ".sp", ".model"):
+                self._add_model_directive_row("include", mf.path, "")
+            elif suffix == ".gsdi":
+                self._add_model_directive_row("gsdi", mf.path, "")
+        self._log(f"Loaded {self.model_table.rowCount()} discovered model file(s) from {pdk_name}.")
+
+    def _apply_selected_pdk_manifest(self, auto: bool = False) -> bool:
+        registry = self._ensure_pdk_registry()
+        pdk_name = self._selected_pdk_name()
+        if not pdk_name or not registry:
+            if not auto:
+                self._log("Select a PDK before applying a PDK setup.")
+            return False
+        pdk = registry.get_pdk(pdk_name)
+        manifest = build_pdk_model_manifest(pdk, self._current_simulator)
+        if not manifest.model_directives and not manifest.corners:
+            if not auto:
+                self._log(f"No model manifest data found for PDK: {pdk_name}")
+            return False
+
+        self.model_table.blockSignals(True)
+        try:
+            self.model_table.setRowCount(0)
+            for directive in manifest.model_directives:
+                self._add_model_directive_row(directive.kind, directive.path, directive.section)
+        finally:
+            self.model_table.blockSignals(False)
+
+        if manifest.corners:
+            self.corner_table.blockSignals(True)
+            try:
+                self.corner_table.setRowCount(0)
+                self._corner_model_directives.clear()
+                for corner in manifest.corners:
+                    row = self._add_corner(corner.name, corner.temp, corner.vdd, corner.process)
+                    chk = self.corner_table.cellWidget(row, 4)
+                    if isinstance(chk, QCheckBox):
+                        chk.setChecked(corner.enabled)
+                    if corner.model_directives:
+                        self._corner_model_directives[corner.name] = list(corner.model_directives)
+            finally:
+                self.corner_table.blockSignals(False)
+            idx = self.corner_mode_combo.findText("All Corners")
+            if idx >= 0:
+                self.corner_mode_combo.setCurrentIndex(idx)
+
+        self._refresh_model_directive_statuses()
+        self._refresh_model_catalog()
+        self._refresh_corner_model_buttons()
+        self._refresh_corner_setup_matrix()
+        self._refresh_corner_run_matrix_preview()
+        self._sync_corner_inspector()
+        self._refresh_model_corner_summary()
+        self._refresh_run_plan()
+        self._save_simenv_view_silent()
+        action = "Auto-applied attached PDK setup" if auto else "Applied PDK setup"
+        self._log(f"{action}: {manifest.display_name or pdk_name} ({len(manifest.corners)} corner(s)).")
+        self._refresh_pdk_model_overview()
+        self._refresh_workflow_status()
+        return True
+
+    def _auto_apply_attached_pdk_setup(self) -> bool:
+        try:
+            pdk_name = self.db.get_library_pdk(self.library)
+        except Exception:
+            return False
+        if not pdk_name or not hasattr(self, "pdk_combo"):
+            self._update_pdk_badge()
+            return False
+        registry = self._ensure_pdk_registry()
+        if not registry or not registry.get_pdk(pdk_name):
+            self._update_pdk_badge()
+            return False
+        if self.model_table.rowCount() > 0 or self._corner_model_directives:
+            self._update_pdk_badge()
+            return False
+
+        self._pending_simenv_pdk = pdk_name
+        if self.pdk_combo.findData(pdk_name) < 0:
+            pdk = registry.get_pdk(pdk_name)
+            self.pdk_combo.addItem(getattr(pdk, "display_name", pdk_name), pdk_name)
+        idx = self.pdk_combo.findData(pdk_name)
+        if idx >= 0:
+            self.pdk_combo.setCurrentIndex(idx)
+        applied = self._apply_selected_pdk_manifest(auto=True)
+        self._update_pdk_badge()
+        return applied
+
+    def _edit_corner_models(self, row: int):
+        if row < 0 or row >= self.corner_table.rowCount():
+            return
+        name = self._table_text(self.corner_table, row, 0, f"corner_{row}")
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Corner Models - {name}")
+        layout = QVBoxLayout(dlg)
+        table = QTableWidget(0, 3)
+        table.setHorizontalHeaderLabels(["Type", "Path", "Section"])
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(table)
+
+        def add_row(directive: ModelDirective | None = None):
+            d = directive or ModelDirective("lib", "", "")
+            r = table.rowCount()
+            table.insertRow(r)
+            kind_combo = QComboBox()
+            kind_combo.addItems(["lib", "include", "gsdi"])
+            idx = kind_combo.findText(d.kind)
+            kind_combo.setCurrentIndex(idx if idx >= 0 else 0)
+            table.setCellWidget(r, 0, kind_combo)
+            table.setItem(r, 1, QTableWidgetItem(d.path))
+            table.setItem(r, 2, QTableWidgetItem(d.section))
+
+        for directive in self._corner_model_directives.get(name, []):
+            add_row(directive)
+
+        controls = QHBoxLayout()
+        add_btn = QPushButton("+ Add")
+        add_btn.clicked.connect(lambda: add_row())
+        controls.addWidget(add_btn)
+        inherit_btn = QPushButton("Use Shared")
+        inherit_btn.clicked.connect(lambda: table.setRowCount(0))
+        controls.addWidget(inherit_btn)
+        ihp_btn = QPushButton("IHP For Process")
+        ihp_btn.clicked.connect(lambda: self._populate_corner_table_with_ihp(table, self._table_text(self.corner_table, row, 3, "tt")))
+        controls.addWidget(ihp_btn)
+        controls.addStretch()
+        layout.addLayout(controls)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        layout.addWidget(buttons)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        directives = []
+        for r in range(table.rowCount()):
+            kind_widget = table.cellWidget(r, 0)
+            kind = kind_widget.currentText() if isinstance(kind_widget, QComboBox) else "lib"
+            path = table.item(r, 1).text().strip() if table.item(r, 1) else ""
+            section = table.item(r, 2).text().strip() if table.item(r, 2) else ""
+            if path:
+                directives.append(ModelDirective(kind, path, section))
+        if directives:
+            self._corner_model_directives[name] = directives
+        else:
+            self._corner_model_directives.pop(name, None)
+        self._refresh_corner_model_buttons()
+        self._sync_corner_inspector()
+        self._refresh_run_plan()
+        self._save_simenv_view_silent()
+
+    def _populate_corner_table_with_ihp(self, table: QTableWidget, process: str):
+        table.setRowCount(0)
+        for directive in self._default_model_directives_for_process(process):
+            r = table.rowCount()
+            table.insertRow(r)
+            kind_combo = QComboBox()
+            kind_combo.addItems(["lib", "include", "gsdi"])
+            kind_combo.setCurrentText(directive.kind)
+            table.setCellWidget(r, 0, kind_combo)
+            table.setItem(r, 1, QTableWidgetItem(directive.path))
+            table.setItem(r, 2, QTableWidgetItem(directive.section))
 
     def _build_run_plan_tab(self):
         widget = QWidget()
@@ -3191,6 +5168,21 @@ class ADEWindow(QMainWindow):
         session.addChild(QTreeWidgetItem(["Dump Folder", self._resolved_sim_dump_dir()]))
         session.addChild(QTreeWidgetItem(["PDK", self._selected_pdk_name(infer=False) or "None selected"]))
 
+        shared_models = self._collect_model_table_directives() if hasattr(self, "model_table") else []
+        model_parent = add_parent("Model Setup", f"{self._model_setup_name}: {len(shared_models)} shared directive(s)")
+        for directive in shared_models:
+            model_parent.addChild(QTreeWidgetItem([directive.kind, directive.spice_line()]))
+        validation_errors = self._model_validation_errors()
+        validation_parent = add_parent("Validation", "PASS" if not validation_errors else f"{len(validation_errors)} issue(s)")
+        for err in validation_errors[:12]:
+            validation_parent.addChild(QTreeWidgetItem(["Model", err]))
+        bindings = self._collect_model_bindings() if hasattr(self, "model_binding_table") else []
+        binding_parent = add_parent("Device Bindings", f"{len([b for b in bindings if b.enabled])} enabled")
+        for binding in bindings:
+            if binding.enabled:
+                suffix = f" @ {binding.corner}" if binding.corner else ""
+                binding_parent.addChild(QTreeWidgetItem([binding.instance, f"{binding.model}{suffix}"]))
+
         tests = add_parent("Tests", f"{len(self._analysis_tabs)} analysis setup(s)")
         for name, widget in self._analysis_tabs.items():
             tests.addChild(QTreeWidgetItem([name, self._analysis_spice_line(name, widget)]))
@@ -3215,10 +5207,17 @@ class ADEWindow(QMainWindow):
         corners = self.get_corner_data() if hasattr(self, "corner_table") else []
         corner_parent = add_parent("Corners", f"{len(corners)} enabled")
         for corner in corners:
-            corner_parent.addChild(QTreeWidgetItem([
+            item = QTreeWidgetItem([
                 corner["name"],
                 f"{corner['process']}, {corner['temp']} C, VDD={corner['vdd']}",
-            ]))
+            ])
+            for directive in self._resolved_model_directives(
+                corner.get("process", ""),
+                corner.get("name", ""),
+                self._selected_pdk_name(),
+            ):
+                item.addChild(QTreeWidgetItem(["Model", directive.spice_line()]))
+            corner_parent.addChild(item)
 
         outputs = self._output_save_lines() if hasattr(self, "outputs_widget") else []
         output_parent = add_parent("Outputs", f"{len(outputs)} saved expression(s)")
@@ -3230,8 +5229,46 @@ class ADEWindow(QMainWindow):
         for line in measures:
             measure_parent.addChild(QTreeWidgetItem(["Measure", line]))
 
+        specs = self.spec_widget.get_specs() if hasattr(self, "spec_widget") else []
+        spec_parent = add_parent("Specs", f"{len([s for s in specs if s.enabled])} enabled")
+        for spec in specs:
+            if not spec.enabled:
+                continue
+            limits = []
+            if spec.min_value:
+                limits.append(f">= {spec.min_value}")
+            if spec.max_value:
+                limits.append(f"<= {spec.max_value}")
+            spec_parent.addChild(QTreeWidgetItem([spec.name, f"{spec.metric} {spec.expression} {' and '.join(limits)}".strip()]))
+
         for i in range(self.run_plan_tree.topLevelItemCount()):
             self.run_plan_tree.topLevelItem(i).setExpanded(True)
+        self._refresh_workflow_status()
+
+    def _model_validation_errors(self) -> list[str]:
+        errors: list[str] = []
+        pdk_name = self._selected_pdk_name()
+        corners = self.get_corner_data() if hasattr(self, "corner_table") else []
+        if not corners:
+            directives = self._resolved_model_directives("", "", pdk_name)
+            errors.extend(validate_model_directives(directives))
+        else:
+            for corner in corners:
+                directives = self._resolved_model_directives(
+                    corner.get("process", ""),
+                    corner.get("name", ""),
+                    pdk_name,
+                )
+                for err in validate_model_directives(directives):
+                    errors.append(f"{corner.get('name', 'corner')}: {err}")
+        entries = self._model_catalog_entries() if hasattr(self, "model_table") else []
+        instance_names = {item["instance"] for item in self._schematic_model_instances()}
+        errors.extend(validate_model_bindings(
+            self._collect_model_bindings(),
+            entries,
+            instance_names,
+        ))
+        return errors
 
     def get_corner_data(self) -> list[dict]:
         """Get corner configuration data."""
@@ -3261,32 +5298,42 @@ class ADEWindow(QMainWindow):
         toolbar = QHBoxLayout()
         toolbar.setSpacing(8)
 
-        lbl_view = QLabel("Corner Results Matrix:")
+        lbl_view = QLabel("Corner / Variable Matrix:")
         lbl_view.setObjectName("adePanelLabel")
         toolbar.addWidget(lbl_view)
 
-        self.btn_plot_all_results = QPushButton("📈 Plot Selected Waveforms")
-        self.btn_plot_all_results.setText("Plot Selected")
+        self.btn_plot_all_results = QPushButton("📈 Plot Selected")
         self.btn_plot_all_results.setToolTip("Open SigView plot for selected result row")
         self.btn_plot_all_results.clicked.connect(self._on_results_plot_selected)
         toolbar.addWidget(self.btn_plot_all_results)
 
-        self.btn_export_results_csv = QPushButton("💾 Export Matrix (CSV)")
-        self.btn_export_results_csv.setText("Export CSV")
+        self.btn_export_results_csv = QPushButton("💾 Export CSV")
         self.btn_export_results_csv.setToolTip("Export Corner Results Matrix to CSV")
         self.btn_export_results_csv.clicked.connect(self._export_corner_matrix_to_csv)
         toolbar.addWidget(self.btn_export_results_csv)
 
+        toolbar.addWidget(QLabel("Filter:"))
+        self.results_filter_edit = QLineEdit()
+        self.results_filter_edit.setPlaceholderText("corner, sweep, status, signal...")
+        self.results_filter_edit.textChanged.connect(lambda _text: self._apply_results_filter())
+        toolbar.addWidget(self.results_filter_edit)
+
+        toolbar.addWidget(QLabel("Sort:"))
+        self.results_sort_combo = QComboBox()
+        self.results_sort_combo.addItems(["Run", "Corner", "Status", "Signals", "Spec Margin", "Spec Value"])
+        self.results_sort_combo.currentTextChanged.connect(lambda _text: self._sort_results_rows())
+        toolbar.addWidget(self.results_sort_combo)
+
         toolbar.addStretch()
         layout.addLayout(toolbar)
 
-        self.corner_matrix_table = QTableWidget(5, 0)
-        self.corner_matrix_table.setVerticalHeaderLabels(["Status", "Plots", "Runs", "Process", "Conditions"])
+        self.corner_matrix_table = QTableWidget(0, 0)
         self.corner_matrix_table.verticalHeader().setVisible(True)
-        self.corner_matrix_table.setMaximumHeight(156)
-        self.corner_matrix_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectColumns)
+        self.corner_matrix_table.setMinimumHeight(180)
+        self.corner_matrix_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
         self.corner_matrix_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.corner_matrix_table.customContextMenuRequested.connect(self._on_corner_matrix_context_menu)
+        self.corner_matrix_table.itemDoubleClicked.connect(self._select_corner_matrix_cell)
         matrix_header = self.corner_matrix_table.horizontalHeader()
         matrix_header.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         matrix_header.customContextMenuRequested.connect(self._on_corner_matrix_header_menu)
@@ -3331,42 +5378,200 @@ class ADEWindow(QMainWindow):
     def _refresh_corner_matrix(self):
         if not hasattr(self, "corner_matrix_table"):
             return
-        corners = sorted(self._corner_result_rows.keys())
+        corners = sorted({corner for corner, _sweep in self._corner_sweep_result_rows.keys()})
+        if not corners:
+            corners = sorted(self._corner_result_rows.keys())
+        sweeps = sorted({sweep for _corner, sweep in self._corner_sweep_result_rows.keys()})
+        if not sweeps and corners:
+            sweeps = ["Single"]
+        self.corner_matrix_table.setRowCount(len(sweeps))
         self.corner_matrix_table.setColumnCount(len(corners))
         self.corner_matrix_table.setHorizontalHeaderLabels(corners)
+        self.corner_matrix_table.setVerticalHeaderLabels(sweeps)
+        self.corner_matrix_table.clearContents()
+        self.corner_matrix_table.setToolTip("Columns are corners. Rows are variable sweep points. Each cell summarizes matching run results.")
         for col, corner in enumerate(corners):
-            rows = self._corner_result_rows.get(corner, [])
-            ok = 0
-            plottable = 0
-            for row in rows:
-                item = self.results_table.item(row, 6)
-                if item and "PASS" in item.text():
-                    ok += 1
-                if self._result_waveforms_by_row.get(row) or self._result_all_waveforms_by_row.get(row):
-                    plottable += 1
-            values = [
-                f"{ok}/{len(rows)} PASS",
-                f"{plottable} plot",
-                str(len(rows)),
-                self._corner_matrix_value(corner, 1),
-                f"{self._corner_matrix_value(corner, 2)}, {self._corner_matrix_value(corner, 3)}",
-            ]
-            for row_idx, text in enumerate(values):
+            for row_idx, sweep in enumerate(sweeps):
+                rows = self._corner_sweep_result_rows.get((corner, sweep), [])
+                ok = 0
+                plottable = 0
+                for result_row in rows:
+                    item = self.results_table.item(result_row, 6)
+                    if item and "PASS" in item.text():
+                        ok += 1
+                    if self._result_waveforms_by_row.get(result_row) or self._result_all_waveforms_by_row.get(result_row):
+                        plottable += 1
+                if rows:
+                    text = f"{ok}/{len(rows)} PASS"
+                    if plottable:
+                        text += f"\n{plottable} plot"
+                else:
+                    text = "-"
                 cell = QTableWidgetItem(text)
                 cell.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                cell.setData(Qt.ItemDataRole.UserRole, corner)
-                if row_idx == 0:
-                    if ok == len(rows):
-                        cell.setForeground(QColor("#74c69d"))
-                        cell.setBackground(QColor("#173524"))
-                    elif ok:
-                        cell.setForeground(QColor("#ffd166"))
-                        cell.setBackground(QColor("#3a3117"))
-                    else:
-                        cell.setForeground(QColor("#ff8fa3"))
-                        cell.setBackground(QColor("#401820"))
+                cell.setData(Qt.ItemDataRole.UserRole, {"corner": corner, "sweep": sweep, "rows": rows})
+                if not rows:
+                    cell.setForeground(QColor("#7f8c99"))
+                elif ok == len(rows):
+                    cell.setForeground(QColor("#74c69d"))
+                    cell.setBackground(QColor("#173524"))
+                elif ok:
+                    cell.setForeground(QColor("#ffd166"))
+                    cell.setBackground(QColor("#3a3117"))
+                else:
+                    cell.setForeground(QColor("#ff8fa3"))
+                    cell.setBackground(QColor("#401820"))
                 self.corner_matrix_table.setItem(row_idx, col, cell)
         self.corner_matrix_table.resizeColumnsToContents()
+        self.corner_matrix_table.resizeRowsToContents()
+        self._apply_results_filter()
+
+    def _result_row_record(self, row: int) -> dict:
+        waveforms = self._result_waveforms_by_row.get(row, {})
+        all_waveforms = self._result_all_waveforms_by_row.get(row, {})
+        run = self.results_table.item(row, 0).text() if self.results_table.item(row, 0) else ""
+        corner = self._results_corner_from_run_name(run) or "Single"
+        return {
+            "values": [
+                self.results_table.item(row, col).text() if self.results_table.item(row, col) else ""
+                for col in range(self.results_table.columnCount())
+            ],
+            "waveforms": dict(waveforms or {}),
+            "all_waveforms": dict(all_waveforms or {}),
+            "specs": list(self._spec_results_by_row.get(row, [])),
+            "corner": corner,
+            "sweep": self._results_sweep_from_run_name(run, corner),
+            "signal_count": self._count_plottable_signals(all_waveforms or waveforms),
+            "spec_margin": self._worst_spec_margin(row),
+            "spec_value": self._first_spec_value(row),
+        }
+
+    def _first_spec_value(self, row: int) -> float:
+        for result in self._spec_results_by_row.get(row, []):
+            value = result.get("value")
+            if isinstance(value, (int, float)) and math.isfinite(float(value)):
+                return float(value)
+        return math.inf
+
+    def _worst_spec_margin(self, row: int) -> float:
+        margins: list[float] = []
+        for result in self._spec_results_by_row.get(row, []):
+            value = result.get("value")
+            if not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+                continue
+            min_val = result.get("min")
+            max_val = result.get("max")
+            if isinstance(min_val, (int, float)):
+                margins.append(float(value) - float(min_val))
+            if isinstance(max_val, (int, float)):
+                margins.append(float(max_val) - float(value))
+        return min(margins) if margins else math.inf
+
+    def _sort_results_rows(self):
+        if not hasattr(self, "results_table") or self.results_table.rowCount() <= 1:
+            return
+        records = [
+            self._result_row_record(row)
+            for row in range(self.results_table.rowCount())
+            if row not in self._result_section_rows
+        ]
+        key_name = self.results_sort_combo.currentText() if hasattr(self, "results_sort_combo") else "Run"
+        if key_name == "Corner":
+            records.sort(key=lambda item: (item["corner"].lower(), item["sweep"].lower(), item["values"][0].lower()))
+        elif key_name == "Status":
+            records.sort(key=lambda item: (0 if "FAIL" in item["values"][6] else 1, item["corner"].lower(), item["values"][0].lower()))
+        elif key_name == "Signals":
+            records.sort(key=lambda item: (-int(item["signal_count"]), item["values"][0].lower()))
+        elif key_name == "Spec Margin":
+            records.sort(key=lambda item: (float(item["spec_margin"]), item["values"][0].lower()))
+        elif key_name == "Spec Value":
+            records.sort(key=lambda item: (float(item["spec_value"]), item["values"][0].lower()))
+        else:
+            records.sort(key=lambda item: item["values"][0].lower())
+
+        self.results_table.blockSignals(True)
+        self.results_table.setRowCount(0)
+        self._result_section_rows.clear()
+        self._result_section_corners.clear()
+        self._corner_result_rows.clear()
+        self._corner_sweep_result_rows.clear()
+        self._result_waveforms_by_row.clear()
+        self._result_all_waveforms_by_row.clear()
+        self._spec_results_by_row.clear()
+        for record in records:
+            row = self.results_table.rowCount()
+            self.results_table.insertRow(row)
+            for col, value in enumerate(record["values"]):
+                item = QTableWidgetItem(value)
+                if col == 6:
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                    if "PASS" in value:
+                        item.setForeground(QColor("#74c69d"))
+                        item.setBackground(QColor("#1b4332"))
+                    else:
+                        item.setForeground(QColor("#ff8fa3"))
+                        item.setBackground(QColor("#4a0e17"))
+                self.results_table.setItem(row, col, item)
+            if record["waveforms"]:
+                self._result_waveforms_by_row[row] = record["waveforms"]
+            if record["all_waveforms"]:
+                self._result_all_waveforms_by_row[row] = record["all_waveforms"]
+            if record["specs"]:
+                self._spec_results_by_row[row] = record["specs"]
+            self._corner_result_rows.setdefault(record["corner"], []).append(row)
+            self._corner_sweep_result_rows.setdefault((record["corner"], record["sweep"]), []).append(row)
+        self.results_table.blockSignals(False)
+        self._refresh_corner_matrix()
+        self._refresh_results_baseline_markers()
+        self._apply_results_filter()
+
+    def _set_result_baseline(self, run_name: str) -> None:
+        self._baseline_run_name = str(run_name or "").strip()
+        self._refresh_results_baseline_markers()
+        self._save_simenv_view_silent()
+        if self._baseline_run_name:
+            self.statusBar().showMessage(f"Baseline set: {self._baseline_run_name}", 4000)
+
+    def _clear_result_baseline(self) -> None:
+        self._baseline_run_name = ""
+        self._refresh_results_baseline_markers()
+        self._save_simenv_view_silent()
+        self.statusBar().showMessage("Baseline cleared", 3000)
+
+    def _refresh_results_baseline_markers(self) -> None:
+        if not hasattr(self, "results_table"):
+            return
+        baseline = str(self._baseline_run_name or "").strip()
+        for row in range(self.results_table.rowCount()):
+            if row in self._result_section_rows:
+                continue
+            item = self.results_table.item(row, 0)
+            if not item:
+                continue
+            if baseline and item.text().strip() == baseline:
+                item.setToolTip("Baseline run")
+                item.setBackground(QColor("#453d1b"))
+                item.setForeground(QColor("#ffd166"))
+            else:
+                item.setToolTip("")
+                item.setBackground(QColor())
+                item.setForeground(QColor())
+
+    def _apply_results_filter(self):
+        if not hasattr(self, "results_table"):
+            return
+        query = self.results_filter_edit.text().strip().lower() if hasattr(self, "results_filter_edit") else ""
+        for row in range(self.results_table.rowCount()):
+            if not query:
+                self.results_table.setRowHidden(row, False)
+                continue
+            parts = [
+                self.results_table.item(row, col).text() if self.results_table.item(row, col) else ""
+                for col in range(self.results_table.columnCount())
+            ]
+            waveforms = self._result_all_waveforms_by_row.get(row) or self._result_waveforms_by_row.get(row, {})
+            parts.extend(str(name) for name in waveforms.keys())
+            self.results_table.setRowHidden(row, query not in " ".join(parts).lower())
 
     def _corner_matrix_value(self, corner: str, result_col: int) -> str:
         rows = self._corner_result_rows.get(corner, [])
@@ -3390,17 +5595,46 @@ class ADEWindow(QMainWindow):
         self._show_corner_matrix_menu(item.text() if item else "", pos, on_header=True)
 
     def _on_corner_matrix_context_menu(self, pos):
-        self._show_corner_matrix_menu(self._corner_from_matrix_pos(pos), pos, on_header=False)
+        item = self.corner_matrix_table.item(
+            self.corner_matrix_table.rowAt(pos.y()),
+            self.corner_matrix_table.columnAt(pos.x()),
+        )
+        data = item.data(Qt.ItemDataRole.UserRole) if item else {}
+        self._show_corner_matrix_menu(
+            self._corner_from_matrix_pos(pos),
+            pos,
+            on_header=False,
+            cell_data=data if isinstance(data, dict) else {},
+        )
 
-    def _show_corner_matrix_menu(self, corner: str, pos, on_header: bool):
+    def _show_corner_matrix_menu(self, corner: str, pos, on_header: bool, cell_data: dict | None = None):
         if not corner:
             return
-        rows = self._corner_result_rows.get(corner, [])
+        cell_data = cell_data or {}
+        rows = list(cell_data.get("rows", []) or self._corner_result_rows.get(corner, []))
+        sweep = str(cell_data.get("sweep", "") or "").strip()
         menu = QMenu(self)
-        title = QAction(f"Corner: {corner}", self)
+        title_text = f"Cell: {corner} / {sweep}" if sweep else f"Corner: {corner}"
+        title = QAction(title_text, self)
         title.setEnabled(False)
         menu.addAction(title)
         menu.addSeparator()
+
+        if not on_header and sweep:
+            act_run_cell = QAction("Run This Cell", self)
+            act_run_cell.triggered.connect(lambda: self._run_matrix_cell(corner, sweep))
+            menu.addAction(act_run_cell)
+
+            act_select_cell = QAction("Select Cell Runs", self)
+            act_select_cell.setEnabled(bool(rows))
+            act_select_cell.triggered.connect(lambda: self._select_result_rows(rows))
+            menu.addAction(act_select_cell)
+
+            act_plot_cell = QAction("Plot Cell", self)
+            act_plot_cell.setEnabled(any(self._result_waveforms_by_row.get(r) or self._result_all_waveforms_by_row.get(r) for r in rows))
+            act_plot_cell.triggered.connect(lambda: self._plot_result_rows(rows))
+            menu.addAction(act_plot_cell)
+            menu.addSeparator()
 
         act_main = QAction("Main Form...", self)
         act_main.setEnabled(bool(rows))
@@ -3442,14 +5676,43 @@ class ADEWindow(QMainWindow):
         widget = self.corner_matrix_table.horizontalHeader() if on_header else self.corner_matrix_table.viewport()
         menu.exec(widget.mapToGlobal(pos))
 
+    def _run_matrix_cell(self, corner: str, sweep: str):
+        key = (str(corner or "Single").strip() or "Single", str(sweep or "Single").strip() or "Single")
+        self._disabled_run_cells.discard(key)
+        self._run_selected_cells_once = {key}
+        self._on_run()
+
     def _select_corner_result_rows(self, corner: str):
         rows = self._corner_result_rows.get(corner, [])
+        if not rows:
+            return
+        self._select_result_rows(rows)
+
+    def _select_result_rows(self, rows: list[int]):
         if not rows:
             return
         self.results_table.clearSelection()
         for row in rows:
             self.results_table.selectRow(row)
         self.results_table.scrollToItem(self.results_table.item(rows[0], 0))
+
+    def _select_corner_matrix_cell(self, item: QTableWidgetItem):
+        data = item.data(Qt.ItemDataRole.UserRole) if item else {}
+        rows = data.get("rows", []) if isinstance(data, dict) else []
+        self._select_result_rows(rows)
+
+    def _plot_result_rows(self, rows: list[int]):
+        merged: dict = {}
+        for row in rows:
+            waveforms = self._result_all_waveforms_by_row.get(row) or self._result_waveforms_by_row.get(row, {})
+            if waveforms:
+                run = self.results_table.item(row, 0).text() if self.results_table.item(row, 0) else f"run_{row}"
+                self._merge_corner_waveforms(merged, run, waveforms)
+        if not merged:
+            self.statusBar().showMessage("No plottable waveforms for selected matrix cell", 5000)
+            return
+        self._last_sigview_waveforms = dict(merged)
+        self._show_waveforms(self._sigview_payload_for_waveforms(merged))
 
     def _corner_signal_names(self, corner: str) -> list[str]:
         names: set[str] = set()
@@ -3560,7 +5823,7 @@ class ADEWindow(QMainWindow):
             if not filename:
                 return
         try:
-            headers = ["Metric"] + [self.corner_matrix_table.horizontalHeaderItem(c).text() for c in range(self.corner_matrix_table.columnCount())]
+            headers = ["Variable Sweep"] + [self.corner_matrix_table.horizontalHeaderItem(c).text() for c in range(self.corner_matrix_table.columnCount())]
             with open(filename, "w", newline="", encoding="utf-8") as fh:
                 writer = csv.writer(fh)
                 writer.writerow(headers)
@@ -3573,6 +5836,34 @@ class ADEWindow(QMainWindow):
             self.statusBar().showMessage(f"Exported Corner Matrix to {filename}", 5000)
         except Exception as exc:
             QMessageBox.critical(self, "Export Corner Matrix", f"Could not export CSV:\n{exc}")
+
+    def _export_spec_report_to_csv(self, filename: str = ""):
+        if not filename:
+            filename, _ = QFileDialog.getSaveFileName(self, "Export Spec Report", "", "CSV Files (*.csv);;All Files (*)")
+            if not filename:
+                return
+        try:
+            with open(filename, "w", newline="", encoding="utf-8") as fh:
+                writer = csv.writer(fh)
+                writer.writerow(["Run", "Corner", "Spec", "Expression", "Metric", "Value", "Min", "Max", "Passed"])
+                for row, results in sorted(self._spec_results_by_row.items()):
+                    run = self.results_table.item(row, 0).text() if self.results_table.item(row, 0) else ""
+                    corner = self._results_corner_from_run_name(run) or "Single"
+                    for result in results:
+                        writer.writerow([
+                            run,
+                            corner,
+                            result.get("name", ""),
+                            result.get("expression", ""),
+                            result.get("metric", ""),
+                            result.get("value", ""),
+                            result.get("min", ""),
+                            result.get("max", ""),
+                            "PASS" if result.get("passed") else "FAIL",
+                        ])
+            self.statusBar().showMessage(f"Exported Spec Report to {filename}", 5000)
+        except Exception as exc:
+            QMessageBox.critical(self, "Export Spec Report", f"Could not export CSV:\n{exc}")
 
     def _output_save_lines(self) -> list[str]:
         mode = str(self._sim_save_mode or "all").lower()
@@ -3686,6 +5977,7 @@ class ADEWindow(QMainWindow):
 
     def _create_menus(self):
         menubar = self.menuBar()
+        menubar.clear()
         session_menu = menubar.addMenu("&Session")
         act_save_view = QAction("Save State", self)
         act_save_view.setShortcut(QKeySequence("Ctrl+S"))
@@ -3699,6 +5991,13 @@ class ADEWindow(QMainWindow):
         act_load = QAction("Load State...", self)
         act_load.triggered.connect(self._on_load_setup)
         session_menu.addAction(act_load)
+        session_menu.addSeparator()
+        act_save_preset = QAction("Save Named Preset...", self)
+        act_save_preset.triggered.connect(self._on_save_named_preset)
+        session_menu.addAction(act_save_preset)
+        act_load_preset = QAction("Load Named Preset...", self)
+        act_load_preset.triggered.connect(self._on_load_named_preset)
+        session_menu.addAction(act_load_preset)
         session_menu.addSeparator()
         act_close = QAction("Close", self)
         act_close.triggered.connect(self.close)
@@ -3767,6 +6066,12 @@ class ADEWindow(QMainWindow):
         act_export = QAction("Export Corner Matrix CSV...", self)
         act_export.triggered.connect(self._export_corner_matrix_to_csv)
         results_menu.addAction(act_export)
+        act_spec_export = QAction("Export Spec Report CSV...", self)
+        act_spec_export.triggered.connect(self._export_spec_report_to_csv)
+        results_menu.addAction(act_spec_export)
+        act_compare = QAction("Compare Selected Runs...", self)
+        act_compare.triggered.connect(self._compare_selected_result_runs)
+        results_menu.addAction(act_compare)
 
         tools_menu = menubar.addMenu("&Tools")
         act_sim_mgr = QAction("Simulator Manager...", self)
@@ -3782,48 +6087,65 @@ class ADEWindow(QMainWindow):
     def _create_toolbar(self):
         tb = QToolBar("SimENV")
         tb.setIconSize(QSize(18, 18))
+        tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        tb.setMovable(False)
+        tb.setFloatable(False)
+
+        def set_toolbar_emoji(action: QAction, emoji: str):
+            label = action.text()
+            action.setIconText(emoji)
+            action.setToolTip(label)
+            action.setStatusTip(label)
+            button = tb.widgetForAction(action)
+            if button is not None:
+                button.setText(emoji)
+                button.setToolTip(label)
+                font = button.font()
+                font.setPointSize(18)
+                button.setFont(font)
+                button.setMinimumSize(34, 30)
 
         act_save = QAction("Save", self)
-        act_save.setIcon(editor_icon("save"))
+        act_save.setIcon(QIcon())
         act_save.setToolTip("Save SimENV view")
         act_save.triggered.connect(self._on_save_view)
         tb.addAction(act_save)
+        set_toolbar_emoji(act_save, "💾")
 
         tb.addSeparator()
 
-        act_run = QAction("\u25b6 Run Plan", self)
-        act_run.setIcon(editor_icon("run"))
+        act_run = QAction("Run Plan", self)
+        act_run.setIcon(QIcon())
         act_run.triggered.connect(self._on_run)
         tb.addAction(act_run)
+        set_toolbar_emoji(act_run, "▶")
 
         self.act_stop_sim = QAction("Stop", self)
-        self.act_stop_sim.setIcon(editor_icon("stop"))
+        self.act_stop_sim.setIcon(QIcon())
         self.act_stop_sim.setToolTip("Stop the running simulation")
         self.act_stop_sim.setEnabled(False)
         self.act_stop_sim.triggered.connect(self._on_stop_simulation)
         tb.addAction(self.act_stop_sim)
+        set_toolbar_emoji(self.act_stop_sim, "■")
 
         act_netlist = QAction("Netlist", self)
-        act_netlist.setIcon(editor_icon("netlist"))
+        act_netlist.setIcon(QIcon())
         act_netlist.triggered.connect(self._on_view_netlist)
         tb.addAction(act_netlist)
+        set_toolbar_emoji(act_netlist, "📄")
 
         act_wave = QAction("SigView", self)
-        act_wave.setIcon(editor_icon("wave"))
+        act_wave.setIcon(QIcon())
         act_wave.triggered.connect(self._on_open_waveform)
         tb.addAction(act_wave)
+        set_toolbar_emoji(act_wave, "📈")
 
         act_calc = QAction("Calculator", self)
-        act_calc.setIcon(editor_icon("wave"))
+        act_calc.setIcon(QIcon())
         act_calc.setToolTip("Open latest waveforms in SigView calculator")
         act_calc.triggered.connect(self._on_open_waveform_calculator)
         tb.addAction(act_calc)
-
-        act_dump = QAction("Dump Settings", self)
-        act_dump.setIcon(editor_icon("open"))
-        act_dump.setToolTip("Simulation dump settings")
-        act_dump.triggered.connect(self._on_set_sim_dump_dir)
-        tb.addAction(act_dump)
+        set_toolbar_emoji(act_calc, "∑")
 
         tb.addSeparator()
         tb.addWidget(QLabel(" Sim: "))
@@ -3849,11 +6171,13 @@ class ADEWindow(QMainWindow):
         # Configure directives from SimENV
         directives = NetlistDirectives()
         corner_data = self.get_corner_data()
+        gen.set_model_bindings(self._active_model_binding_map(corner_data[0]["name"] if corner_data else ""))
         process = corner_data[0]["process"] if corner_data else ""
         self._configure_pdk_model_directives(
             directives,
             self._selected_pdk_name(),
             process,
+            corner_data[0]["name"] if corner_data else "",
         )
 
         # Design variables as .PARAM
@@ -3936,12 +6260,14 @@ class ADEWindow(QMainWindow):
         for corner in corners:
             gen = NetlistGenerator(self.db)
             gen.set_target_simulator(self._current_simulator)
+            gen.set_model_bindings(self._active_model_binding_map(corner["name"]))
 
             directives = NetlistDirectives()
             self._configure_pdk_model_directives(
                 directives,
                 self._selected_pdk_name(),
                 corner["process"],
+                corner["name"],
             )
             variables = self.var_widget.get_variables()
             if variables:
@@ -4061,6 +6387,15 @@ class ADEWindow(QMainWindow):
             )
             self.statusBar().showMessage("Analysis setup has invalid fields", 5000)
             return
+        model_errors = self._model_validation_errors()
+        if model_errors:
+            QMessageBox.warning(
+                self,
+                "Invalid Model Setup",
+                "Fix the model setup before running:\n\n" + "\n".join(model_errors[:10]),
+            )
+            self.statusBar().showMessage("Model setup has invalid fields", 5000)
+            return
 
         corner_mode = self.corner_mode_combo.currentText()
         sim_label = get_simulator_label(self._current_simulator)
@@ -4091,6 +6426,8 @@ class ADEWindow(QMainWindow):
             try:
                 jobs = []
                 for sweep_label, overrides in sweep_points:
+                    if not self._run_cell_enabled("Single", sweep_label or "Single"):
+                        continue
                     netlist = self._build_full_netlist(overrides)
                     run_name = sweep_label or "Single"
                     sim_suffix = self._safe_sim_name_suffix(sweep_label) if sweep_label else "single"
@@ -4116,6 +6453,8 @@ class ADEWindow(QMainWindow):
                 for sweep_label, overrides in sweep_points:
                     netlists = self._build_corner_netlists(overrides)
                     for corner_name, netlist in netlists:
+                        if not self._run_cell_enabled(corner_name, sweep_label or "Single"):
+                            continue
                         run_name = corner_name if not sweep_label else f"{corner_name} | {sweep_label}"
                         sim_suffix = self._safe_sim_name_suffix(run_name)
                         jobs.append((run_name, netlist, f"simenv_{self.cell}_{sim_suffix}"))
@@ -4147,7 +6486,11 @@ class ADEWindow(QMainWindow):
 
     def _start_simulation_worker(self, jobs: list[tuple[str, str, str]], bridge: SimulatorBridge):
         if not jobs:
+            self._run_selected_cells_once = set()
             return
+        self._write_pdk_lock_for_jobs(jobs)
+        self._mark_jobs_pending(jobs)
+        self._run_selected_cells_once = set()
         self._sim_jobs_total = len(jobs)
         self._sim_jobs_done = 0
         self._sim_merged_waveforms = {}
@@ -4189,8 +6532,58 @@ class ADEWindow(QMainWindow):
         self._sim_thread.finished.connect(self._clear_simulation_worker_refs)
         self._sim_thread.start()
 
+    def _write_pdk_lock_for_jobs(self, jobs: list[tuple[str, str, str]]) -> str:
+        pdk_name = self._selected_pdk_name()
+        registry = self._ensure_pdk_registry()
+        if not pdk_name or not registry:
+            return ""
+        used_corners = sorted({
+            self._results_corner_from_run_name(run_name) or run_name
+            for run_name, _netlist, _sim_name in jobs
+        })
+        used_devices = sorted({
+            getattr(device, "name", "")
+            for device in self._used_pdk_devices(pdk_name)
+            if getattr(device, "name", "")
+        })
+        lock = registry.create_lock(pdk_name, used_devices=used_devices, used_corners=used_corners)
+        if not lock:
+            return ""
+
+        path = self._pdk_lock_path()
+        try:
+            if path.exists():
+                previous = PDKLock.load(str(path))
+                changed = [
+                    label for label, old, new in (
+                        ("PDK", previous.pdk_name, lock.pdk_name),
+                        ("models", previous.model_files_hash, lock.model_files_hash),
+                        ("devices", previous.device_catalog_hash, lock.device_catalog_hash),
+                        ("manifest", previous.pdk_manifest_hash, lock.pdk_manifest_hash),
+                    )
+                    if old != new
+                ]
+                if changed:
+                    self._log(f"PDK lock changed since previous run: {', '.join(changed)}")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            lock.save(str(path))
+            self._log(f"PDK lock written: {path}")
+            self._refresh_pdk_model_overview()
+            return str(path)
+        except Exception as exc:
+            self._log(f"Could not write PDK lock: {exc}")
+            return ""
+
+    def _pdk_lock_path(self) -> Path:
+        workspace = Path(str(getattr(self.db, "workspace", "")) or ".")
+        design = re.sub(r"[^A-Za-z0-9_.-]+", "_", f"{self.library}_{self.cell}").strip("_") or "design"
+        return workspace / "runs" / "simenv" / f"{design}.pdk.lock"
+
     def _on_simulation_progress(self, message: str):
         self._log(message)
+        match = re.match(r"Running\s+(.+?)\.\.\.$", str(message).strip())
+        if match:
+            self._mark_run_cell_status(match.group(1), "Running")
         if self._sim_log_window is not None:
             self._sim_log_window.append_message(message)
         if "%" in str(message):
@@ -4204,6 +6597,12 @@ class ADEWindow(QMainWindow):
         self._sim_jobs_done += 1
         plot_waveforms = self._prepare_sigview_waveforms(result, run_name)
         self._handle_simulation_result(result, run_name, plot_waveforms)
+        row_passed = bool(getattr(result, "success", False))
+        row = self._latest_result_row_for_run(run_name)
+        if row >= 0:
+            status_item = self.results_table.item(row, 6)
+            row_passed = bool(status_item and "PASS" in status_item.text())
+        self._mark_run_cell_status(run_name, "PASS" if row_passed else "FAIL")
         if result.success and plot_waveforms:
             if self._sim_jobs_total == 1:
                 all_waveforms = dict(getattr(result, "waveforms", {}) or plot_waveforms)
@@ -4487,6 +6886,7 @@ class ADEWindow(QMainWindow):
     def _handle_simulation_result(self, result, run_name: str, plot_waveforms: dict | None = None):
         """Handle simulation result and update industry-style Corner Results Matrix."""
         plot_waveforms = plot_waveforms or {}
+        self._attach_model_provenance(result)
         self._ensure_results_corner_section(run_name)
         r = self.results_table.rowCount()
         self.results_table.insertRow(r)
@@ -4517,6 +6917,9 @@ class ADEWindow(QMainWindow):
                     meas_parts.append(f"{sig_name}: {self._format_engineering_val(last_val, unit)}")
 
         signal_count = self._count_plottable_signals(stored_waveforms)
+        spec_results = evaluate_specs(self.spec_widget.get_specs(), stored_waveforms) if hasattr(self, "spec_widget") else []
+        if spec_results:
+            self._spec_results_by_row[r] = spec_results
         if meas_parts:
             meas_str = " | ".join(meas_parts[:6])
             if len(meas_parts) > 6:
@@ -4525,6 +6928,10 @@ class ADEWindow(QMainWindow):
             meas_str = f"{signal_count} signal(s) available"
         else:
             meas_str = "None"
+        if spec_results:
+            spec_pass = sum(1 for item in spec_results if item.get("passed"))
+            spec_text = f"Specs {spec_pass}/{len(spec_results)} PASS"
+            meas_str = f"{meas_str} | {spec_text}" if meas_str != "None" else spec_text
 
         # 0: Corner / Run Name
         self.results_table.setItem(r, 0, QTableWidgetItem(run_name))
@@ -4540,10 +6947,12 @@ class ADEWindow(QMainWindow):
         self.results_table.setItem(r, 5, QTableWidgetItem(meas_str))
 
         # 6: Status Pill Badge (Green PASS / Red FAIL)
-        status_text = "✓ PASS" if result.success else "✗ FAIL"
+        specs_pass = all(item.get("passed") for item in spec_results) if spec_results else True
+        row_passed = bool(result.success) and specs_pass
+        status_text = "✓ PASS" if row_passed else "✗ FAIL"
         status_item = QTableWidgetItem(status_text)
         status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-        if result.success:
+        if row_passed:
             status_item.setForeground(QColor("#74c69d"))
             status_item.setBackground(QColor("#1b4332"))
         else:
@@ -4551,7 +6960,7 @@ class ADEWindow(QMainWindow):
             status_item.setBackground(QColor("#4a0e17"))
         self.results_table.setItem(r, 6, status_item)
 
-        # 7: Action Pill Button (📈 Plot)
+        # 7: Action Pill Button
         btn_plot = QPushButton("📈 Plot")
         btn_plot.setStyleSheet("""
             QPushButton {
@@ -4574,9 +6983,12 @@ class ADEWindow(QMainWindow):
             self._result_waveforms_by_row[r] = stored_waveforms
         if result.success and getattr(result, "waveforms", None):
             self._result_all_waveforms_by_row[r] = dict(getattr(result, "waveforms", {}) or {})
-        matrix_corner = corner_name or run_name or "single"
+        matrix_corner = corner_name or "Single"
         self._corner_result_rows.setdefault(matrix_corner, []).append(r)
+        sweep_label = self._results_sweep_from_run_name(run_name, matrix_corner)
+        self._corner_sweep_result_rows.setdefault((matrix_corner, sweep_label), []).append(r)
         self._refresh_corner_matrix()
+        self._refresh_results_baseline_markers()
         elapsed = SimulatorBridge._format_elapsed(float(getattr(result, "elapsed_time", 0.0) or 0.0))
         return_code = int(getattr(result, "return_code", 0) or 0)
         if result.success:
@@ -4611,6 +7023,37 @@ class ADEWindow(QMainWindow):
                 self._log(f"  {e}")
 
         self.statusBar().showMessage(("Done" if result.success else "Failed") + f" in {elapsed}", 5000)
+
+    def _attach_model_provenance(self, result) -> None:
+        netlist_path = str(getattr(result, "netlist_path", "") or "")
+        artifacts = getattr(result, "artifacts", None)
+        if not isinstance(artifacts, dict) or not netlist_path:
+            return
+        model_lines: list[str] = []
+        try:
+            with open(netlist_path, "r", encoding="utf-8", errors="replace") as handle:
+                for raw in handle:
+                    line = raw.strip()
+                    upper = line.upper()
+                    if upper.startswith((".LIB ", ".INCLUDE ", ".INC ", ".GSDI ")):
+                        model_lines.append(line)
+        except OSError:
+            return
+        if not model_lines:
+            return
+        artifacts["model_directives"] = "\n".join(model_lines)
+        manifest = artifacts.get("manifest", "")
+        if not manifest or not os.path.isfile(manifest):
+            return
+        try:
+            with open(manifest, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            payload.setdefault("artifacts", {})["model_directives"] = artifacts["model_directives"]
+            payload["model_directives"] = model_lines
+            with open(manifest, "w", encoding="utf-8", newline="\n") as handle:
+                json.dump(payload, handle, indent=2)
+        except (OSError, json.JSONDecodeError):
+            return
 
     def _ensure_results_corner_section(self, run_name: str):
         """Insert a industry-style section header before corner result rows."""
@@ -4661,6 +7104,17 @@ class ADEWindow(QMainWindow):
             return ""
         return name if "=" not in name else ""
 
+    def _results_sweep_from_run_name(self, run_name: str, corner_name: str = "") -> str:
+        name = str(run_name or "").strip()
+        corner = str(corner_name or "").strip()
+        if " | " in name:
+            prefix, suffix = [part.strip() for part in name.split(" | ", 1)]
+            if corner and prefix == corner:
+                return suffix or "Single"
+        if name and name != corner and "=" in name:
+            return name
+        return "Single"
+
     def _results_corner_section_title(self, corner_name: str) -> str:
         corner = str(corner_name or "").strip()
         for entry in self.get_corner_data() if hasattr(self, "corner_table") else []:
@@ -4691,6 +7145,10 @@ class ADEWindow(QMainWindow):
             act_export = QAction("Export Matrix CSV...", self)
             act_export.triggered.connect(self._export_corner_matrix_to_csv)
             menu.addAction(act_export)
+            act_clear_baseline = QAction("Clear Baseline", self)
+            act_clear_baseline.setEnabled(bool(self._baseline_run_name))
+            act_clear_baseline.triggered.connect(self._clear_result_baseline)
+            menu.addAction(act_clear_baseline)
             act_dump = QAction("Open Dump Folder", self)
             act_dump.triggered.connect(self._on_open_sim_dump_dir)
             menu.addAction(act_dump)
@@ -4744,6 +7202,16 @@ class ADEWindow(QMainWindow):
         act_export = QAction("Export Matrix CSV...", self)
         act_export.triggered.connect(self._export_corner_matrix_to_csv)
         menu.addAction(act_export)
+        act_compare = QAction("Compare Selected Runs...", self)
+        act_compare.triggered.connect(self._compare_selected_result_runs)
+        menu.addAction(act_compare)
+        act_baseline = QAction("Set As Baseline", self)
+        act_baseline.triggered.connect(lambda: self._set_result_baseline(run_name))
+        menu.addAction(act_baseline)
+        act_clear_baseline = QAction("Clear Baseline", self)
+        act_clear_baseline.setEnabled(bool(self._baseline_run_name))
+        act_clear_baseline.triggered.connect(self._clear_result_baseline)
+        menu.addAction(act_clear_baseline)
 
         annotate_menu = menu.addMenu("Annotate Schematic")
         act_annotate_nodes = QAction("DC Node Voltages", self)
@@ -4787,6 +7255,30 @@ class ADEWindow(QMainWindow):
                 return candidate
         return -1
 
+    def _latest_result_row_for_run(self, run_name: str) -> int:
+        if not hasattr(self, "results_table"):
+            return -1
+        for row in range(self.results_table.rowCount() - 1, -1, -1):
+            if row in self._result_section_rows:
+                continue
+            item = self.results_table.item(row, 0)
+            if item and item.text() == run_name:
+                return row
+        return -1
+
+    def _selected_result_data_rows(self) -> list[int]:
+        if not hasattr(self, "results_table"):
+            return []
+        rows = {
+            idx.row()
+            for idx in self.results_table.selectionModel().selectedRows()
+            if idx.row() not in self._result_section_rows
+        }
+        current = self.results_table.currentRow()
+        if current >= 0 and current not in self._result_section_rows:
+            rows.add(current)
+        return sorted(rows)
+
     def _selected_results_waveforms(self) -> tuple[int, dict]:
         row = self._selected_results_row()
         if row < 0:
@@ -4826,6 +7318,86 @@ class ADEWindow(QMainWindow):
             return
         self._plot_result_row(row, signals=[signal])
         self.statusBar().showMessage(f"Direct plotted {signal}", 4000)
+
+    def _comparison_rows_for_results(self, left: int, right: int) -> list[list[str]]:
+        left_wave = self._result_all_waveforms_by_row.get(left) or self._result_waveforms_by_row.get(left, {})
+        right_wave = self._result_all_waveforms_by_row.get(right) or self._result_waveforms_by_row.get(right, {})
+        rows: list[list[str]] = []
+        for signal in sorted(set(left_wave.keys()) & set(right_wave.keys()), key=str.lower):
+            if str(signal).startswith("_"):
+                continue
+            left_val = self._extract_scalar_val(left_wave.get(signal))
+            right_val = self._extract_scalar_val(right_wave.get(signal))
+            if left_val is None or right_val is None:
+                continue
+            delta = right_val - left_val
+            pct = "" if left_val == 0 else f"{(delta / left_val) * 100:.4g}%"
+            rows.append([
+                str(signal),
+                self._format_engineering_val(left_val, ""),
+                self._format_engineering_val(right_val, ""),
+                self._format_engineering_val(delta, ""),
+                pct,
+            ])
+        return rows
+
+    def _compare_selected_result_runs(self):
+        rows = self._selected_result_data_rows()
+        if len(rows) < 2:
+            QMessageBox.information(self, "Compare Runs", "Select two result rows to compare.")
+            return
+        left, right = rows[:2]
+        left_name = self.results_table.item(left, 0).text() if self.results_table.item(left, 0) else f"Run {left + 1}"
+        right_name = self.results_table.item(right, 0).text() if self.results_table.item(right, 0) else f"Run {right + 1}"
+        compare_rows = self._comparison_rows_for_results(left, right)
+        if not compare_rows:
+            QMessageBox.information(self, "Compare Runs", "The selected runs do not share scalar waveform values.")
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Compare Runs - {left_name} vs {right_name}")
+        dlg.resize(760, 440)
+        layout = QVBoxLayout(dlg)
+        title = QLabel(f"{left_name}  vs  {right_name}")
+        title.setObjectName("adePanelTitle")
+        layout.addWidget(title)
+        table = QTableWidget(len(compare_rows), 5)
+        table.setHorizontalHeaderLabels(["Signal", left_name, right_name, "Delta", "Delta %"])
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for col in range(1, 5):
+            table.horizontalHeader().setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+        for r, values in enumerate(compare_rows):
+            for c, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if c >= 1:
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                table.setItem(r, c, item)
+        layout.addWidget(table)
+        buttons = QHBoxLayout()
+        export = QPushButton("Export CSV")
+        export.clicked.connect(lambda _checked=False: self._export_run_comparison_csv(left, right))
+        buttons.addWidget(export)
+        close = QPushButton("Close")
+        close.clicked.connect(dlg.accept)
+        buttons.addWidget(close)
+        buttons.addStretch()
+        layout.addLayout(buttons)
+        dlg.exec()
+
+    def _export_run_comparison_csv(self, left: int, right: int):
+        filename, _ = QFileDialog.getSaveFileName(self, "Export Run Comparison", "", "CSV Files (*.csv);;All Files (*)")
+        if not filename:
+            return
+        left_name = self.results_table.item(left, 0).text() if self.results_table.item(left, 0) else f"Run {left + 1}"
+        right_name = self.results_table.item(right, 0).text() if self.results_table.item(right, 0) else f"Run {right + 1}"
+        try:
+            with open(filename, "w", newline="", encoding="utf-8") as fh:
+                writer = csv.writer(fh)
+                writer.writerow(["Signal", left_name, right_name, "Delta", "Delta %"])
+                writer.writerows(self._comparison_rows_for_results(left, right))
+            self.statusBar().showMessage(f"Exported Run Comparison to {filename}", 5000)
+        except Exception as exc:
+            QMessageBox.critical(self, "Export Run Comparison", f"Could not export CSV:\n{exc}")
 
     def _on_results_main_form_selected(self):
         row = self._selected_results_row()
@@ -5218,11 +7790,13 @@ class ADEWindow(QMainWindow):
         """Collect the complete SimENV state for database save/export."""
         setup = {
             "type": "simenv",
-            "version": "1.1",
+            "version": "2.0",
             "library": self.library,
             "cell": self.cell,
             "view": "simenv",
             "simulator": self._current_simulator,
+            "baseline_run": self._baseline_run_name,
+            "expression_history": list(self._expression_history[-25:]),
             "sim_dump_dir": self._resolved_sim_dump_dir(),
             "threads": self._sim_thread_count(),
             "timeout": self._sim_timeout_seconds(),
@@ -5235,6 +7809,17 @@ class ADEWindow(QMainWindow):
             "prefer_klu": self._sim_prefer_klu,
             "verbose_compat": self._sim_verbose_compat,
             "pdk": self._selected_pdk_name(infer=False),
+            "model_setup_name": self._model_setup_name,
+            "model_setups": [
+                directive.to_dict() for directive in self._collect_model_table_directives()
+            ],
+            "model_bindings": [
+                binding.to_dict() for binding in self._collect_model_bindings()
+            ],
+            "disabled_run_cells": [
+                {"corner": corner, "sweep": sweep}
+                for corner, sweep in sorted(self._disabled_run_cells)
+            ],
             "corner_mode": self.corner_mode_combo.currentText() if hasattr(self, "corner_mode_combo") else "Single",
             "machine": self.machine_combo.currentData() if hasattr(self, "machine_combo") else "local",
             "ssh_host": self.ssh_host_edit.text() if hasattr(self, "ssh_host_edit") else "",
@@ -5249,6 +7834,7 @@ class ADEWindow(QMainWindow):
                 "save_all_currents": self.outputs_widget.chk_save_all_currents.isChecked(),
             },
             "measurements": [],
+            "specs": [],
             "corners": [],
             "stimuli": [],
             "convergence": {"nodesets": [], "ics": []},
@@ -5287,6 +7873,9 @@ class ADEWindow(QMainWindow):
                 "to": self._table_text(self.measurement_widget.table, r, 5),
             })
 
+        if hasattr(self, "spec_widget"):
+            setup["specs"] = [spec.to_dict() for spec in self.spec_widget.get_specs()]
+
         for r in range(self.corner_table.rowCount()):
             chk = self.corner_table.cellWidget(r, 4)
             setup["corners"].append({
@@ -5295,6 +7884,13 @@ class ADEWindow(QMainWindow):
                 "vdd": self._table_text(self.corner_table, r, 2, "1.8"),
                 "process": self._table_text(self.corner_table, r, 3, "tt"),
                 "enabled": bool(chk.isChecked()) if isinstance(chk, QCheckBox) else True,
+                "model_directives": [
+                    directive.to_dict()
+                    for directive in self._corner_model_directives.get(
+                        self._table_text(self.corner_table, r, 0, "corner"),
+                        [],
+                    )
+                ],
             })
 
         for r in range(self.stimulus_widget.table.rowCount()):
@@ -5343,6 +7939,12 @@ class ADEWindow(QMainWindow):
         if idx >= 0:
             self.sim_combo.setCurrentIndex(idx)
         self._current_simulator = self.sim_combo.currentData() or sim
+        self._baseline_run_name = str(setup.get("baseline_run", "") or "").strip()
+        self._expression_history = [
+            str(item).strip()
+            for item in setup.get("expression_history", []) or []
+            if str(item).strip()
+        ][-25:]
         self._sim_dump_dir = str(setup.get("sim_dump_dir") or self._default_sim_dump_dir())
         try:
             self._sim_threads = max(1, min(16, int(setup.get("threads", 1) or 1)))
@@ -5430,6 +8032,54 @@ class ADEWindow(QMainWindow):
             if idx >= 0:
                 self.pdk_combo.setCurrentIndex(idx)
 
+        self._global_model_directives = [
+            ModelDirective.from_dict(item)
+            for item in setup.get("model_setups", []) or []
+            if isinstance(item, dict)
+        ]
+        if not self._global_model_directives and str(setup.get("version", "")).strip() not in {"2.0", ""}:
+            self._log("Migrated older SimENV setup: corners without model directives will use shared/IHP fallback models.")
+        self._model_setup_name = str(setup.get("model_setup_name") or self._model_setup_name or "default")
+        if hasattr(self, "model_setup_name_edit"):
+            self.model_setup_name_edit.blockSignals(True)
+            self.model_setup_name_edit.setText(self._model_setup_name)
+            self.model_setup_name_edit.blockSignals(False)
+        if hasattr(self, "model_table"):
+            self.model_table.blockSignals(True)
+            self.model_table.setRowCount(0)
+            for directive in self._global_model_directives:
+                self._add_model_directive_row(directive.kind, directive.path, directive.section)
+            self.model_table.blockSignals(False)
+            self._refresh_model_catalog()
+
+        self._model_bindings = [
+            DeviceModelBinding.from_dict(item)
+            for item in setup.get("model_bindings", []) or []
+            if isinstance(item, dict)
+        ]
+        if hasattr(self, "model_binding_table"):
+            self.model_binding_table.blockSignals(True)
+            self.model_binding_table.setRowCount(0)
+            for binding in self._model_bindings:
+                self._add_model_binding_row(
+                    binding.instance,
+                    binding.device,
+                    binding.model,
+                    binding.corner,
+                    binding.enabled,
+                )
+            self.model_binding_table.blockSignals(False)
+
+        self._disabled_run_cells = {
+            (
+                str(item.get("corner", "")).strip(),
+                str(item.get("sweep", "")).strip() or "Single",
+            )
+            for item in setup.get("disabled_run_cells", []) or []
+            if isinstance(item, dict) and str(item.get("corner", "")).strip()
+        }
+        self._refresh_corner_run_matrix_preview()
+
         mode = setup.get("corner_mode", "Single")
         idx = self.corner_mode_combo.findText(mode)
         if idx >= 0:
@@ -5504,8 +8154,30 @@ class ADEWindow(QMainWindow):
             self._set_table_text(self.measurement_widget.table, r, 4, meas.get("from", ""))
             self._set_table_text(self.measurement_widget.table, r, 5, meas.get("to", ""))
 
+        if hasattr(self, "spec_widget"):
+            self.spec_widget.table.setRowCount(0)
+            for item in setup.get("specs", []):
+                if not isinstance(item, dict):
+                    continue
+                spec = SpecLimit.from_dict(item)
+                self.spec_widget._add_row()
+                r = self.spec_widget.table.rowCount() - 1
+                self._set_table_text(self.spec_widget.table, r, 0, spec.name)
+                self._set_table_text(self.spec_widget.table, r, 1, spec.expression)
+                metric_widget = self.spec_widget.table.cellWidget(r, 2)
+                if isinstance(metric_widget, QComboBox):
+                    idx = metric_widget.findText(spec.metric)
+                    if idx >= 0:
+                        metric_widget.setCurrentIndex(idx)
+                self._set_table_text(self.spec_widget.table, r, 3, spec.min_value)
+                self._set_table_text(self.spec_widget.table, r, 4, spec.max_value)
+                enabled_widget = self.spec_widget.table.cellWidget(r, 5)
+                if isinstance(enabled_widget, QCheckBox):
+                    enabled_widget.setChecked(spec.enabled)
+
         if "corners" in setup:
             self.corner_table.setRowCount(0)
+            self._corner_model_directives.clear()
             for corner in setup.get("corners", []):
                 if not isinstance(corner, dict):
                     continue
@@ -5518,6 +8190,16 @@ class ADEWindow(QMainWindow):
                 chk = self.corner_table.cellWidget(self.corner_table.rowCount() - 1, 4)
                 if isinstance(chk, QCheckBox):
                     chk.setChecked(bool(corner.get("enabled", True)))
+                name = str(corner.get("name", "corner"))
+                model_directives = [
+                    ModelDirective.from_dict(item)
+                    for item in corner.get("model_directives", []) or []
+                    if isinstance(item, dict)
+                ]
+                if model_directives:
+                    self._corner_model_directives[name] = model_directives
+            self._refresh_corner_model_buttons()
+            self._sync_corner_inspector()
 
         self.stimulus_widget.table.setRowCount(0)
         for stim in setup.get("stimuli", []):
@@ -5566,16 +8248,20 @@ class ADEWindow(QMainWindow):
 
         if hasattr(self, "toolbar_sim_label"):
             self.toolbar_sim_label.setText(self._current_simulator)
+        self._update_pdk_badge()
+        self._refresh_corner_run_matrix_preview()
         self._refresh_run_plan()
         self._simenv_autosave_suspended = was_suspended
 
     def _load_simenv_view(self) -> None:
         data = self.db.load_view(self.library, self.cell, "simenv")
         if not data:
+            self._auto_apply_attached_pdk_setup()
             return
         try:
             self._apply_simenv_setup(data)
             self.session_badge.setText("Session: saved view")
+            self._update_pdk_badge()
             self.statusBar().showMessage("Loaded saved SimENV view", 3000)
         except Exception as exc:
             self._simenv_autosave_suspended = False
@@ -5631,4 +8317,165 @@ class ADEWindow(QMainWindow):
         except Exception as exc:
             self._simenv_autosave_suspended = False
             QMessageBox.critical(self, "Import SimENV Setup", f"Could not import setup:\n{exc}")
+
+    def _preset_store_path(self) -> Path:
+        return Path(getattr(self.db, "workspace", ".")) / ".simenv_presets.json"
+
+    def _preset_kind_options(self) -> list[str]:
+        return ["Full Setup", "Model Setup", "Corner Setup", "Output/Spec Setup"]
+
+    def _preset_kind_key(self, label: str) -> str:
+        mapping = {
+            "Full Setup": "full",
+            "Model Setup": "models",
+            "Corner Setup": "corners",
+            "Output/Spec Setup": "outputs",
+        }
+        return mapping.get(str(label or ""), "full")
+
+    def _preset_display_name(self, name: str, entry: dict) -> str:
+        kind = str(entry.get("kind", "full") if isinstance(entry, dict) else "full")
+        labels = {
+            "full": "Full",
+            "models": "Models",
+            "corners": "Corners",
+            "outputs": "Outputs",
+        }
+        return f"{labels.get(kind, 'Full')}: {name}"
+
+    def _collect_named_preset(self, kind: str) -> dict:
+        setup = self._collect_simenv_setup()
+        if kind == "models":
+            data = {
+                "model_setup_name": setup.get("model_setup_name", "default"),
+                "model_setups": setup.get("model_setups", []),
+                "model_bindings": setup.get("model_bindings", []),
+            }
+        elif kind == "corners":
+            data = {
+                "corner_mode": setup.get("corner_mode", "Single"),
+                "corners": setup.get("corners", []),
+                "disabled_run_cells": setup.get("disabled_run_cells", []),
+            }
+        elif kind == "outputs":
+            data = {
+                "outputs": setup.get("outputs", []),
+                "output_options": setup.get("output_options", {}),
+                "measurements": setup.get("measurements", []),
+                "specs": setup.get("specs", []),
+            }
+        else:
+            kind = "full"
+            data = setup
+        return {"type": "simenv_preset", "version": "2.1", "kind": kind, "data": data}
+
+    def _apply_named_preset(self, entry: dict) -> str:
+        if not isinstance(entry, dict):
+            return "Full"
+        if "kind" not in entry:
+            self._apply_simenv_setup(entry)
+            return "Full"
+        kind = str(entry.get("kind") or "full")
+        data = entry.get("data", {})
+        if not isinstance(data, dict):
+            data = {}
+        if kind == "full":
+            self._apply_simenv_setup(data)
+            return "Full"
+
+        setup = self._collect_simenv_setup()
+        if kind == "models":
+            setup.update({
+                "model_setup_name": data.get("model_setup_name", "default"),
+                "model_setups": data.get("model_setups", []),
+                "model_bindings": data.get("model_bindings", []),
+            })
+            label = "Model"
+        elif kind == "corners":
+            setup.update({
+                "corner_mode": data.get("corner_mode", setup.get("corner_mode", "Single")),
+                "corners": data.get("corners", []),
+                "disabled_run_cells": data.get("disabled_run_cells", []),
+            })
+            label = "Corner"
+        elif kind == "outputs":
+            setup.update({
+                "outputs": data.get("outputs", []),
+                "output_options": data.get("output_options", {}),
+                "measurements": data.get("measurements", []),
+                "specs": data.get("specs", []),
+            })
+            label = "Output/Spec"
+        else:
+            self._apply_simenv_setup(data)
+            return "Full"
+        self._apply_simenv_setup(setup)
+        return label
+
+    def _load_preset_store(self) -> dict:
+        path = self._preset_store_path()
+        if not path.exists():
+            return {}
+        try:
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+            return data if isinstance(data, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _save_preset_store(self, store: dict) -> None:
+        path = self._preset_store_path()
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(store, fh, indent=2)
+
+    def _on_save_named_preset(self):
+        kind_label, ok = QInputDialog.getItem(
+            self,
+            "Save Named Preset",
+            "Preset type:",
+            self._preset_kind_options(),
+            0,
+            False,
+        )
+        if not ok:
+            return
+        name, ok = QInputDialog.getText(self, "Save Named Preset", "Preset name:")
+        name = str(name or "").strip()
+        if not ok or not name:
+            return
+        kind = self._preset_kind_key(kind_label)
+        store = self._load_preset_store()
+        store[name] = self._collect_named_preset(kind)
+        self._save_preset_store(store)
+        self.statusBar().showMessage(f"Saved {kind_label}: {name}", 4000)
+        self._log(f"Saved {kind_label}: {name}")
+
+    def _on_load_named_preset(self):
+        store = self._load_preset_store()
+        names = sorted(store.keys(), key=str.lower)
+        if not names:
+            QMessageBox.information(self, "Load Named Preset", "No SimENV presets have been saved yet.")
+            return
+        display_to_name = {
+            self._preset_display_name(name, store.get(name, {})): name
+            for name in names
+        }
+        choice, ok = QInputDialog.getItem(
+            self,
+            "Load Named Preset",
+            "Preset:",
+            sorted(display_to_name.keys(), key=str.lower),
+            0,
+            False,
+        )
+        if not ok or not choice:
+            return
+        name = display_to_name[str(choice)]
+        try:
+            label = self._apply_named_preset(store[str(name)])
+            self.statusBar().showMessage(f"Loaded {label} preset: {name}", 4000)
+            self._log(f"Loaded {label} preset: {name}")
+        except Exception as exc:
+            self._simenv_autosave_suspended = False
+            QMessageBox.critical(self, "Load Named Preset", f"Could not load preset:\n{exc}")
 

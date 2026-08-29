@@ -123,6 +123,39 @@ class NetlistQucsSupportTest(unittest.TestCase):
         self.assertIn("IP1_PAC", netlist)
         self.assertFalse(any("expects numeric value" in e for e in gen.get_errors()))
 
+    def test_builtin_independent_sources_emit_ac_suffix(self):
+        self._save_top([
+            {
+                "name": "V1",
+                "library": "primitives",
+                "cell": "vdc",
+                "x": 0,
+                "y": 0,
+                "params": {"dc": "0", "acmag": "1", "acphase": "30"},
+            },
+            {
+                "name": "V2",
+                "library": "primitives",
+                "cell": "vpulse",
+                "x": 100,
+                "y": 0,
+                "params": {"dc": "0", "acmag": "0.5"},
+            },
+            {
+                "name": "V3",
+                "library": "primitives",
+                "cell": "vsin",
+                "x": 200,
+                "y": 0,
+                "params": {"dc": "0", "phase": "90", "acmag": "2", "acphase": "15"},
+            },
+        ])
+        netlist = NetlistGenerator(self.db).generate("work", "top")
+
+        self.assertRegex(netlist, r"V1 \S+ \S+ DC 0 AC 1 30")
+        self.assertRegex(netlist, r"V2 \S+ \S+ DC 0 PULSE\([^)]*\) AC 0\.5")
+        self.assertRegex(netlist, r"V3 \S+ \S+ DC 0 SIN\(0 1 1k 0 0 90\) AC 2 15")
+
     def test_spfile_emits_ngspice_wrapper(self):
         touchstone = Path(self.tmp.name) / "tiny.s2p"
         touchstone.write_text(

@@ -296,6 +296,7 @@ class APWWindow(QMainWindow):
 
     def _create_menus(self):
         menubar = self.menuBar()
+        menubar.clear()
 
         # File
         file_menu = menubar.addMenu("&File")

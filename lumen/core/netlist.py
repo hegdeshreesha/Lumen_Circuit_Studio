@@ -55,6 +55,7 @@ class NetlistGenerator:
         self._dynamic_includes: set[str] = set()
         self._custom_blocks: list[str] = []
         self._spfile_subckt_added = False
+        self._model_bindings: dict[str, str] = {}
 
     def set_pdk_model(self, model_path: str, corner: str = ""):
         """Set PDK model file path and optional corner for .lib inclusion."""
@@ -68,6 +69,14 @@ class NetlistGenerator:
     def set_target_simulator(self, simulator: str):
         """Set target simulator for capability-aware netlisting."""
         self._target_simulator = str(simulator or "GSPICE").upper()
+
+    def set_model_bindings(self, bindings: dict[str, str]):
+        """Override instance model parameters for this generated deck only."""
+        self._model_bindings = {
+            str(inst): str(model)
+            for inst, model in (bindings or {}).items()
+            if str(inst).strip() and str(model).strip()
+        }
 
     @staticmethod
     def _as_float(value: object, default: float = 0.0) -> float:
@@ -862,7 +871,9 @@ class NetlistGenerator:
             iname = inst.get("name", "?")
             cell_name = inst.get("cell", "")
             lib_name = inst.get("library", "")
-            params = inst.get("params", {})
+            params = dict(inst.get("params", {}) or {})
+            if iname in self._model_bindings:
+                params["model"] = self._model_bindings[iname]
 
             sym = self._get_symbol_or_generated(lib_name, cell_name)
             pdk_device = self._resolve_pdk_device(lib_name, cell_name)
@@ -970,6 +981,17 @@ class NetlistGenerator:
                         return value
                 return default
 
+            def _with_ac(line: str, default: str = "", legacy_phase: bool = False) -> str:
+                ac = _param_first("acmag", "AC", default=default)
+                if not ac:
+                    return line
+                phase_keys = ("acphase", "phase") if legacy_phase else ("acphase",)
+                phase = _param_first(*phase_keys, default="")
+                line += f" AC {ac}"
+                if phase:
+                    line += f" {phase}"
+                return line
+
             # Build SPICE line based on component type
             if spice_model == "R":
                 val = params.get("R", "1k")
@@ -982,35 +1004,18 @@ class NetlistGenerator:
                 lines.append(f"{iname} {net_str} {val}")
             elif spice_model == "V":
                 dc = _param_first("dc", "DC", default="0")
-                ac = _param_first("acmag", "AC", default="")
-                phase = _param_first("acphase", "phase", default="")
                 line = f"{iname} {net_str} DC {dc}"
-                if ac:
-                    line += f" AC {ac}"
-                    if phase:
-                        line += f" {phase}"
-                lines.append(line)
+                lines.append(_with_ac(line, legacy_phase=True))
             elif spice_model == "I":
                 dc = _param_first("dc", "DC", default="0")
-                ac = _param_first("acmag", "AC", default="")
-                phase = _param_first("acphase", "phase", default="")
                 line = f"{iname} {net_str} DC {dc}"
-                if ac:
-                    line += f" AC {ac}"
-                    if phase:
-                        line += f" {phase}"
-                lines.append(line)
+                lines.append(_with_ac(line, legacy_phase=True))
             elif spice_model in ("VDC", "IDC"):
                 dc = _param_first("dc", "DC", default="0")
-                lines.append(f"{iname} {net_str} DC {dc}")
+                lines.append(_with_ac(f"{iname} {net_str} DC {dc}"))
             elif spice_model in ("VAC", "IAC"):
                 dc = _param_first("dc", "DC", default="0")
-                ac = _param_first("acmag", "AC", default="1")
-                phase = _param_first("acphase", "phase", default="")
-                line = f"{iname} {net_str} DC {dc} AC {ac}"
-                if phase:
-                    line += f" {phase}"
-                lines.append(line)
+                lines.append(_with_ac(f"{iname} {net_str} DC {dc}", default="1"))
             elif spice_model == "PAC":
                 lines.extend(self._emit_pac_source(iname, nets, params))
             elif spice_model in ("VPULSE", "IPULSE"):
@@ -1025,7 +1030,7 @@ class NetlistGenerator:
                     params.get("per", "10n"),
                 ]
                 line = f"{iname} {net_str} DC {dc} PULSE({' '.join(args)})"
-                lines.append(line)
+                lines.append(_with_ac(line))
             elif spice_model in ("VSIN", "ISIN"):
                 dc = _param_first("dc", "DC", default="0")
                 args = [
@@ -1037,12 +1042,12 @@ class NetlistGenerator:
                     params.get("phase", "0"),
                 ]
                 line = f"{iname} {net_str} DC {dc} SIN({' '.join(args)})"
-                lines.append(line)
+                lines.append(_with_ac(line))
             elif spice_model in ("VPWL", "IPWL"):
                 dc = _param_first("dc", "DC", default="0")
                 points = params.get("points", "0 0 1n 1")
                 line = f"{iname} {net_str} DC {dc} PWL({points})"
-                lines.append(line)
+                lines.append(_with_ac(line))
             elif spice_model in ("VAM", "VPM"):
                 uo = params.get("Uo", "0")
                 uac = params.get("Uac", "1")

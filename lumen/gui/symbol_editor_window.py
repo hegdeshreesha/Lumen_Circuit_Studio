@@ -8,13 +8,12 @@ from lumen.qt.QtWidgets import (
     QFileDialog
 )
 from lumen.qt.QtCore import Qt, QSize
-from lumen.qt.QtGui import QAction, QKeySequence
+from lumen.qt.QtGui import QAction, QIcon, QKeySequence
 from pathlib import Path
 
 from lumen.core.database import LibraryDatabase
 from lumen.gui.symbol_editor import SymbolEditor
 from lumen.gui.branding import apply_window_branding
-from lumen.gui.icons import editor_icon
 
 
 class SymbolEditorWindow(QMainWindow):
@@ -116,32 +115,36 @@ class SymbolEditorWindow(QMainWindow):
         self._assign_action_icons()
 
     def _assign_action_icons(self):
-        icon_map = {
-            self.act_open_symbol: "open",
-            self.act_save: "save",
-            self.act_check_save: "check",
-            self.act_undo: "undo",
-            self.act_redo: "redo",
-            self.act_move: "move",
-            self.act_select_tool: "move",
-            self.act_line_tool: "wire",
-            self.act_rect_tool: "instance",
-            self.act_circle_tool: "palette",
-            self.act_arc_tool: "wave",
-            self.act_polygon_tool: "bus",
-            self.act_pin_tool: "pin",
-            self.act_auto_generate: "check",
-            self.act_check_symbol: "health",
-            self.act_zoom_in: "zoom_in",
-            self.act_zoom_out: "zoom_out",
-            self.act_zoom_fit: "zoom_fit",
-            self.act_command_palette: "palette",
-        }
-        for action, icon_name in icon_map.items():
-            action.setIcon(editor_icon(icon_name))
+        for action in (
+            self.act_open_symbol, self.act_save, self.act_check_save,
+            self.act_undo, self.act_redo, self.act_move,
+            self.act_select_tool, self.act_line_tool, self.act_rect_tool,
+            self.act_circle_tool, self.act_arc_tool, self.act_polygon_tool,
+            self.act_pin_tool, self.act_auto_generate,
+            self.act_check_symbol, self.act_zoom_in, self.act_zoom_out,
+            self.act_zoom_fit, self.act_command_palette,
+        ):
+            action.setIcon(QIcon())
+
+    def _add_emoji_action(self, toolbar: QToolBar, action: QAction, emoji: str):
+        label = action.text()
+        action.setIconText(emoji)
+        action.setToolTip(label)
+        action.setStatusTip(label)
+        toolbar.addAction(action)
+        button = toolbar.widgetForAction(action)
+        if button is not None:
+            button.setText(emoji)
+            button.setToolTip(label)
+            font = button.font()
+            font.setPointSize(18)
+            button.setFont(font)
+            button.setMinimumSize(34, 30)
 
     def _create_menus(self):
-        file_menu = self.menuBar().addMenu("&File")
+        menubar = self.menuBar()
+        menubar.clear()
+        file_menu = menubar.addMenu("&File")
         file_menu.addAction(self.act_new_symbol)
         file_menu.addAction(self.act_open_symbol)
         file_menu.addSeparator()
@@ -153,7 +156,7 @@ class SymbolEditorWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction(self.act_close)
 
-        edit_menu = self.menuBar().addMenu("&Edit")
+        edit_menu = menubar.addMenu("&Edit")
         edit_menu.addAction(self.act_undo)
         edit_menu.addAction(self.act_redo)
         edit_menu.addSeparator()
@@ -168,7 +171,7 @@ class SymbolEditorWindow(QMainWindow):
         edit_menu.addAction(self.act_select_all)
         edit_menu.addAction(self.act_properties)
 
-        view_menu = self.menuBar().addMenu("&View")
+        view_menu = menubar.addMenu("&View")
         view_menu.addAction(self.act_zoom_in)
         view_menu.addAction(self.act_zoom_out)
         view_menu.addAction(self.act_zoom_fit)
@@ -176,7 +179,7 @@ class SymbolEditorWindow(QMainWindow):
         view_menu.addAction(self.act_display_options)
         view_menu.addAction(self.act_grid_options)
 
-        create_menu = self.menuBar().addMenu("&Create")
+        create_menu = menubar.addMenu("&Create")
         create_menu.addAction(self.act_select_tool)
         create_menu.addSeparator()
         create_menu.addAction(self.act_line_tool)
@@ -189,49 +192,61 @@ class SymbolEditorWindow(QMainWindow):
         create_menu.addAction(self.act_text_tool)
         create_menu.addAction(self.act_label_tool)
 
-        pin_menu = self.menuBar().addMenu("&Pin")
+        pin_menu = menubar.addMenu("&Pin")
         pin_menu.addAction(self.act_pin_properties)
         pin_menu.addAction(self.act_pin_order)
 
-        tools_menu = self.menuBar().addMenu("&Tools")
+        tools_menu = menubar.addMenu("&Tools")
         tools_menu.addAction(self.act_auto_generate)
         tools_menu.addAction(self.act_symbol_properties)
         tools_menu.addAction(self.act_cdf)
         tools_menu.addSeparator()
         tools_menu.addAction(self.act_check_symbol)
 
-        lumen_menu = self.menuBar().addMenu("&Lumen")
+        lumen_menu = menubar.addMenu("&Lumen")
         lumen_menu.addAction(self.act_command_palette)
 
     def _create_toolbars(self):
         file_tb = QToolBar("File")
         file_tb.setIconSize(QSize(18, 18))
-        file_tb.addAction(self.act_save)
-        file_tb.addAction(self.act_check_save)
+        file_tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        file_tb.setMovable(False)
+        file_tb.setFloatable(False)
+        self._add_emoji_action(file_tb, self.act_save, "💾")
+        self._add_emoji_action(file_tb, self.act_check_save, "☑")
         self.addToolBar(file_tb)
 
         draw_tb = QToolBar("Symbol Draw")
         draw_tb.setIconSize(QSize(18, 18))
-        draw_tb.addAction(self.act_select_tool)
-        draw_tb.addAction(self.act_line_tool)
-        draw_tb.addAction(self.act_rect_tool)
-        draw_tb.addAction(self.act_circle_tool)
-        draw_tb.addAction(self.act_arc_tool)
-        draw_tb.addAction(self.act_polygon_tool)
-        draw_tb.addAction(self.act_pin_tool)
+        draw_tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        draw_tb.setMovable(False)
+        draw_tb.setFloatable(False)
+        self._add_emoji_action(draw_tb, self.act_select_tool, "✥")
+        self._add_emoji_action(draw_tb, self.act_line_tool, "╱")
+        self._add_emoji_action(draw_tb, self.act_rect_tool, "▣")
+        self._add_emoji_action(draw_tb, self.act_circle_tool, "○")
+        self._add_emoji_action(draw_tb, self.act_arc_tool, "◜")
+        self._add_emoji_action(draw_tb, self.act_polygon_tool, "⬠")
+        self._add_emoji_action(draw_tb, self.act_pin_tool, "📍")
         self.addToolBar(draw_tb)
 
         view_tb = QToolBar("View")
         view_tb.setIconSize(QSize(18, 18))
-        view_tb.addAction(self.act_zoom_in)
-        view_tb.addAction(self.act_zoom_out)
-        view_tb.addAction(self.act_zoom_fit)
+        view_tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        view_tb.setMovable(False)
+        view_tb.setFloatable(False)
+        self._add_emoji_action(view_tb, self.act_zoom_in, "🔍")
+        self._add_emoji_action(view_tb, self.act_zoom_out, "🔎")
+        self._add_emoji_action(view_tb, self.act_zoom_fit, "⛶")
         self.addToolBar(view_tb)
 
         tools_tb = QToolBar("Symbol Tools")
         tools_tb.setIconSize(QSize(18, 18))
-        tools_tb.addAction(self.act_auto_generate)
-        tools_tb.addAction(self.act_check_symbol)
+        tools_tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        tools_tb.setMovable(False)
+        tools_tb.setFloatable(False)
+        self._add_emoji_action(tools_tb, self.act_auto_generate, "☑")
+        self._add_emoji_action(tools_tb, self.act_check_symbol, "✓")
         self.addToolBar(tools_tb)
 
     def _create_status_bar(self):

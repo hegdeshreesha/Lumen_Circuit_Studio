@@ -8,7 +8,8 @@ from lumen.qt.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QTableWidget, QTableWidgetItem, QHeaderView, QTabWidget,
     QLabel, QPushButton, QStatusBar, QToolBar, QGroupBox,
-    QTreeWidget, QTreeWidgetItem, QMessageBox, QComboBox
+    QTreeWidget, QTreeWidgetItem, QMessageBox, QComboBox, QFileDialog,
+    QInputDialog
 )
 from lumen.qt.QtCore import Qt, QSize
 from lumen.qt.QtGui import QAction, QColor, QBrush, QFont
@@ -62,6 +63,21 @@ class PDKManagerWindow(QMainWindow):
         self.install_btn = QPushButton("Install")
         self.install_btn.clicked.connect(self._on_install)
         sel_layout.addWidget(self.install_btn)
+
+        self.register_btn = QPushButton("Register Folder...")
+        self.register_btn.setToolTip("Register an already-installed local PDK folder")
+        self.register_btn.clicked.connect(self._on_register_folder)
+        sel_layout.addWidget(self.register_btn)
+
+        self.install_open_btn = QPushButton("Install Open PDK...")
+        self.install_open_btn.setToolTip("Clone a supported open PDK repository and register it")
+        self.install_open_btn.clicked.connect(self._on_install_open_pdk)
+        sel_layout.addWidget(self.install_open_btn)
+
+        self.refresh_install_btn = QPushButton("Refresh Install")
+        self.refresh_install_btn.setToolTip("Rescan model files, corners, and devices for the selected PDK")
+        self.refresh_install_btn.clicked.connect(self._on_refresh_install)
+        sel_layout.addWidget(self.refresh_install_btn)
 
         sel_layout.addStretch()
         layout.addLayout(sel_layout)
@@ -131,6 +147,36 @@ class PDKManagerWindow(QMainWindow):
         self.corner_table.verticalHeader().setVisible(False)
         self.detail_tabs.addTab(self.corner_table, "Corners")
 
+        health_panel = QWidget()
+        health_layout = QVBoxLayout(health_panel)
+        health_layout.setContentsMargins(4, 4, 4, 4)
+        health_actions = QHBoxLayout()
+        rescan_btn = QPushButton("Rescan")
+        rescan_btn.setToolTip("Rescan model files, corners, and devices for this PDK")
+        rescan_btn.clicked.connect(self._on_refresh_install)
+        health_actions.addWidget(rescan_btn)
+        register_btn = QPushButton("Register Folder...")
+        register_btn.setToolTip("Register or replace this PDK from a local folder")
+        register_btn.clicked.connect(self._on_register_folder)
+        health_actions.addWidget(register_btn)
+        models_btn = QPushButton("Choose Models Folder...")
+        models_btn.setToolTip("Repair model discovery by selecting the folder containing SPICE model files")
+        models_btn.clicked.connect(self._on_choose_models_folder)
+        health_actions.addWidget(models_btn)
+        manifest_btn = QPushButton("Regenerate Manifest")
+        manifest_btn.setToolTip("Rewrite lumen_pdk.json from the current discovered PDK data")
+        manifest_btn.clicked.connect(self._on_regenerate_manifest)
+        health_actions.addWidget(manifest_btn)
+        health_actions.addStretch()
+        health_layout.addLayout(health_actions)
+        self.health_table = QTableWidget(0, 2)
+        self.health_table.setHorizontalHeaderLabels(["Check", "Value"])
+        self.health_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.health_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.health_table.verticalHeader().setVisible(False)
+        health_layout.addWidget(self.health_table)
+        self.detail_tabs.addTab(health_panel, "Health")
+
         splitter.addWidget(self.detail_tabs)
         splitter.setSizes([320, 700])
         layout.addWidget(splitter)
@@ -161,7 +207,7 @@ class PDKManagerWindow(QMainWindow):
         select_idx = 0
         pdks = [
             pdk for pdk in self.registry.get_all_pdks()
-            if pdk.name not in self.HIDDEN_PDKS
+            if pdk.installed or pdk.name not in self.HIDDEN_PDKS
         ]
         for i, pdk in enumerate(pdks):
             status = "✓" if pdk.installed else "○"
@@ -217,6 +263,7 @@ class PDKManagerWindow(QMainWindow):
         self._populate_devices(pdk)
         self._populate_layers(pdk)
         self._populate_corners(pdk)
+        self._populate_health(pdk)
 
     def _populate_devices(self, pdk: PDKInfo):
         devs = pdk.devices
@@ -324,6 +371,32 @@ class PDKManagerWindow(QMainWindow):
             self.corner_table.setItem(row, 0, name_item)
             self.corner_table.setItem(row, 1, desc_item)
             self.corner_table.setItem(row, 2, temp_item)
+
+    def _populate_health(self, pdk: PDKInfo):
+        report = self.registry.get_pdk_health_report(pdk.name)
+        rows = [
+            ("Status", report.get("status", "Unknown")),
+            ("Root", report.get("root_path", "")),
+            ("Models Path", report.get("models_path", "")),
+            ("Manifest", report.get("manifest_path", "")),
+            ("Model Files", report.get("model_files_count", 0)),
+            ("Model Sections", report.get("model_sections_count", 0)),
+            ("Devices", report.get("devices_count", 0)),
+            ("Corners", report.get("corners_count", 0)),
+            ("Layers", report.get("layers_count", 0)),
+            ("Issues", "; ".join(report.get("issues", [])) or "None"),
+        ]
+        self.health_table.setRowCount(len(rows))
+        for row, (label, value) in enumerate(rows):
+            label_item = QTableWidgetItem(str(label))
+            label_item.setFlags(label_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            value_item = QTableWidgetItem(str(value))
+            value_item.setFlags(value_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            if label == "Status":
+                value_item.setForeground(QBrush(QColor("#8bc78b" if value == "Ready" else "#ffd166")))
+            self.health_table.setItem(row, 0, label_item)
+            self.health_table.setItem(row, 1, value_item)
+
     def _on_activate(self):
         name = self.pdk_combo.currentData()
         if not name:
@@ -348,6 +421,123 @@ class PDKManagerWindow(QMainWindow):
         if name:
             self._do_install(name)
 
+    def _on_register_folder(self):
+        path = QFileDialog.getExistingDirectory(
+            self,
+            "Register Local PDK Folder",
+            "",
+        )
+        if not path:
+            return
+        pdk = self.registry.register_local_pdk(path)
+        if not pdk:
+            QMessageBox.warning(self, "Register PDK", "Could not register that folder as a PDK.")
+            return
+        self._refresh()
+        idx = self.pdk_combo.findData(pdk.name)
+        if idx >= 0:
+            self.pdk_combo.setCurrentIndex(idx)
+        QMessageBox.information(
+            self,
+            "Register PDK",
+            self._install_summary(pdk),
+        )
+        if self.ciw:
+            self.ciw.log(f"Registered PDK: {pdk.display_name} ({pdk.root_path})")
+
+    def _on_install_open_pdk(self):
+        sources = self.registry.available_open_pdk_sources()
+        labels = {
+            f"{info.get('display_name', name)} ({name})": name
+            for name, info in sources.items()
+        }
+        choice, ok = QInputDialog.getItem(
+            self,
+            "Install Open PDK",
+            "PDK:",
+            sorted(labels.keys()),
+            0,
+            False,
+        )
+        if not ok or not choice:
+            return
+        dest = QFileDialog.getExistingDirectory(
+            self,
+            "Choose Install Folder",
+            str(self.registry.workspace / "pdks"),
+        )
+        if not dest:
+            return
+        name = labels[str(choice)]
+        self.statusBar().showMessage(f"Installing {choice}...", 0)
+        pdk = self.registry.install_open_pdk(name, dest)
+        if not pdk:
+            QMessageBox.warning(self, "Install Open PDK", "Clone/register failed. Check Git and network access.")
+            self.statusBar().showMessage("Open PDK install failed", 5000)
+            return
+        self._refresh()
+        idx = self.pdk_combo.findData(pdk.name)
+        if idx >= 0:
+            self.pdk_combo.setCurrentIndex(idx)
+        QMessageBox.information(
+            self,
+            "Install Open PDK",
+            self._install_summary(pdk),
+        )
+        if self.ciw:
+            self.ciw.log(f"Installed open PDK: {pdk.display_name} ({pdk.root_path})")
+
+    def _on_refresh_install(self):
+        name = self.pdk_combo.currentData()
+        if not name:
+            return
+        pdk = self.registry.refresh_pdk_installation(name)
+        if not pdk:
+            QMessageBox.warning(self, "Refresh PDK", "Could not rescan this PDK installation.")
+            return
+        self._refresh()
+        idx = self.pdk_combo.findData(pdk.name)
+        if idx >= 0:
+            self.pdk_combo.setCurrentIndex(idx)
+        report = self.registry.get_pdk_health_report(pdk.name)
+        issues = report.get("issues", [])
+        text = "Ready" if not issues else "Needs setup:\n" + "\n".join(f"- {issue}" for issue in issues[:8])
+        QMessageBox.information(self, "Refresh PDK", text)
+        if self.ciw:
+            self.ciw.log(f"Refreshed PDK install: {pdk.display_name}")
+
+    def _on_choose_models_folder(self):
+        name = self.pdk_combo.currentData()
+        if not name:
+            return
+        pdk = self.registry.get_pdk(name)
+        start = getattr(pdk, "models_path", "") or getattr(pdk, "root_path", "") or ""
+        path = QFileDialog.getExistingDirectory(self, "Choose PDK Models Folder", start)
+        if not path:
+            return
+        repaired = self.registry.set_pdk_models_path(name, path)
+        if not repaired:
+            QMessageBox.warning(self, "Choose Models Folder", "Could not use that models folder.")
+            return
+        self._refresh()
+        idx = self.pdk_combo.findData(repaired.name)
+        if idx >= 0:
+            self.pdk_combo.setCurrentIndex(idx)
+        QMessageBox.information(self, "Choose Models Folder", self._install_summary(repaired))
+        if self.ciw:
+            self.ciw.log(f"Updated PDK models folder: {repaired.display_name} ({path})")
+
+    def _on_regenerate_manifest(self):
+        name = self.pdk_combo.currentData()
+        if not name:
+            return
+        pdk = self.registry.refresh_pdk_installation(name)
+        if not pdk:
+            QMessageBox.warning(self, "Regenerate Manifest", "Could not regenerate this PDK manifest.")
+            return
+        QMessageBox.information(self, "Regenerate Manifest", self._install_summary(pdk))
+        self._refresh()
+
     def _do_install(self, name: str):
         pdk = self.registry.get_pdk(name)
         if not pdk:
@@ -362,3 +552,24 @@ class PDKManagerWindow(QMainWindow):
             self._refresh()
         else:
             QMessageBox.warning(self, "Error", "PDK installation failed.")
+
+    def _install_summary(self, pdk: PDKInfo) -> str:
+        report = self.registry.get_pdk_health_report(pdk.name)
+        issues = report.get("issues", []) or []
+        lines = [
+            f"Registered and activated: {pdk.display_name}",
+            "",
+            str(pdk.root_path),
+            "",
+            f"Models: {report.get('model_files_count', 0)}",
+            f"Sections: {report.get('model_sections_count', 0)}",
+            f"Devices: {report.get('devices_count', 0)}",
+            f"Corners: {report.get('corners_count', 0)}",
+            f"Manifest: {report.get('manifest_path', '') or 'None'}",
+        ]
+        if issues:
+            lines.extend(["", "Needs setup:"])
+            lines.extend(f"- {issue}" for issue in issues[:8])
+        else:
+            lines.extend(["", "Status: Ready"])
+        return "\n".join(lines)

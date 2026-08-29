@@ -20,6 +20,7 @@ import json
 import os
 import time
 import hashlib
+import subprocess
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import Dict, List, Optional, Any
@@ -241,6 +242,14 @@ class PDKLock:
     @classmethod
     def create_lockfile(cls, pdk_info: PDKInfo, project_dir: str, used_corners: Optional[List[str]] = None, used_devices: Optional[List[str]] = None) -> 'PDKLock':
         """Create a deterministic lockfile for a project workspace bound to a PDK."""
+        lock = cls.create(pdk_info, used_corners, used_devices)
+        lock_path = Path(project_dir) / "lumen.lock"
+        lock.save(str(lock_path))
+        return lock
+
+    @classmethod
+    def create(cls, pdk_info: PDKInfo, used_corners: Optional[List[str]] = None, used_devices: Optional[List[str]] = None) -> 'PDKLock':
+        """Create deterministic lock data for a PDK without writing it."""
         manifest_str = f"{pdk_info.name}:{pdk_info.version}:{pdk_info.foundry}"
         pdk_hash = hashlib.sha256(manifest_str.encode("utf-8")).hexdigest()[:16]
 
@@ -260,8 +269,6 @@ class PDKLock:
             used_devices=used_devices or [d.name for d in pdk_info.devices],
             timestamp=time.time(),
         )
-        lock_path = Path(project_dir) / "lumen.lock"
-        lock.save(str(lock_path))
         return lock
 
 
@@ -645,6 +652,31 @@ class PDKRegistry:
             "node": "180nm",
             "description": "GF 180nm MCU process",
         },
+    }
+
+    OPEN_PDK_SOURCES = {
+        "ihp_sg13g2": {
+            "display_name": "IHP SG13G2",
+            "url": "https://github.com/IHP-GmbH/IHP-Open-PDK.git",
+        },
+        "sky130": {
+            "display_name": "SkyWater SKY130",
+            "url": "https://github.com/google/skywater-pdk.git",
+        },
+        "gf180mcu": {
+            "display_name": "GlobalFoundries GF180MCU",
+            "url": "https://github.com/google/gf180mcu-pdk.git",
+        },
+    }
+
+    PDK_NAME_ALIASES = {
+        "ihp-open-pdk": "ihp_sg13g2",
+        "ihp_sg13g2": "ihp_sg13g2",
+        "ihp-sg13g2": "ihp_sg13g2",
+        "skywater-pdk": "sky130",
+        "sky130": "sky130",
+        "gf180mcu-pdk": "gf180mcu",
+        "gf180mcu": "gf180mcu",
     }
     
     def __init__(self, workspace_dir: str = ""):
@@ -1253,12 +1285,12 @@ class PDKRegistry:
     def _identify_pdk(self, directory: Path) -> Optional[PDKInfo]:
         """Check if a directory looks like a PDK root."""
         # Look for manifest file
-        manifest_path = directory / "pdk.json"
+        manifest_path = self._manifest_path_for_directory(directory)
         if manifest_path.exists():
             try:
                 with open(manifest_path, "r") as f:
                     data = json.load(f)
-                return self._load_from_manifest(directory, data)
+                return self._load_from_manifest(directory, data, manifest_path)
             except (json.JSONDecodeError, OSError) as e:
                 print(f"Warning: Invalid PDK manifest in {directory}: {e}")
                 return None
@@ -1276,9 +1308,23 @@ class PDKRegistry:
             return self._discover_from_directory(directory)
         
         return None
+
+    def _manifest_path_for_directory(self, directory: Path) -> Path:
+        """Return the preferred manifest path for a PDK directory."""
+        for filename in ("pdk.json", "lumen_pdk.json"):
+            path = directory / filename
+            if path.exists():
+                return path
+        return directory / "lumen_pdk.json"
+
+    def _canonical_pdk_name(self, name: str) -> str:
+        raw = str(name or "").strip()
+        key = raw.lower().replace(" ", "-")
+        return self.PDK_NAME_ALIASES.get(key, raw.lower().replace(" ", "_"))
     
-    def _load_from_manifest(self, root: Path, data: Dict) -> PDKInfo:
+    def _load_from_manifest(self, root: Path, data: Dict, manifest_path: Path | None = None) -> PDKInfo:
         """Load PDK from a manifest file."""
+        manifest_path = manifest_path or root / "pdk.json"
         # Validate against schema
         errors = self._validator.validate(data, "pdk_manifest")
         if errors:
@@ -1304,7 +1350,7 @@ class PDKRegistry:
             author=data.get("author", ""),
             tags=data.get("tags", []),
             root_path=str(root),
-            manifest_path=str(root / "pdk.json"),
+            manifest_path=str(manifest_path),
             installed=True,
         )
         
@@ -1409,16 +1455,12 @@ class PDKRegistry:
         
         pdk.devices = devices
         
-        # Look for corners in .lib sections
-        corners = set()
-        for model_file in directory.rglob("*.lib"):
-            try:
-                with open(model_file, "r", encoding="utf-8", errors="replace") as f:
-                    content = f.read()
-                for match in re.finditer(r'\.LIB\s+"?[^"]*"?\s+(\w+)', content, re.IGNORECASE):
-                    corners.add(match.group(1))
-            except:
-                pass
+        # Look for corners in parsed .lib sections.
+        corners = {
+            section
+            for model_file in pdk.model_files
+            for section in (getattr(model_file, "corners", []) or [])
+        }
         
         pdk.corners = [PDKCorner(name=c) for c in sorted(corners)]
         
@@ -1431,6 +1473,145 @@ class PDKRegistry:
                 return hashlib.md5(f.read()).hexdigest()
         except:
             return ""
+
+    def register_local_pdk(self, path: str, name: str = "", display_name: str = "") -> Optional[PDKInfo]:
+        """Register an already-installed local PDK folder."""
+        root = Path(path).expanduser().resolve()
+        if not root.exists() or not root.is_dir():
+            return None
+
+        pdk = self._identify_pdk(root)
+        if pdk is None:
+            pdk = self._discover_from_directory(root)
+            pdk.name = self._canonical_pdk_name(name or pdk.name or root.name)
+            pdk.display_name = display_name or pdk.display_name or pdk.name
+            pdk.manifest_path = str(self._write_lumen_manifest(root, pdk))
+        elif name or display_name:
+            pdk.name = self._canonical_pdk_name(name or pdk.name)
+            pdk.display_name = display_name or pdk.display_name
+        else:
+            pdk.name = self._canonical_pdk_name(pdk.name or root.name)
+
+        pdk.root_path = str(root)
+        pdk.installed = True
+        if pdk.model_files:
+            pdk.models_path = self._best_models_path(root, pdk.model_files)
+        if not getattr(pdk, "manifest_path", ""):
+            pdk.manifest_path = str(self._write_lumen_manifest(root, pdk))
+            pdk.manifest_checksum = self._compute_manifest_checksum(Path(pdk.manifest_path))
+        self._pdks[pdk.name] = pdk
+
+        root_str = str(root)
+        if root_str not in self._search_paths:
+            self._search_paths.append(root_str)
+        self._active_pdk = pdk.name
+        self._save_config()
+        return pdk
+
+    def refresh_pdk_installation(self, name: str) -> Optional[PDKInfo]:
+        """Rescan an installed PDK root and update discovered models/corners/devices."""
+        current = self._pdks.get(name)
+        root_text = str(getattr(current, "root_path", "") or "") if current else ""
+        root = Path(root_text).expanduser() if root_text else None
+        if not root or not root.exists() or not root.is_dir():
+            return None
+        refreshed = self._discover_from_directory(root)
+        refreshed.name = current.name
+        refreshed.display_name = current.display_name or refreshed.display_name
+        refreshed.foundry = current.foundry or refreshed.foundry
+        refreshed.process = current.process or refreshed.process
+        refreshed.node = current.node or refreshed.node
+        refreshed.version = current.version or refreshed.version
+        refreshed.license = current.license or refreshed.license
+        refreshed.description = current.description or refreshed.description
+        refreshed.manifest_path = str(self._write_lumen_manifest(root, refreshed))
+        refreshed.manifest_checksum = self._compute_manifest_checksum(Path(refreshed.manifest_path))
+        refreshed.installed = True
+        self._pdks[name] = refreshed
+        self._save_config()
+        return refreshed
+
+    def set_pdk_models_path(self, name: str, models_path: str) -> Optional[PDKInfo]:
+        """Point a PDK at a model folder and regenerate its local manifest."""
+        pdk = self._pdks.get(name)
+        root_text = str(getattr(pdk, "root_path", "") or "") if pdk else ""
+        root = Path(root_text).expanduser() if root_text else None
+        models = Path(models_path).expanduser().resolve()
+        if not pdk or not root or not root.exists() or not models.exists() or not models.is_dir():
+            return None
+
+        pdk.model_files = self._discover_model_files(models)
+        pdk.models_path = str(models)
+        sections = sorted({
+            section
+            for model_file in pdk.model_files
+            for section in (getattr(model_file, "corners", []) or [])
+        })
+        if sections:
+            pdk.corners = [PDKCorner(name=section, lib_section=section) for section in sections]
+        pdk.manifest_path = str(self._write_lumen_manifest(root, pdk))
+        pdk.manifest_checksum = self._compute_manifest_checksum(Path(pdk.manifest_path))
+        pdk.installed = True
+        self._pdks[pdk.name] = pdk
+        self._save_config()
+        return pdk
+
+    def _write_lumen_manifest(self, root: Path, pdk: PDKInfo) -> Path:
+        manifest_path = root / "lumen_pdk.json"
+        model_rel = ""
+        if pdk.models_path:
+            try:
+                model_rel = str(Path(pdk.models_path).resolve().relative_to(root))
+            except ValueError:
+                model_rel = ""
+        data = {
+            "schema_version": "1.0",
+            "name": pdk.name,
+            "display_name": pdk.display_name or pdk.name,
+            "foundry": pdk.foundry,
+            "process": pdk.process,
+            "node": pdk.node,
+            "version": pdk.version or "1.0",
+            "description": pdk.description or f"Local PDK registered from {root}",
+            "paths": {"models": model_rel},
+            "corners": [
+                {
+                    "name": corner.name,
+                    "description": corner.description,
+                    "temperature": float(corner.temperature),
+                    "voltage": float(getattr(corner, "voltage", getattr(pdk, "supply_voltage", 1.8))),
+                    "lib_section": corner.lib_section,
+                }
+                for corner in pdk.corners
+            ],
+        }
+        with open(manifest_path, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2)
+        return manifest_path
+
+    def available_open_pdk_sources(self) -> Dict[str, Dict[str, str]]:
+        """Return built-in open PDK repositories."""
+        return dict(self.OPEN_PDK_SOURCES)
+
+    def install_open_pdk(self, name: str, destination: str = "") -> Optional[PDKInfo]:
+        """Clone a known open PDK repository and register the local checkout."""
+        source = self.OPEN_PDK_SOURCES.get(name)
+        if not source:
+            return None
+        base = Path(destination).expanduser().resolve() if destination else self.workspace / "pdks"
+        base.mkdir(parents=True, exist_ok=True)
+        target = base / name
+        if not target.exists():
+            result = subprocess.run(
+                ["git", "clone", "--depth", "1", source["url"], str(target)],
+                capture_output=True,
+                text=True,
+                timeout=900,
+            )
+            if result.returncode != 0:
+                return None
+        pdk = self.register_local_pdk(str(target), name=name, display_name=source.get("display_name", name))
+        return self.refresh_pdk_installation(pdk.name) if pdk else None
     
     def add_search_path(self, path: str):
         """Add a path to search for PDKs."""
@@ -1540,10 +1721,14 @@ class PDKRegistry:
             "installed": pdk.installed,
             "is_valid": pdk.is_valid,
             "validation_errors": pdk.validation_errors,
+            "root_path": pdk.root_path,
+            "models_path": pdk.models_path,
+            "manifest_path": pdk.manifest_path,
             "devices_count": len(pdk.devices),
             "corners_count": len(pdk.corners),
             "layers_count": len(pdk.layers),
             "model_files_count": len(pdk.model_files),
+            "model_sections_count": sum(len(getattr(model_file, "corners", []) or []) for model_file in pdk.model_files),
             "has_manifest": pdk.manifest_path is not None,
             "manifest_checksum": pdk.manifest_checksum,
             "supported_categories": list(set(d.category.value for d in pdk.devices)),
@@ -1551,6 +1736,8 @@ class PDKRegistry:
         
         # Check for common issues
         issues = []
+        if not pdk.model_files:
+            issues.append("No model files discovered")
         if not pdk.devices:
             issues.append("No devices defined")
         if not pdk.corners:
@@ -1561,6 +1748,7 @@ class PDKRegistry:
             if not device.parameters:
                 issues.append(f"Device {device.name} has no parameters")
         report["issues"] = issues
+        report["status"] = "Ready" if not issues else "Needs Setup"
         
         return report
     
@@ -1606,6 +1794,14 @@ class PDKRegistry:
         lock.save(str(lock_path))
         
         return str(lock_path)
+
+    def create_lock(self, name: str, used_devices: Optional[List[str]] = None,
+                    used_corners: Optional[List[str]] = None) -> Optional[PDKLock]:
+        """Create lock data for a specific installed PDK."""
+        pdk = self._pdks.get(name)
+        if not pdk or not pdk.installed:
+            return None
+        return PDKLock.create(pdk, used_corners=used_corners, used_devices=used_devices)
 
 
 def create_registry(workspace: str = "") -> PDKRegistry:

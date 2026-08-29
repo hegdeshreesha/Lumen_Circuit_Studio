@@ -16,7 +16,7 @@ from lumen.qt.QtWidgets import (
     QWidget, QVBoxLayout, QTextEdit
 )
 from lumen.qt.QtCore import Qt, QSize
-from lumen.qt.QtGui import QAction, QKeySequence
+from lumen.qt.QtGui import QAction, QIcon, QKeySequence
 from pathlib import Path
 
 from lumen.core.database import LibraryDatabase
@@ -169,12 +169,40 @@ class LumenMainWindow(QMainWindow):
 
         self.act_pop_up = QAction("Pop Up (Ctrl+E)", self)
         self.act_pop_up.setShortcut(QKeySequence("Ctrl+E"))
+        self._assign_action_icons()
+
+    def _assign_action_icons(self):
+        for action in (
+            self.act_new_sch, self.act_open, self.act_save,
+            self.act_save_as, self.act_undo, self.act_redo,
+            self.act_add_wire, self.act_add_instance, self.act_add_pin,
+            self.act_add_label, self.act_zoom_in, self.act_zoom_out,
+            self.act_zoom_fit, self.act_netlist, self.act_simulate,
+            self.act_ade,
+        ):
+            action.setIcon(QIcon())
+
+    def _add_emoji_action(self, toolbar: QToolBar, action: QAction, emoji: str):
+        label = action.text()
+        action.setIconText(emoji)
+        action.setToolTip(label)
+        action.setStatusTip(label)
+        toolbar.addAction(action)
+        button = toolbar.widgetForAction(action)
+        if button is not None:
+            button.setText(emoji)
+            button.setToolTip(label)
+            font = button.font()
+            font.setPointSize(18)
+            button.setFont(font)
+            button.setMinimumSize(34, 30)
 
     # ── Menus ─────────────────────────────────────────────────
 
     def _create_menus(self):
         """Build the menu bar."""
         menubar = self.menuBar()
+        menubar.clear()
 
         # File menu
         file_menu = menubar.addMenu("&File")
@@ -242,38 +270,53 @@ class LumenMainWindow(QMainWindow):
         # File toolbar
         file_tb = QToolBar("File")
         file_tb.setIconSize(QSize(20, 20))
-        file_tb.addAction(self.act_new_sch)
-        file_tb.addAction(self.act_save)
+        file_tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        file_tb.setMovable(False)
+        file_tb.setFloatable(False)
+        self._add_emoji_action(file_tb, self.act_new_sch, "📋")
+        self._add_emoji_action(file_tb, self.act_save, "💾")
         self.addToolBar(file_tb)
 
         # Edit toolbar
         edit_tb = QToolBar("Edit")
         edit_tb.setIconSize(QSize(20, 20))
-        edit_tb.addAction(self.act_undo)
-        edit_tb.addAction(self.act_redo)
+        edit_tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        edit_tb.setMovable(False)
+        edit_tb.setFloatable(False)
+        self._add_emoji_action(edit_tb, self.act_undo, "↶")
+        self._add_emoji_action(edit_tb, self.act_redo, "↷")
         self.addToolBar(edit_tb)
 
         # Draw toolbar
         draw_tb = QToolBar("Draw")
         draw_tb.setIconSize(QSize(20, 20))
-        draw_tb.addAction(self.act_add_wire)
-        draw_tb.addAction(self.act_add_instance)
-        draw_tb.addAction(self.act_add_pin)
-        draw_tb.addAction(self.act_add_label)
+        draw_tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        draw_tb.setMovable(False)
+        draw_tb.setFloatable(False)
+        self._add_emoji_action(draw_tb, self.act_add_wire, "•─•")
+        self._add_emoji_action(draw_tb, self.act_add_instance, "▣")
+        self._add_emoji_action(draw_tb, self.act_add_pin, "📍")
+        self._add_emoji_action(draw_tb, self.act_add_label, "🏷")
         self.addToolBar(draw_tb)
 
         # View toolbar
         view_tb = QToolBar("View")
         view_tb.setIconSize(QSize(20, 20))
-        view_tb.addAction(self.act_zoom_in)
-        view_tb.addAction(self.act_zoom_out)
-        view_tb.addAction(self.act_zoom_fit)
+        view_tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        view_tb.setMovable(False)
+        view_tb.setFloatable(False)
+        self._add_emoji_action(view_tb, self.act_zoom_in, "🔍")
+        self._add_emoji_action(view_tb, self.act_zoom_out, "🔎")
+        self._add_emoji_action(view_tb, self.act_zoom_fit, "⛶")
         self.addToolBar(view_tb)
 
         # Simulation toolbar
         sim_tb = QToolBar("Simulation")
         sim_tb.setIconSize(QSize(20, 20))
-        sim_tb.addAction(self.act_netlist)
+        sim_tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        sim_tb.setMovable(False)
+        sim_tb.setFloatable(False)
+        self._add_emoji_action(sim_tb, self.act_netlist, "📄")
         self.addToolBar(sim_tb)
 
     # ── Dock Panels ───────────────────────────────────────────

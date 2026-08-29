@@ -180,6 +180,12 @@ class LibraryManagerWindow(QMainWindow):
         self.act_new_cell = QAction("New Cell...", self)
         self.act_new_cell.triggered.connect(self._on_new_cell)
 
+        self.act_attach_pdk = QAction("Attach PDK...", self)
+        self.act_attach_pdk.triggered.connect(self._attach_pdk_to_selected_library)
+
+        self.act_detach_pdk = QAction("Detach PDK", self)
+        self.act_detach_pdk.triggered.connect(self._detach_pdk_from_selected_library)
+
         self.act_refresh = QAction("Refresh", self)
         self.act_refresh.setShortcut(QKeySequence("F5"))
         self.act_refresh.triggered.connect(self.refresh)
@@ -192,6 +198,7 @@ class LibraryManagerWindow(QMainWindow):
 
     def _create_menus(self):
         menubar = self.menuBar()
+        menubar.clear()
 
         file_menu = menubar.addMenu("&File")
         file_menu.addAction(self.act_new_lib)
@@ -200,6 +207,10 @@ class LibraryManagerWindow(QMainWindow):
         file_menu.addAction(self.act_refresh)
         file_menu.addSeparator()
         file_menu.addAction(self.act_close)
+
+        lib_menu = menubar.addMenu("&Library")
+        lib_menu.addAction(self.act_attach_pdk)
+        lib_menu.addAction(self.act_detach_pdk)
 
         edit_menu = menubar.addMenu("&Edit")
         edit_menu.addAction(QAction("Rename...", self))
@@ -215,6 +226,7 @@ class LibraryManagerWindow(QMainWindow):
         tb.setIconSize(QSize(18, 18))
         tb.addAction(self.act_new_lib)
         tb.addAction(self.act_new_cell)
+        tb.addAction(self.act_attach_pdk)
         tb.addSeparator()
         tb.addAction(self.act_refresh)
         self.addToolBar(tb)
@@ -278,14 +290,20 @@ class LibraryManagerWindow(QMainWindow):
         lib_type = current.data(0, Qt.ItemDataRole.UserRole + 1) or "user"
         self._selected_library = lib_key
         self._selected_cell = ""
+        editable_library = lib_type != "pdk"
+        self.act_new_cell.setEnabled(editable_library)
+        self.act_attach_pdk.setEnabled(editable_library)
+        self.act_detach_pdk.setEnabled(
+            editable_library and bool(self.db.get_library_pdk(lib_key)))
 
         # Update details pane
         lib_info = self.db.get_library(lib_key)
         if lib_info:
             desc = lib_info.description or "No description."
+            attached = self.db.get_library_pdk(lib_key)
             self.lib_details.setText(
                 f"<b>Path:</b> {lib_info.path}<br>"
-                f"<b>Tech:</b> {lib_info.tech or 'None'}<br>"
+                f"<b>Attached PDK:</b> {attached or 'None'}<br>"
                 f"<br><b>Description:</b><br>{desc}"
             )
         elif lib_type == "pdk":
@@ -401,8 +419,21 @@ class LibraryManagerWindow(QMainWindow):
         item = self.lib_tree.itemAt(pos)
         if item:
             lib_name = item.data(0, Qt.ItemDataRole.UserRole)
+            lib_type = item.data(0, Qt.ItemDataRole.UserRole + 1) or "user"
+            if lib_type == "pdk":
+                act_refresh = menu.addAction("Refresh")
+                act_refresh.triggered.connect(self.refresh)
+                menu.exec(self.lib_tree.viewport().mapToGlobal(pos))
+                return
+
             act_new_cell = menu.addAction("New Cell...")
             act_new_cell.triggered.connect(lambda: self._on_new_cell(lib_name))
+            menu.addSeparator()
+            act_attach = menu.addAction("Attach PDK...")
+            act_attach.triggered.connect(lambda: self._attach_pdk_to_library(lib_name))
+            act_detach = menu.addAction("Detach PDK")
+            act_detach.setEnabled(bool(self.db.get_library_pdk(lib_name)))
+            act_detach.triggered.connect(lambda: self._detach_pdk_from_library(lib_name))
             menu.addSeparator()
             act_rename = menu.addAction("Rename Library...")
             act_rename.triggered.connect(lambda: self._rename_library(lib_name))
@@ -432,6 +463,9 @@ class LibraryManagerWindow(QMainWindow):
             act_open_sym.triggered.connect(
                 lambda: self._open_editor(
                     self._selected_library, cell_name, "symbol"))
+            if self._selected_library.startswith("pdk:"):
+                menu.exec(self.cell_table.viewport().mapToGlobal(pos))
+                return
             menu.addSeparator()
             act_del = menu.addAction("Delete Cell")
             act_del.triggered.connect(
@@ -464,7 +498,11 @@ class LibraryManagerWindow(QMainWindow):
         if ok and name:
             try:
                 self.db.create_library(name)
+                pdk_name = self._choose_pdk_name("New Library PDK", "Attach PDK:", allow_none=True)
+                if pdk_name:
+                    self.db.set_library_pdk(name, pdk_name)
                 self.refresh()
+                self._reselect_library(name)
                 if self.ciw:
                     self.ciw.log(f"Created library: {name}")
             except ValueError as e:
@@ -473,6 +511,9 @@ class LibraryManagerWindow(QMainWindow):
     def _on_new_cell(self, library: str = ""):
         if not library:
             library = self._selected_library
+        if library.startswith("pdk:"):
+            QMessageBox.information(self, "New Cell", "PDK device libraries are read-only.")
+            return
         if not library:
             libs = [l.name for l in self.db.get_libraries()]
             if not libs:
@@ -553,6 +594,74 @@ class LibraryManagerWindow(QMainWindow):
                 if item.data(0, Qt.ItemDataRole.UserRole) == library:
                     self.lib_tree.setCurrentItem(item)
                     break
+
+    def _pdk_registry(self):
+        if self.ciw and hasattr(self.ciw, "pdk_registry"):
+            return self.ciw.pdk_registry
+        try:
+            from lumen.core.pdk_service import get_registry
+            return get_registry(str(getattr(self.db, "workspace", "")))
+        except Exception:
+            return None
+
+    def _attach_pdk_to_selected_library(self):
+        if self._selected_library and not self._selected_library.startswith("pdk:"):
+            self._attach_pdk_to_library(self._selected_library)
+
+    def _detach_pdk_from_selected_library(self):
+        if self._selected_library and not self._selected_library.startswith("pdk:"):
+            self._detach_pdk_from_library(self._selected_library)
+
+    def _attach_pdk_to_library(self, library: str):
+        current = self.db.get_library_pdk(library)
+        pdk_name = self._choose_pdk_name("Attach PDK", f"PDK for library '{library}':", current=current)
+        if not pdk_name:
+            return
+        try:
+            self.db.set_library_pdk(library, pdk_name)
+            self.refresh()
+            self._reselect_library(library)
+            if self.ciw:
+                self.ciw.log(f"Attached PDK {pdk_name} to library {library}")
+        except ValueError as exc:
+            QMessageBox.warning(self, "Attach PDK", str(exc))
+
+    def _detach_pdk_from_library(self, library: str):
+        try:
+            self.db.set_library_pdk(library, "")
+            self.refresh()
+            self._reselect_library(library)
+            if self.ciw:
+                self.ciw.log(f"Detached PDK from library {library}")
+        except ValueError as exc:
+            QMessageBox.warning(self, "Detach PDK", str(exc))
+
+    def _choose_pdk_name(self, title: str, prompt: str, current: str = "", allow_none: bool = False) -> str:
+        registry = self._pdk_registry()
+        pdks = registry.get_all_pdks() if registry else []
+        choices = [
+            pdk.name for pdk in pdks
+            if getattr(pdk, "installed", True) or getattr(pdk, "install_path", "")
+        ]
+        if allow_none:
+            choices = ["None"] + choices
+        if not choices:
+            QMessageBox.information(
+                self, title, "No installed or registered PDKs were found.")
+            return ""
+
+        index = choices.index(current) if current in choices else 0
+        pdk_name, ok = QInputDialog.getItem(self, title, prompt, choices, index, False)
+        if not ok:
+            return ""
+        return "" if pdk_name == "None" else str(pdk_name)
+
+    def _reselect_library(self, library: str):
+        for i in range(self.lib_tree.topLevelItemCount()):
+            item = self.lib_tree.topLevelItem(i)
+            if item.data(0, Qt.ItemDataRole.UserRole) == library:
+                self.lib_tree.setCurrentItem(item)
+                break
 
     # ── Search / Filter ───────────────────────────────────────
 

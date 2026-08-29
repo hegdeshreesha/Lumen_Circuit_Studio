@@ -41,6 +41,9 @@ class WaveformVector:
         square_sum = sum(v * v for v in self.y)
         return math.sqrt(square_sum / len(self.y))
 
+    def final_value(self) -> float:
+        return self.y[-1] if self.y else 0.0
+
 
 class WaveformCalculator:
     """Waveform expression evaluator for Simulation Cockpit/SigView."""
@@ -123,6 +126,41 @@ class WaveformCalculator:
 
         if t_in is not None and t_out is not None:
             return abs(t_out - t_in)
+        return 0.0
+
+    def scalar(self, net_name: str, metric: str = "final") -> float:
+        """Return an ADE-style scalar metric for one waveform."""
+        vec = self.v(net_name)
+        key = str(metric or "final").strip().lower()
+        if key in {"final", "last"}:
+            return vec.final_value()
+        if key == "min":
+            return vec.min_value()
+        if key == "max":
+            return vec.max_value()
+        if key in {"mean", "avg", "average"}:
+            return vec.mean()
+        if key in {"pp", "peak_to_peak", "peak-to-peak"}:
+            return vec.peak_to_peak()
+        if key == "rms":
+            return vec.rms()
+        raise ValueError(f"Unsupported scalar metric: {metric}")
+
+    def crossing_time(self, net_name: str, threshold: float, edge: str = "either") -> float:
+        """Return the first interpolated threshold crossing time."""
+        vec = self.v(net_name)
+        edge = str(edge or "either").strip().lower()
+        for i in range(len(vec.y) - 1):
+            y1, y2 = vec.y[i], vec.y[i + 1]
+            rising = y1 <= threshold <= y2 and y2 != y1
+            falling = y1 >= threshold >= y2 and y2 != y1
+            if edge == "rising" and not rising:
+                continue
+            if edge == "falling" and not falling:
+                continue
+            if edge not in {"rising", "falling"} and not (rising or falling):
+                continue
+            return vec.x[i] + (threshold - y1) * (vec.x[i + 1] - vec.x[i]) / (y2 - y1)
         return 0.0
 
     def clip(self, net_name: str, t_start: float, t_stop: float) -> WaveformVector:
