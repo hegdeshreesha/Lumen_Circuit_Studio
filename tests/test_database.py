@@ -42,6 +42,19 @@ class TestLibraryDatabase(unittest.TestCase):
         
         nonexistent = self.db.get_library("nonexistent")
         self.assertIsNone(nonexistent)
+
+    def test_library_pdk_attachment_persists(self):
+        """Test attaching a PDK to a design library."""
+        self.db.create_library("test_lib")
+
+        self.db.set_library_pdk("test_lib", "ihp-sg13g2")
+
+        self.assertEqual(self.db.get_library_pdk("test_lib"), "ihp-sg13g2")
+        reopened = LibraryDatabase(self.test_dir)
+        self.assertEqual(reopened.get_library_pdk("test_lib"), "ihp-sg13g2")
+
+        self.db.set_library_pdk("test_lib", "")
+        self.assertEqual(self.db.get_library_pdk("test_lib"), "")
     
     def test_cell_operations(self):
         """Test cell creation and existence checking."""

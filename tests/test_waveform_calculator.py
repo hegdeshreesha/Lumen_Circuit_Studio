@@ -23,6 +23,16 @@ class TestWaveformCalculator(unittest.TestCase):
         delay = self.calc.propagation_delay("in", "out")
         self.assertAlmostEqual(delay, 2e-9, delta=1e-10)
 
+    def test_scalar_metrics(self):
+        self.assertEqual(self.calc.scalar("out", "final"), 1.2)
+        self.assertEqual(self.calc.scalar("out", "pp"), 1.2)
+        self.assertAlmostEqual(self.calc.scalar("out", "mean"), 0.7636363636)
+
+    def test_crossing_time_interpolates_first_edge(self):
+        calc = WaveformCalculator({"v(ramp)": ([0, 1, 2], [0, 0.5, 1.0])})
+
+        self.assertEqual(calc.crossing_time("ramp", 0.25, "rising"), 0.5)
+
 
 if __name__ == "__main__":
     unittest.main()

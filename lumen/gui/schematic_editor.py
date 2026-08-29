@@ -28,9 +28,15 @@ from lumen.qt.QtGui import (
 
 from lumen.core.database import LibraryDatabase
 from lumen.core.netlist import NetlistGenerator
+from lumen.core.component_validation import validate_symbol_params
 from lumen.core.commands import (
     CommandStack, AddItemCommand, DeleteItemsCommand, MoveItemsCommand,
     SetItemPositionsCommand, CompoundCommand, RotateCommand, MirrorCommand, LabelCommand
+)
+from lumen.core.simulation_setup import (
+    apply_device_parameter_callbacks,
+    normalize_device_parameter_specs,
+    symbol_data_with_parameter_specs,
 )
 from lumen.core.pdk_service import get_registry
 from lumen.gui.branding import apply_window_branding
@@ -277,7 +283,8 @@ class InstanceItem(QGraphicsItemGroup):
         self.pin_positions: dict[str, QPointF] = {}
 
         # Load default parameters
-        for p in symbol_data.get("parameters", []):
+        self.symbol_data = symbol_data_with_parameter_specs(self.symbol_data)
+        for p in self.symbol_data.get("parameters", []):
             if p["name"] not in self.parameters:
                 self.parameters[p["name"]] = p.get("default", "")
 
@@ -477,8 +484,31 @@ class InstanceItem(QGraphicsItemGroup):
             "Cell": self.cell_name,
             "Library": self.library_name,
         }
-        props.update(self.parameters)
+        specs = normalize_device_parameter_specs(self.symbol_data)
+        for spec in specs:
+            value = self.parameters.get(spec.name, spec.default)
+            label = spec.display or spec.name
+            if spec.unit:
+                label = f"{label} ({spec.unit})"
+            props[label] = value
+        declared = {spec.name for spec in specs}
+        for key, value in self.parameters.items():
+            if key not in declared:
+                props[key] = value
         return props
+
+    def parameter_key_for_property(self, property_name: str) -> str:
+        text = str(property_name or "").strip()
+        for spec in normalize_device_parameter_specs(self.symbol_data):
+            if text == spec.name or text == spec.display or text.startswith(f"{spec.display} ("):
+                return spec.name
+        return text
+
+    def parameter_validation_symbol(self) -> dict:
+        return symbol_data_with_parameter_specs(self.symbol_data)
+
+    def parameter_specs_for_editor(self) -> list[dict]:
+        return [spec.to_symbol_dict() for spec in normalize_device_parameter_specs(self.symbol_data)]
 
     def get_pin_scene_pos(self, pin_name: str) -> QPointF | None:
         """Get the scene position of a pin."""
@@ -2371,21 +2401,65 @@ class SchematicEditor(QWidget):
             props = inst.get_properties()
 
             def on_change(key, value):
-                if key in inst.parameters:
-                    inst.parameters[key] = value
+                param_key = inst.parameter_key_for_property(key)
+                if param_key in inst.parameters:
+                    old_value = inst.parameters.get(param_key, "")
+                    readonly = {
+                        spec.name for spec in normalize_device_parameter_specs(inst.symbol_data)
+                        if spec.read_only
+                    }
+                    if param_key in readonly:
+                        if hasattr(main_win.prop_editor, "set_status"):
+                            main_win.prop_editor.set_status(f"{param_key} is read-only.", True)
+                        self.show_selected_properties()
+                        return
+                    candidate = dict(inst.parameters)
+                    candidate[param_key] = value
+                    candidate = apply_device_parameter_callbacks(
+                        inst.parameter_validation_symbol(),
+                        candidate,
+                        param_key,
+                    )
+                    report = validate_symbol_params(
+                        inst.parameter_validation_symbol(),
+                        candidate,
+                        inst.instance_name,
+                    )
+                    if report.errors:
+                        inst.parameters[param_key] = old_value
+                        if hasattr(main_win.prop_editor, "set_status"):
+                            main_win.prop_editor.set_status(report.errors[0], True)
+                        elif hasattr(main_win, "statusBar"):
+                            main_win.statusBar().showMessage(report.errors[0], 6000)
+                        self.show_selected_properties()
+                        return
+                    inst.parameters = candidate
                     inst.refresh_graphics()
                     self.save()
                     self.clear_dc_annotations()
                     self.redraw()
+                    if report.warnings and hasattr(main_win.prop_editor, "set_status"):
+                        main_win.prop_editor.set_status(report.warnings[0], False)
+                    elif report.warnings and hasattr(main_win, "statusBar"):
+                        main_win.statusBar().showMessage(report.warnings[0], 5000)
                     if hasattr(main_win, "_dc_op_waveforms"):
                         main_win._dc_op_waveforms = {}
                     if hasattr(main_win, "_dc_annotation_source"):
                         main_win._dc_annotation_source = ""
 
-            main_win.prop_editor.show_properties(
-                f"{inst.instance_name} ({inst.cell_name})",
-                props, on_change
-            )
+            try:
+                main_win.prop_editor.show_properties(
+                    f"{inst.instance_name} ({inst.cell_name})",
+                    props,
+                    on_change,
+                    parameter_specs=inst.parameter_specs_for_editor(),
+                )
+            except TypeError:
+                main_win.prop_editor.show_properties(
+                    f"{inst.instance_name} ({inst.cell_name})",
+                    props,
+                    on_change,
+                )
 
     def show_selected_properties(self) -> bool:
         """Refresh the property editor for the current selection."""

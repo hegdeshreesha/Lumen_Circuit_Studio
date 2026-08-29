@@ -10,6 +10,20 @@ from lumen.core.simulator_runtime import ACTIVE_SIMULATORS, SimulatorRuntimeMana
 
 
 class SimulatorRuntimeManagerTest(unittest.TestCase):
+    def test_model_directives_are_extracted_for_manifest(self):
+        netlist = "\n".join([
+            "* test",
+            '.LIB "corner.lib" tt',
+            '.INCLUDE "bias.sp"',
+            '.GSDI "model.gsdi"',
+            ".END",
+        ])
+
+        self.assertEqual(
+            SimulatorBridge._extract_model_directives(netlist),
+            ['.LIB "corner.lib" tt', '.INCLUDE "bias.sp"', '.GSDI "model.gsdi"'],
+        )
+
     def test_set_active_and_apply_environment_override(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp) / "ws"

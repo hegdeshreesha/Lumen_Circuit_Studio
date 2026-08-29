@@ -7,10 +7,11 @@ from types import SimpleNamespace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from lumen.qt.QtWidgets import QApplication
+    from lumen.qt.QtWidgets import QApplication, QComboBox
 
     from lumen.core.database import LibraryDatabase
     from lumen.core.xschem_symbol_import import XschemSymbolParser
+    from lumen.gui.property_editor import PropertyEditorWidget
     from lumen.gui.schematic_editor import (
         InstanceItem,
         NetLabelItem,
@@ -20,9 +21,11 @@ try:
 except (ImportError, ModuleNotFoundError) as exc:
     if getattr(exc, "name", "") in {"PySide6", "lumen.qt"} or "PySide6" in str(exc):
         QApplication = None
+        QComboBox = None
         LibraryDatabase = None
         InstanceItem = None
         NetLabelItem = None
+        PropertyEditorWidget = None
         SchematicEditor = None
         WireItem = None
     else:
@@ -40,6 +43,23 @@ def _app():
 
 @unittest.skipUnless(HAS_QT, "PySide6 is not installed in this Python environment")
 class SchematicClipboardTest(unittest.TestCase):
+    def test_property_editor_uses_dropdown_for_enum_parameters(self):
+        _ = _app()
+        seen = []
+        editor = PropertyEditorWidget()
+
+        editor.show_properties(
+            "M1",
+            {"Mode": "fast"},
+            lambda key, value: seen.append((key, value)),
+            parameter_specs=[{"name": "mode", "display": "Mode", "choices": ["slow", "fast"]}],
+        )
+        combo = editor.table.cellWidget(0, 1)
+
+        self.assertIsInstance(combo, QComboBox)
+        combo.setCurrentText("slow")
+        self.assertEqual(seen[-1], ("mode", "slow"))
+
     def test_copy_paste_between_schematic_editors(self):
         app = _app()
         with tempfile.TemporaryDirectory() as tmp:
@@ -179,6 +199,92 @@ class SchematicClipboardTest(unittest.TestCase):
             self.assertEqual(saved["instances"][0]["params"]["R"], "2k")
             self.assertEqual(saved["instances"][0]["x"], 30)
             self.assertEqual(saved["instances"][0]["y"], 40)
+
+    def test_property_edit_rejects_invalid_numeric_params(self):
+        _ = _app()
+
+        class FakePropertyEditor:
+            def show_properties(self, _name, props, callback=None):
+                self.props = props
+                self.callback = callback
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = LibraryDatabase(tmp)
+            db.create_library("work")
+            db.save_view("work", "mos", "symbol", {
+                "type": "symbol",
+                "name": "mos",
+                "library": "work",
+                "parameters": [{"name": "w", "default": "1u", "display": "Width", "numeric": True}],
+                "shapes": [{"type": "text", "text": "w=@w", "x": 0, "y": 0}],
+                "pins": [],
+            })
+            db.save_view("work", "top", "schematic", {
+                "type": "schematic",
+                "name": "top",
+                "library": "work",
+                "instances": [{
+                    "name": "M1", "library": "work", "cell": "mos",
+                    "x": 30, "y": 40, "params": {"w": "1u"},
+                }],
+                "wires": [],
+                "labels": [],
+                "pins": [],
+            })
+            editor = SchematicEditor(db, "work", "top", "schematic")
+            editor.prop_editor = FakePropertyEditor()
+            inst = editor.instances[0]
+
+            editor._show_instance_properties(inst)
+            editor.prop_editor.callback("Width", "wide")
+
+            saved = db.load_view("work", "top", "schematic")
+            self.assertEqual(inst.parameters["w"], "1u")
+            self.assertEqual(saved["instances"][0]["params"]["w"], "1u")
+
+    def test_property_edit_rejects_read_only_params(self):
+        _ = _app()
+
+        class FakePropertyEditor:
+            def show_properties(self, _name, props, callback=None):
+                self.props = props
+                self.callback = callback
+
+            def set_status(self, message, error=False):
+                self.status = (message, error)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = LibraryDatabase(tmp)
+            db.create_library("work")
+            db.save_view("work", "mos", "symbol", {
+                "type": "symbol",
+                "name": "mos",
+                "library": "work",
+                "parameters": [{"name": "display_w", "default": "1u", "read_only": True}],
+                "shapes": [{"type": "text", "text": "@display_w", "x": 0, "y": 0}],
+                "pins": [],
+            })
+            db.save_view("work", "top", "schematic", {
+                "type": "schematic",
+                "name": "top",
+                "library": "work",
+                "instances": [{
+                    "name": "M1", "library": "work", "cell": "mos",
+                    "x": 30, "y": 40, "params": {"display_w": "1u"},
+                }],
+                "wires": [],
+                "labels": [],
+                "pins": [],
+            })
+            editor = SchematicEditor(db, "work", "top", "schematic")
+            editor.prop_editor = FakePropertyEditor()
+
+            editor._show_instance_properties(editor.instances[0])
+            editor.prop_editor.callback("display_w", "9u")
+
+            saved = db.load_view("work", "top", "schematic")
+            self.assertEqual(saved["instances"][0]["params"]["display_w"], "1u")
+            self.assertTrue(editor.prop_editor.status[1])
 
     def test_source_ac_defaults_are_visible_in_gui_properties(self):
         _ = _app()

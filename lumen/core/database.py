@@ -154,6 +154,27 @@ class LibraryDatabase:
     def get_library(self, name: str) -> Optional[LibraryInfo]:
         return self._libraries.get(name)
 
+    def get_library_pdk(self, name: str) -> str:
+        """Return the PDK attached to a design library, if any."""
+        lib = self._libraries.get(name)
+        tech = (lib.tech if lib else "") or ""
+        return tech.split(":", 1)[1].strip() if tech.startswith("pdk:") else ""
+
+    def set_library_pdk(self, name: str, pdk_name: str = ""):
+        """Attach or detach a PDK from a design library."""
+        lib = self._libraries.get(name)
+        if not lib:
+            raise ValueError(f"Library '{name}' not found")
+
+        from datetime import datetime
+        lib.tech = f"pdk:{pdk_name.strip()}" if pdk_name.strip() else ""
+        lib.modified = datetime.now().isoformat()
+
+        meta = Path(lib.path) / self.LIB_META
+        with open(meta, "w") as f:
+            json.dump(asdict(lib), f, indent=2)
+        self._save_registry()
+
     def create_library(self, name: str, path: str = "", tech: str = "",
                        description: str = "") -> LibraryInfo:
         """Create a new library directory and register it."""

@@ -74,7 +74,9 @@ class CellViewWindow(QMainWindow):
         self.act_close.triggered.connect(self.close)
 
     def _create_menus(self):
-        file_menu = self.menuBar().addMenu("&File")
+        menubar = self.menuBar()
+        menubar.clear()
+        file_menu = menubar.addMenu("&File")
         file_menu.addAction(self.act_save)
         file_menu.addAction(self.act_reload)
         file_menu.addSeparator()

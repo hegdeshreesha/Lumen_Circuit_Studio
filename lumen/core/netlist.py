@@ -55,6 +55,7 @@ class NetlistGenerator:
         self._dynamic_includes: set[str] = set()
         self._custom_blocks: list[str] = []
         self._spfile_subckt_added = False
+        self._model_bindings: dict[str, str] = {}
 
     def set_pdk_model(self, model_path: str, corner: str = ""):
         """Set PDK model file path and optional corner for .lib inclusion."""
@@ -68,6 +69,14 @@ class NetlistGenerator:
     def set_target_simulator(self, simulator: str):
         """Set target simulator for capability-aware netlisting."""
         self._target_simulator = str(simulator or "GSPICE").upper()
+
+    def set_model_bindings(self, bindings: dict[str, str]):
+        """Override instance model parameters for this generated deck only."""
+        self._model_bindings = {
+            str(inst): str(model)
+            for inst, model in (bindings or {}).items()
+            if str(inst).strip() and str(model).strip()
+        }
 
     @staticmethod
     def _as_float(value: object, default: float = 0.0) -> float:
@@ -862,7 +871,9 @@ class NetlistGenerator:
             iname = inst.get("name", "?")
             cell_name = inst.get("cell", "")
             lib_name = inst.get("library", "")
-            params = inst.get("params", {})
+            params = dict(inst.get("params", {}) or {})
+            if iname in self._model_bindings:
+                params["model"] = self._model_bindings[iname]
 
             sym = self._get_symbol_or_generated(lib_name, cell_name)
             pdk_device = self._resolve_pdk_device(lib_name, cell_name)

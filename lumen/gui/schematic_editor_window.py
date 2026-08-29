@@ -10,7 +10,7 @@ from lumen.qt.QtWidgets import (
     QTabWidget, QApplication, QProgressDialog
 )
 from lumen.qt.QtCore import Qt, QSize, QThread, QTimer, QPointF
-from lumen.qt.QtGui import QAction, QKeySequence
+from lumen.qt.QtGui import QAction, QIcon, QKeySequence
 import json
 import math
 import re
@@ -22,7 +22,6 @@ from lumen.core.simulator_runtime import SimulatorRuntimeManager
 from lumen.gui.schematic_editor import SchematicEditor
 from lumen.gui.property_editor import PropertyEditorWidget
 from lumen.gui.branding import apply_window_branding
-from lumen.gui.icons import editor_icon
 from lumen.gui.simulator_manager_window import ensure_simulator_available
 
 
@@ -260,36 +259,37 @@ class SchematicEditorWindow(QMainWindow):
         self._assign_action_icons()
 
     def _assign_action_icons(self):
-        """Assign compact generated icons to commonly used toolbar actions."""
-        icon_map = {
-            self.act_open_cellview: "open",
-            self.act_save: "save",
-            self.act_check_save: "check",
-            self.act_undo: "undo",
-            self.act_redo: "redo",
-            self.act_move: "move",
-            self.act_stretch: "stretch",
-            self.act_wire: "wire",
-            self.act_bus: "bus",
-            self.act_instance: "instance",
-            self.act_pin: "pin",
-            self.act_label: "label",
-            self.act_zoom_in: "zoom_in",
-            self.act_zoom_out: "zoom_out",
-            self.act_zoom_fit: "zoom_fit",
-            self.act_netlist: "netlist",
-            self.act_waveform: "wave",
-            self.act_open_layout: "open",
-            self.act_health_check: "health",
-            self.act_command_palette: "palette",
-        }
-        for action, icon_name in icon_map.items():
-            action.setIcon(editor_icon(icon_name))
+        for action in (
+            self.act_open_cellview, self.act_save, self.act_check_save,
+            self.act_undo, self.act_redo, self.act_move, self.act_stretch,
+            self.act_wire, self.act_bus, self.act_instance, self.act_pin,
+            self.act_label, self.act_zoom_in, self.act_zoom_out,
+            self.act_zoom_fit, self.act_netlist, self.act_waveform,
+            self.act_open_layout, self.act_health_check,
+            self.act_command_palette,
+        ):
+            action.setIcon(QIcon())
+
+    def _add_emoji_action(self, toolbar: QToolBar, action: QAction, emoji: str):
+        label = action.text()
+        action.setIconText(emoji)
+        action.setToolTip(label)
+        action.setStatusTip(label)
+        toolbar.addAction(action)
+        button = toolbar.widgetForAction(action)
+        if button is not None:
+            button.setText(emoji)
+            button.setToolTip(label)
+            font = button.font()
+            font.setPointSize(18)
+            button.setFont(font)
+            button.setMinimumSize(34, 30)
 
     # ── Menus ─────────────────────────────────────────────────
 
     def _create_menus(self):
         menubar = self.menuBar()
+        menubar.clear()
 
         # File
         file_menu = menubar.addMenu("&File")
@@ -389,49 +389,67 @@ class SchematicEditorWindow(QMainWindow):
         # File
         file_tb = QToolBar("File")
         file_tb.setIconSize(QSize(18, 18))
-        file_tb.addAction(self.act_open_cellview)
-        file_tb.addAction(self.act_save)
-        file_tb.addAction(self.act_check_save)
+        file_tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        file_tb.setMovable(False)
+        file_tb.setFloatable(False)
+        self._add_emoji_action(file_tb, self.act_open_cellview, "📂")
+        self._add_emoji_action(file_tb, self.act_save, "💾")
+        self._add_emoji_action(file_tb, self.act_check_save, "☑")
         self.addToolBar(file_tb)
 
         # Edit
         edit_tb = QToolBar("Edit")
         edit_tb.setIconSize(QSize(18, 18))
-        edit_tb.addAction(self.act_undo)
-        edit_tb.addAction(self.act_redo)
-        edit_tb.addAction(self.act_move)
-        edit_tb.addAction(self.act_stretch)
+        edit_tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        edit_tb.setMovable(False)
+        edit_tb.setFloatable(False)
+        self._add_emoji_action(edit_tb, self.act_undo, "↶")
+        self._add_emoji_action(edit_tb, self.act_redo, "↷")
+        self._add_emoji_action(edit_tb, self.act_move, "✥")
+        self._add_emoji_action(edit_tb, self.act_stretch, "↔")
         self.addToolBar(edit_tb)
 
         # Draw
         draw_tb = QToolBar("Draw")
         draw_tb.setIconSize(QSize(18, 18))
-        draw_tb.addAction(self.act_wire)
-        draw_tb.addAction(self.act_bus)
-        draw_tb.addAction(self.act_instance)
-        draw_tb.addAction(self.act_pin)
-        draw_tb.addAction(self.act_label)
+        draw_tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        draw_tb.setMovable(False)
+        draw_tb.setFloatable(False)
+        self._add_emoji_action(draw_tb, self.act_wire, "•─•")
+        self._add_emoji_action(draw_tb, self.act_bus, "≡")
+        self._add_emoji_action(draw_tb, self.act_instance, "▣")
+        self._add_emoji_action(draw_tb, self.act_pin, "📍")
+        self._add_emoji_action(draw_tb, self.act_label, "🏷")
         self.addToolBar(draw_tb)
 
         # View
         view_tb = QToolBar("View")
         view_tb.setIconSize(QSize(18, 18))
-        view_tb.addAction(self.act_zoom_in)
-        view_tb.addAction(self.act_zoom_out)
-        view_tb.addAction(self.act_zoom_fit)
+        view_tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        view_tb.setMovable(False)
+        view_tb.setFloatable(False)
+        self._add_emoji_action(view_tb, self.act_zoom_in, "🔍")
+        self._add_emoji_action(view_tb, self.act_zoom_out, "🔎")
+        self._add_emoji_action(view_tb, self.act_zoom_fit, "⛶")
         self.addToolBar(view_tb)
 
         # Simulation
         sim_tb = QToolBar("Simulation")
         sim_tb.setIconSize(QSize(18, 18))
-        sim_tb.addAction(self.act_netlist)
-        sim_tb.addAction(self.act_waveform)
+        sim_tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        sim_tb.setMovable(False)
+        sim_tb.setFloatable(False)
+        self._add_emoji_action(sim_tb, self.act_netlist, "📄")
+        self._add_emoji_action(sim_tb, self.act_waveform, "📈")
         self.addToolBar(sim_tb)
 
         smart_tb = QToolBar("Lumen")
         smart_tb.setIconSize(QSize(18, 18))
-        smart_tb.addAction(self.act_health_check)
-        smart_tb.addAction(self.act_command_palette)
+        smart_tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        smart_tb.setMovable(False)
+        smart_tb.setFloatable(False)
+        self._add_emoji_action(smart_tb, self.act_health_check, "✓")
+        self._add_emoji_action(smart_tb, self.act_command_palette, "⌘")
         self.addToolBar(smart_tb)
 
     # ── Dock Panels ───────────────────────────────────────────

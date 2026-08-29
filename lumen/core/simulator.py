@@ -370,6 +370,9 @@ class SimulatorBridge:
         result.run_dir = run_dir
         result.artifacts["run_dir"] = run_dir
         result.artifacts["manifest"] = manifest_path
+        model_directives = self._extract_model_directives(sim_netlist)
+        if model_directives:
+            result.artifacts["model_directives"] = "\n".join(model_directives)
         result.log = f"Input deck: {netlist_path}\n"
         for note in compatibility_notes:
             result.log += f"{note}\n"
@@ -889,9 +892,13 @@ class SimulatorBridge:
     def _write_run_manifest(self, result: SimulationResult, manifest_path: str) -> None:
         """Write a small manifest so tools can reopen this run reliably."""
         try:
+            model_directives = []
+            raw_model_directives = result.artifacts.get("model_directives", "")
+            if raw_model_directives:
+                model_directives = [line for line in str(raw_model_directives).splitlines() if line.strip()]
             payload = {
                 "format": "lumen-sim-run",
-                "version": 1,
+                "version": 2,
                 "simulator": result.simulator,
                 "success": result.success,
                 "return_code": result.return_code,
@@ -900,6 +907,7 @@ class SimulatorBridge:
                 "netlist_path": result.netlist_path,
                 "output_path": result.output_path,
                 "artifacts": result.artifacts,
+                "model_directives": model_directives,
                 "signals": [k for k in result.waveforms.keys() if not str(k).startswith("_")],
                 "command": result.command,
                 "errors": result.errors,
@@ -917,6 +925,16 @@ class SimulatorBridge:
                 json.dump(payload, f, indent=2)
         except OSError:
             pass
+
+    @staticmethod
+    def _extract_model_directives(netlist: str) -> list[str]:
+        directives: list[str] = []
+        for raw in (netlist or "").splitlines():
+            line = raw.strip()
+            upper = line.upper()
+            if upper.startswith((".LIB ", ".INCLUDE ", ".INC ", ".GSDI ")):
+                directives.append(line)
+        return directives
 
     def _gspice_capability_summary(self) -> str:
         if self.simulator != "GSPICE":
