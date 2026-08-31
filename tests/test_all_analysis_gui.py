@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from lumen.qt.QtCore import Qt
 from lumen.qt.QtWidgets import QApplication
 
 from lumen.core.database import LibraryDatabase
@@ -34,6 +35,37 @@ class SimEnvGuiTest(unittest.TestCase):
         self.assertIn("Transient", win._analysis_tabs)
         self.assertEqual(win.main_tabs.tabText(win.main_tabs.currentIndex()), "Analyses")
 
+    def test_gspice_tree_marks_prototype_rf_and_hides_unavailable_rf(self):
+        win = self._window()
+        labels = []
+        enabled = {}
+        for i in range(win.analysis_tree.topLevelItemCount()):
+            parent = win.analysis_tree.topLevelItem(i)
+            labels.append(parent.text(0))
+            for j in range(parent.childCount()):
+                child = parent.child(j)
+                labels.append(child.text(0))
+                enabled[child.text(0)] = bool(child.flags() & Qt.ItemFlag.ItemIsEnabled)
+
+        self.assertIn("Prototype / Experimental", labels)
+        self.assertIn("PSS (Periodic Steady-State) (prototype)", labels)
+        self.assertFalse(enabled["PSS (Periodic Steady-State) (prototype)"])
+        self.assertIn("S-Parameters", labels)
+
+    def test_sparameter_preset_adds_sp_and_stability_outputs(self):
+        win = self._window()
+
+        win._apply_two_port_sparam_preset()
+
+        self.assertIn("S-Parameters", win._analysis_tabs)
+        output_exprs = [
+            win.outputs_widget.table.item(row, 1).text()
+            for row in range(win.outputs_widget.table.rowCount())
+        ]
+        self.assertIn('s_db(sig("S21"))', output_exprs)
+        self.assertIn('return_loss_db(sig("S11"))', output_exprs)
+        self.assertIn('stability_k(sig("S11"), sig("S12"), sig("S21"), sig("S22"))', output_exprs)
+
     def test_analysis_form_edits_generated_directive(self):
         win = self._window()
         win._add_analysis("Transient")
@@ -44,6 +76,20 @@ class SimEnvGuiTest(unittest.TestCase):
         stop.editingFinished.emit()
 
         self.assertIn("25u", win._analysis_spice_line("Transient", editor))
+
+    def test_lna_preset_adds_ac_noise_and_rf_outputs(self):
+        win = self._window()
+
+        win._apply_lna_ac_noise_preset()
+
+        self.assertIn("AC Small-Signal", win._analysis_tabs)
+        self.assertIn("Noise", win._analysis_tabs)
+        output_exprs = [
+            win.outputs_widget.table.item(row, 1).text()
+            for row in range(win.outputs_widget.table.rowCount())
+        ]
+        self.assertIn("dB20(V(out)/V(in))", output_exprs)
+        self.assertIn('lna_nf_db(V(out), V(in), sig("onoise_psd(V^2/Hz)"))', output_exprs)
 
     def test_pss_form_can_enable_oscillator_mode(self):
         win = self._window()

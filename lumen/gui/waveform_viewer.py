@@ -70,7 +70,19 @@ from lumen.qt.QtWidgets import (
 
 from lumen.gui.branding import apply_window_branding
 from lumen.core.simulator import SimulatorBridge
-from lumen.core.waveform_calculator import WaveformCalculator
+from lumen.core.waveform_calculator import (
+    WaveformCalculator,
+    constant_vswr_radius,
+    gamma_to_admittance,
+    gamma_to_impedance,
+    noise_circle,
+    noise_figure_from_params_db,
+    parse_touchstone,
+    polar_to_complex,
+    real_l_match,
+    real_l_match_components,
+    stability_circle,
+)
 from lumen.gui.calculator_window import CalculatorWindow
 
 
@@ -187,6 +199,262 @@ def _vector_clip(value, lo, hi):
     lo_f = float(lo)
     hi_f = float(hi)
     return _vector_unary(value, lambda v: min(max(v, lo_f), hi_f), "clip")
+
+
+def _vector_value_at(value, x_value) -> float:
+    if not isinstance(value, WaveVector):
+        return float(value)
+    n = min(len(value.x_data), len(value.y_data))
+    if n <= 0:
+        return math.nan
+    target = float(x_value)
+    if target <= value.x_data[0]:
+        return value.y_data[0]
+    if target >= value.x_data[n - 1]:
+        return value.y_data[n - 1]
+    for i in range(n - 1):
+        x0, x1 = value.x_data[i], value.x_data[i + 1]
+        if x0 <= target <= x1:
+            y0, y1 = value.y_data[i], value.y_data[i + 1]
+            return y0 if x1 == x0 else y0 + (target - x0) * (y1 - y0) / (x1 - x0)
+    return value.y_data[n - 1]
+
+
+def _vector_lna_nf_db(vout, vin, onoise_psd, source_resistance=50.0, temperature=300.0):
+    if not all(isinstance(v, WaveVector) for v in (vout, vin, onoise_psd)):
+        return math.nan
+    n = min(len(vout.x_data), len(vout.y_data), len(vin.y_data), len(onoise_psd.y_data))
+    k_boltzmann = 1.380649e-23
+    source_psd = 4.0 * k_boltzmann * float(temperature) * float(source_resistance)
+    y_out: list[float] = []
+    for out_v, in_v, noise_psd in zip(vout.y_data[:n], vin.y_data[:n], onoise_psd.y_data[:n]):
+        gain = abs(out_v / in_v) if in_v else math.nan
+        referred = noise_psd / (gain * gain) if gain and gain > 0.0 else math.nan
+        factor = referred / source_psd if source_psd > 0.0 else math.nan
+        y_out.append(10.0 * math.log10(factor) if factor > 0.0 else math.nan)
+    return WaveVector(vout.x_data[:n], y_out, "LNA_NF_dB")
+
+
+def _vector_s_db(value):
+    return _vector_unary(value, lambda x: 20.0 * math.log10(abs(x)) if x else math.nan, "S_dB")
+
+
+def _vector_return_loss_db(value):
+    return _vector_unary(value, lambda x: -20.0 * math.log10(abs(x)) if x else math.nan, "ReturnLoss_dB")
+
+
+def _vector_vswr(value):
+    return _vector_unary(value, lambda x: (1.0 + abs(x)) / (1.0 - abs(x)) if abs(x) < 1.0 else math.inf, "VSWR")
+
+
+def _vector_stability_k(s11, s12, s21, s22, p11=None, p12=None, p21=None, p22=None):
+    if not all(isinstance(v, WaveVector) for v in (s11, s12, s21, s22)):
+        return math.nan
+    axes, a11 = _vector_complex_values(s11, p11)
+    _, a12 = _vector_complex_values(s12, p12)
+    _, a21 = _vector_complex_values(s21, p21)
+    _, a22 = _vector_complex_values(s22, p22)
+    n = min(len(axes), len(a11), len(a12), len(a21), len(a22))
+    y_out = []
+    for v11, v12, v21, v22 in zip(a11[:n], a12[:n], a21[:n], a22[:n]):
+        delta = v11 * v22 - v12 * v21
+        denom = 2.0 * abs(v12 * v21)
+        y_out.append((1.0 - abs(v11) ** 2 - abs(v22) ** 2 + abs(delta) ** 2) / denom if denom else math.inf)
+    return WaveVector(axes[:n], y_out, "K_factor")
+
+
+def _vector_mu_factor(s11, s12, s21, s22, p11=None, p12=None, p21=None, p22=None):
+    if not all(isinstance(v, WaveVector) for v in (s11, s12, s21, s22)):
+        return math.nan
+    axes, a11 = _vector_complex_values(s11, p11)
+    _, a12 = _vector_complex_values(s12, p12)
+    _, a21 = _vector_complex_values(s21, p21)
+    _, a22 = _vector_complex_values(s22, p22)
+    n = min(len(axes), len(a11), len(a12), len(a21), len(a22))
+    y_out = []
+    for v11, v12, v21, v22 in zip(a11[:n], a12[:n], a21[:n], a22[:n]):
+        delta = v11 * v22 - v12 * v21
+        denom = abs(v22 - delta * v11.conjugate()) + abs(v12 * v21)
+        y_out.append((1.0 - abs(v11) ** 2) / denom if denom else math.inf)
+    return WaveVector(axes[:n], y_out, "Mu_factor")
+
+
+def _vector_pae_percent(pout, pin, pdc):
+    if not all(isinstance(v, WaveVector) for v in (pout, pin, pdc)):
+        return math.nan
+    n = min(len(pout.x_data), len(pout.y_data), len(pin.y_data), len(pdc.y_data))
+    y_out = [100.0 * (out_v - in_v) / dc_v if dc_v else math.nan for out_v, in_v, dc_v in zip(pout.y_data[:n], pin.y_data[:n], pdc.y_data[:n])]
+    return WaveVector(pout.x_data[:n], y_out, "PAE_percent")
+
+
+def _vector_p1db_input_dbm(pin, pout):
+    if not all(isinstance(v, WaveVector) for v in (pin, pout)):
+        return math.nan
+    n = min(len(pin.y_data), len(pout.y_data))
+    if n < 2:
+        return math.nan
+    gain0 = pout.y_data[0] - pin.y_data[0]
+    compression = [(pout.y_data[i] - pin.y_data[i]) - gain0 for i in range(n)]
+    for i in range(n - 1):
+        c0, c1 = compression[i], compression[i + 1]
+        if c0 >= -1.0 >= c1 or c0 <= -1.0 <= c1:
+            p0, p1 = pin.y_data[i], pin.y_data[i + 1]
+            return p0 if c1 == c0 else p0 + (-1.0 - c0) * (p1 - p0) / (c1 - c0)
+    return math.nan
+
+
+def _vector_oip3_dbm(fund, im3):
+    if not all(isinstance(v, WaveVector) for v in (fund, im3)):
+        return math.nan
+    n = min(len(fund.x_data), len(fund.y_data), len(im3.y_data))
+    y_out = [f + 0.5 * (f - i3) for f, i3 in zip(fund.y_data[:n], im3.y_data[:n])]
+    return WaveVector(fund.x_data[:n], y_out, "OIP3_dBm")
+
+
+def _vector_iip3_dbm(pin, fund, im3):
+    if not all(isinstance(v, WaveVector) for v in (pin, fund, im3)):
+        return math.nan
+    n = min(len(pin.x_data), len(pin.y_data), len(fund.y_data), len(im3.y_data))
+    y_out = [p + 0.5 * (f - i3) for p, f, i3 in zip(pin.y_data[:n], fund.y_data[:n], im3.y_data[:n])]
+    return WaveVector(pin.x_data[:n], y_out, "IIP3_dBm")
+
+
+def _vector_gamma_impedance(value, phase=None, z0=50.0, part="real"):
+    if not isinstance(value, WaveVector):
+        return math.nan
+    n = min(len(value.x_data), len(value.y_data), len(phase.y_data) if isinstance(phase, WaveVector) else len(value.y_data))
+    y_out = []
+    for i in range(n):
+        ph = phase.y_data[i] if isinstance(phase, WaveVector) else 0.0
+        gamma = WaveformCanvas._gamma_from_mag_phase(value.y_data[i], ph)
+        denom = 1.0 - gamma
+        z = complex(math.inf, math.inf) if abs(denom) == 0.0 else float(z0) * (1.0 + gamma) / denom
+        y_out.append(z.imag if str(part).lower().startswith("imag") else z.real)
+    return WaveVector(value.x_data[:n], y_out, f"{part}_z")
+
+
+def _vector_gamma_admittance(value, phase=None, z0=50.0, part="real"):
+    if not isinstance(value, WaveVector):
+        return math.nan
+    n = min(len(value.x_data), len(value.y_data), len(phase.y_data) if isinstance(phase, WaveVector) else len(value.y_data))
+    y_out = []
+    for i in range(n):
+        ph = phase.y_data[i] if isinstance(phase, WaveVector) else 0.0
+        gamma = WaveformCanvas._gamma_from_mag_phase(value.y_data[i], ph)
+        denom = 1.0 - gamma
+        z = complex(math.inf, math.inf) if abs(denom) == 0.0 else float(z0) * (1.0 + gamma) / denom
+        y = complex(math.inf, math.inf) if abs(z) == 0.0 else 1.0 / z
+        y_out.append(y.imag if str(part).lower().startswith("imag") else y.real)
+    return WaveVector(value.x_data[:n], y_out, f"{part}_y")
+
+
+def _vector_complex_values(value, phase=None):
+    if not isinstance(value, WaveVector):
+        return [], []
+    n = min(len(value.x_data), len(value.y_data), len(phase.y_data) if isinstance(phase, WaveVector) else len(value.y_data))
+    values = []
+    for i in range(n):
+        ph = phase.y_data[i] if isinstance(phase, WaveVector) else 0.0
+        values.append(polar_to_complex(value.y_data[i], ph))
+    return value.x_data[:n], values
+
+
+def _vector_match_gamma(s11, s12, s21, s22, p11=None, p12=None, p21=None, p22=None, gamma_mag=0.0, gamma_phase=0.0, side="source", part="mag"):
+    axes, a11 = _vector_complex_values(s11, p11)
+    _, a12 = _vector_complex_values(s12, p12)
+    _, a21 = _vector_complex_values(s21, p21)
+    _, a22 = _vector_complex_values(s22, p22)
+    n = min(len(axes), len(a11), len(a12), len(a21), len(a22))
+    gamma = polar_to_complex(gamma_mag, gamma_phase)
+    out = []
+    for v11, v12, v21, v22 in zip(a11[:n], a12[:n], a21[:n], a22[:n]):
+        if side == "load":
+            denom = 1.0 - v11 * gamma
+            value = v22 + (v12 * v21 * gamma / denom if denom else complex(math.nan, math.nan))
+        else:
+            denom = 1.0 - v22 * gamma
+            value = v11 + (v12 * v21 * gamma / denom if denom else complex(math.nan, math.nan))
+        target = value.conjugate()
+        out.append(math.degrees(math.atan2(target.imag, target.real)) if part == "phase" else abs(target))
+    return WaveVector(axes[:n], out, f"{side}_match_{part}")
+
+
+def _vector_transducer_gain_db(s11, s12, s21, s22, p11=None, p12=None, p21=None, p22=None, gs_mag=0.0, gs_phase=0.0, gl_mag=0.0, gl_phase=0.0):
+    axes, a11 = _vector_complex_values(s11, p11)
+    _, a12 = _vector_complex_values(s12, p12)
+    _, a21 = _vector_complex_values(s21, p21)
+    _, a22 = _vector_complex_values(s22, p22)
+    n = min(len(axes), len(a11), len(a12), len(a21), len(a22))
+    gs = polar_to_complex(gs_mag, gs_phase)
+    gl = polar_to_complex(gl_mag, gl_phase)
+    out = []
+    for v11, v12, v21, v22 in zip(a11[:n], a12[:n], a21[:n], a22[:n]):
+        denom = abs((1.0 - v11 * gs) * (1.0 - v22 * gl) - v12 * v21 * gs * gl) ** 2
+        gain = abs(v21) ** 2 * (1.0 - abs(gs) ** 2) * (1.0 - abs(gl) ** 2) / denom if denom else math.nan
+        out.append(10.0 * math.log10(gain) if gain > 0.0 else math.nan)
+    return WaveVector(axes[:n], out, "GT_dB")
+
+
+def _vector_noise_figure_db(nfmin, rn, gopt, gopt_phase=None, gs_mag=0.0, gs_phase=0.0, z0=50.0):
+    if not all(isinstance(v, WaveVector) for v in (nfmin, rn, gopt)):
+        return math.nan
+    n = min(len(nfmin.x_data), len(nfmin.y_data), len(rn.y_data), len(gopt.y_data), len(gopt_phase.y_data) if isinstance(gopt_phase, WaveVector) else len(gopt.y_data))
+    gs = polar_to_complex(gs_mag, gs_phase)
+    out = []
+    for i in range(n):
+        phase = gopt_phase.y_data[i] if isinstance(gopt_phase, WaveVector) else 0.0
+        out.append(noise_figure_from_params_db(nfmin.y_data[i], rn.y_data[i], polar_to_complex(gopt.y_data[i], phase), gs, z0))
+    return WaveVector(nfmin.x_data[:n], out, "NF_dB")
+
+
+def _vector_noise_circle(gopt, nfmin, rn, target_nf_db, gopt_phase=None, z0=50.0, part="radius"):
+    if not all(isinstance(v, WaveVector) for v in (gopt, nfmin, rn)):
+        return math.nan
+    n = min(len(gopt.x_data), len(gopt.y_data), len(nfmin.y_data), len(rn.y_data), len(gopt_phase.y_data) if isinstance(gopt_phase, WaveVector) else len(gopt.y_data))
+    out = []
+    for i in range(n):
+        phase = gopt_phase.y_data[i] if isinstance(gopt_phase, WaveVector) else 0.0
+        center, radius = noise_circle(polar_to_complex(gopt.y_data[i], phase), nfmin.y_data[i], rn.y_data[i], target_nf_db, z0)
+        if part == "center_phase":
+            out.append(math.degrees(math.atan2(center.imag, center.real)))
+        elif part == "center_mag":
+            out.append(abs(center))
+        else:
+            out.append(radius)
+    return WaveVector(gopt.x_data[:n], out, f"noise_circle_{part}")
+
+
+def _vector_stability_circle(s11, s12, s21, s22, p11=None, p12=None, p21=None, p22=None, plane="source", part="radius"):
+    axes, a11 = _vector_complex_values(s11, p11)
+    _, a12 = _vector_complex_values(s12, p12)
+    _, a21 = _vector_complex_values(s21, p21)
+    _, a22 = _vector_complex_values(s22, p22)
+    n = min(len(axes), len(a11), len(a12), len(a21), len(a22))
+    out = []
+    for v11, v12, v21, v22 in zip(a11[:n], a12[:n], a21[:n], a22[:n]):
+        center, radius = stability_circle(v11, v12, v21, v22, plane)
+        if part == "center_phase":
+            out.append(math.degrees(math.atan2(center.imag, center.real)))
+        elif part == "center_mag":
+            out.append(abs(center))
+        else:
+            out.append(radius)
+    return WaveVector(axes[:n], out, f"{plane}_stability_{part}")
+
+
+def _vector_optimum_gamma(metric, gamma, phase=None, part="gamma"):
+    if not all(isinstance(v, WaveVector) for v in (metric, gamma)):
+        return math.nan
+    n = min(len(metric.y_data), len(gamma.y_data), len(phase.y_data) if isinstance(phase, WaveVector) else len(gamma.y_data))
+    best = None
+    for i in range(n):
+        value = metric.y_data[i]
+        if isinstance(value, (int, float)) and math.isfinite(value) and (best is None or value > best[0]):
+            ph = phase.y_data[i] if isinstance(phase, WaveVector) else 0.0
+            best = (value, gamma.y_data[i], ph)
+    if best is None:
+        return math.nan
+    return best[0] if part == "metric" else best[2] if part == "phase" else best[1]
 
 
 def _vector_phase(value):
@@ -312,6 +580,7 @@ class SigViewCalculatorEngine:
             "integ": _vector_integ,
             "idt": _vector_integ,
             "clip": _vector_clip,
+            "value_at": _vector_value_at,
             "avg": lambda v: _vector_stat(v, lambda vals: sum(vals) / len(vals)),
             "mean": lambda v: _vector_stat(v, lambda vals: sum(vals) / len(vals)),
             "rms": lambda v: _vector_stat(v, lambda vals: math.sqrt(sum(x * x for x in vals) / len(vals))),
@@ -320,6 +589,46 @@ class SigViewCalculatorEngine:
             "pkpk": lambda v: _vector_stat(v, lambda vals: max(vals) - min(vals)),
             "freq": _vector_freq,
             "period": lambda v: (1.0 / _vector_freq(v)) if _vector_freq(v) else math.nan,
+            "lna_nf_db": _vector_lna_nf_db,
+            "s_db": _vector_s_db,
+            "return_loss_db": _vector_return_loss_db,
+            "vswr": _vector_vswr,
+            "stability_k": _vector_stability_k,
+            "mu_factor": _vector_mu_factor,
+            "transducer_gain_db": _vector_transducer_gain_db,
+            "source_match_gamma": lambda s11, s12, s21, s22, p11=None, p12=None, p21=None, p22=None, gl_mag=0.0, gl_phase=0.0: _vector_match_gamma(s11, s12, s21, s22, p11, p12, p21, p22, gl_mag, gl_phase, "source", "mag"),
+            "source_match_phase": lambda s11, s12, s21, s22, p11=None, p12=None, p21=None, p22=None, gl_mag=0.0, gl_phase=0.0: _vector_match_gamma(s11, s12, s21, s22, p11, p12, p21, p22, gl_mag, gl_phase, "source", "phase"),
+            "load_match_gamma": lambda s11, s12, s21, s22, p11=None, p12=None, p21=None, p22=None, gs_mag=0.0, gs_phase=0.0: _vector_match_gamma(s11, s12, s21, s22, p11, p12, p21, p22, gs_mag, gs_phase, "load", "mag"),
+            "load_match_phase": lambda s11, s12, s21, s22, p11=None, p12=None, p21=None, p22=None, gs_mag=0.0, gs_phase=0.0: _vector_match_gamma(s11, s12, s21, s22, p11, p12, p21, p22, gs_mag, gs_phase, "load", "phase"),
+            "noise_figure_db": _vector_noise_figure_db,
+            "noise_circle_radius": lambda gopt, nfmin, rn, target, phase=None, z0=50.0: _vector_noise_circle(gopt, nfmin, rn, target, phase, z0, "radius"),
+            "noise_circle_gamma": lambda gopt, nfmin, rn, target, phase=None, z0=50.0: _vector_noise_circle(gopt, nfmin, rn, target, phase, z0, "center_mag"),
+            "noise_circle_phase": lambda gopt, nfmin, rn, target, phase=None, z0=50.0: _vector_noise_circle(gopt, nfmin, rn, target, phase, z0, "center_phase"),
+            "source_stability_radius": lambda s11, s12, s21, s22, p11=None, p12=None, p21=None, p22=None: _vector_stability_circle(s11, s12, s21, s22, p11, p12, p21, p22, "source", "radius"),
+            "source_stability_gamma": lambda s11, s12, s21, s22, p11=None, p12=None, p21=None, p22=None: _vector_stability_circle(s11, s12, s21, s22, p11, p12, p21, p22, "source", "center_mag"),
+            "source_stability_phase": lambda s11, s12, s21, s22, p11=None, p12=None, p21=None, p22=None: _vector_stability_circle(s11, s12, s21, s22, p11, p12, p21, p22, "source", "center_phase"),
+            "load_stability_radius": lambda s11, s12, s21, s22, p11=None, p12=None, p21=None, p22=None: _vector_stability_circle(s11, s12, s21, s22, p11, p12, p21, p22, "load", "radius"),
+            "load_stability_gamma": lambda s11, s12, s21, s22, p11=None, p12=None, p21=None, p22=None: _vector_stability_circle(s11, s12, s21, s22, p11, p12, p21, p22, "load", "center_mag"),
+            "load_stability_phase": lambda s11, s12, s21, s22, p11=None, p12=None, p21=None, p22=None: _vector_stability_circle(s11, s12, s21, s22, p11, p12, p21, p22, "load", "center_phase"),
+            "vswr_gamma": constant_vswr_radius,
+            "l_match_xs": lambda load_ohm, frequency_hz, z0=50.0: real_l_match(load_ohm, frequency_hz, z0)[0],
+            "l_match_bp": lambda load_ohm, frequency_hz, z0=50.0: real_l_match(load_ohm, frequency_hz, z0)[1],
+            "l_match_l": lambda load_ohm, frequency_hz, z0=50.0: real_l_match_components(load_ohm, frequency_hz, z0)["series_L_H"],
+            "l_match_c": lambda load_ohm, frequency_hz, z0=50.0: real_l_match_components(load_ohm, frequency_hz, z0)["shunt_C_F"],
+            "load_pull_gamma": lambda metric, gamma, phase=None: _vector_optimum_gamma(metric, gamma, phase, "gamma"),
+            "load_pull_phase": lambda metric, gamma, phase=None: _vector_optimum_gamma(metric, gamma, phase, "phase"),
+            "load_pull_metric": lambda metric, gamma, phase=None: _vector_optimum_gamma(metric, gamma, phase, "metric"),
+            "source_pull_gamma": lambda metric, gamma, phase=None: _vector_optimum_gamma(metric, gamma, phase, "gamma"),
+            "source_pull_phase": lambda metric, gamma, phase=None: _vector_optimum_gamma(metric, gamma, phase, "phase"),
+            "source_pull_metric": lambda metric, gamma, phase=None: _vector_optimum_gamma(metric, gamma, phase, "metric"),
+            "pae_percent": _vector_pae_percent,
+            "p1db_input_dbm": _vector_p1db_input_dbm,
+            "oip3_dbm": _vector_oip3_dbm,
+            "iip3_dbm": _vector_iip3_dbm,
+            "real_z": lambda gamma, phase=None, z0=50.0: _vector_gamma_impedance(gamma, phase, z0, "real"),
+            "imag_z": lambda gamma, phase=None, z0=50.0: _vector_gamma_impedance(gamma, phase, z0, "imag"),
+            "real_y": lambda gamma, phase=None, z0=50.0: _vector_gamma_admittance(gamma, phase, z0, "real"),
+            "imag_y": lambda gamma, phase=None, z0=50.0: _vector_gamma_admittance(gamma, phase, z0, "imag"),
             "pi": math.pi,
             "e": math.e,
         }
@@ -451,7 +760,7 @@ class WaveformCanvas(QWidget):
 
     def set_display_mode(self, mode: str):
         clean = str(mode or "line").strip().lower()
-        if clean not in {"line", "points", "line_points"}:
+        if clean not in {"line", "points", "line_points", "smith"}:
             clean = "line"
         self.display_mode = clean
         self.update()
@@ -670,6 +979,8 @@ class WaveformCanvas(QWidget):
         return QRectF(left, top, max(60, self.width() - left - right), max(60, self.height() - top - bottom))
 
     def _data_to_screen(self, x: float, y: float, lane_rect: QRectF | None = None, y_min: float | None = None, y_max: float | None = None) -> QPointF:
+        if self.display_mode == "smith" and lane_rect is None:
+            return self._smith_to_screen(x, y)
         rect = lane_rect if lane_rect is not None else self._plot_rect()
         xmin, xmax = self.x_min, self.x_max
         ymin = self.y_min if y_min is None else y_min
@@ -679,10 +990,31 @@ class WaveformCanvas(QWidget):
         return QPointF(sx, sy)
 
     def _screen_to_data(self, sx: float, sy: float) -> tuple[float, float]:
+        if self.display_mode == "smith":
+            return self._screen_to_smith(sx, sy)
         rect = self._plot_rect()
         x = self.x_min + ((sx - rect.left()) / (rect.width() or 1.0)) * (self.x_max - self.x_min)
         y = self.y_min + ((rect.bottom() - sy) / (rect.height() or 1.0)) * (self.y_max - self.y_min)
         return x, y
+
+    def _smith_frame(self, rect: QRectF | None = None) -> tuple[QPointF, float]:
+        plot = rect if rect is not None else self._plot_rect()
+        radius = 0.48 * min(plot.width(), plot.height())
+        return plot.center(), radius
+
+    def _smith_to_screen(self, real: float, imag: float, rect: QRectF | None = None) -> QPointF:
+        center, radius = self._smith_frame(rect)
+        return QPointF(center.x() + float(real) * radius, center.y() - float(imag) * radius)
+
+    def _screen_to_smith(self, sx: float, sy: float) -> tuple[float, float]:
+        center, radius = self._smith_frame()
+        if radius <= 0.0:
+            return 0.0, 0.0
+        return (sx - center.x()) / radius, (center.y() - sy) / radius
+
+    @staticmethod
+    def _gamma_from_mag_phase(mag: float, phase_deg: float) -> complex:
+        return complex(float(mag) * math.cos(math.radians(float(phase_deg))), float(mag) * math.sin(math.radians(float(phase_deg))))
 
     # ----- Cursor helpers -----
 
@@ -704,6 +1036,8 @@ class WaveformCanvas(QWidget):
         return self._interpolate_value(trace.x_data, trace.y_data, x)
 
     def nearest_trace_name_at(self, sx: float, sy: float, tolerance_px: float = 18.0) -> str:
+        if self.display_mode == "smith":
+            return self._nearest_smith_trace_name_at(sx, sy, tolerance_px)
         if self.stacked_mode:
             return self._nearest_stacked_trace_name_at(sx, sy, tolerance_px)
         x, _ = self._screen_to_data(sx, sy)
@@ -721,6 +1055,21 @@ class WaveformCanvas(QWidget):
             if dist < best_dist:
                 best_name = trace.name
                 best_dist = dist
+        return best_name if best_dist <= tolerance_px else ""
+
+    def _nearest_smith_trace_name_at(self, sx: float, sy: float, tolerance_px: float) -> str:
+        plot = self._plot_rect()
+        best_name = ""
+        best_dist = float("inf")
+        for trace in self.traces:
+            if not trace.visible or trace.name.lower().startswith("phase("):
+                continue
+            for re_val, im_val in self._smith_points_for_trace(trace):
+                p = self._smith_to_screen(re_val, im_val, plot)
+                dist = math.hypot(p.x() - sx, p.y() - sy)
+                if dist < best_dist:
+                    best_name = trace.name
+                    best_dist = dist
         return best_name if best_dist <= tolerance_px else ""
 
     def _nearest_stacked_trace_name_at(self, sx: float, sy: float, tolerance_px: float) -> str:
@@ -811,14 +1160,17 @@ class WaveformCanvas(QWidget):
             painter.end()
             return
 
-        if self.stacked_mode:
+        if self.display_mode == "smith":
+            self._paint_smith(painter, plot, visible)
+        elif self.stacked_mode:
             self._paint_stacked(painter, plot, visible)
         else:
             self._paint_overlay(painter, plot, visible)
 
-        self._draw_cursors(painter, plot)
-        self._draw_markers(painter, plot)
-        self._draw_axes_text(painter, plot)
+        if self.display_mode != "smith":
+            self._draw_cursors(painter, plot)
+            self._draw_markers(painter, plot)
+            self._draw_axes_text(painter, plot)
         self._draw_zoom_box(painter)
         painter.end()
 
@@ -860,6 +1212,73 @@ class WaveformCanvas(QWidget):
 
             painter.setPen(QPen(QColor("#2b323a"), 1))
             painter.drawLine(int(lane.left()), int(lane.bottom()), int(lane.right()), int(lane.bottom()))
+
+    def _paint_smith(self, painter: QPainter, plot: QRectF, traces: list[TraceRecord]):
+        self._draw_smith_grid(painter, plot)
+        painter.save()
+        painter.setClipRect(plot.adjusted(-4, -4, 4, 4))
+        for trace in traces:
+            if trace.name.lower().startswith("phase("):
+                continue
+            self._draw_smith_trace(painter, trace, plot)
+        painter.restore()
+
+    def _draw_smith_grid(self, painter: QPainter, plot: QRectF):
+        center, radius = self._smith_frame(plot)
+        grid = QColor("#2f3942")
+        light = QColor("#212830")
+        painter.setPen(QPen(grid, 1))
+        painter.drawEllipse(center, radius, radius)
+        painter.drawLine(self._smith_to_screen(-1.0, 0.0, plot), self._smith_to_screen(1.0, 0.0, plot))
+        for r in (0.2, 0.5, 1.0, 2.0, 5.0):
+            c = r / (1.0 + r)
+            rr = 1.0 / (1.0 + r)
+            painter.setPen(QPen(light if r not in {1.0} else grid, 1))
+            painter.drawEllipse(self._smith_to_screen(c, 0.0, plot), rr * radius, rr * radius)
+        for x in (0.2, 0.5, 1.0, 2.0, 5.0):
+            for sign in (-1.0, 1.0):
+                cy = sign / x
+                rr = 1.0 / x
+                painter.setPen(QPen(light if x not in {1.0} else grid, 1))
+                painter.drawArc(
+                    QRectF(center.x() + (1.0 - rr) * radius, center.y() - (cy + rr) * radius, 2.0 * rr * radius, 2.0 * rr * radius),
+                    int((90 if sign > 0 else 270) * 16),
+                    int(180 * 16),
+                )
+        painter.setPen(QPen(QColor("#8f9daa"), 1))
+        painter.setFont(QFont("Consolas", 8))
+        painter.drawText(int(plot.left() + 8), int(plot.bottom() - 8), "Smith  z0=50 ohm")
+
+    def _phase_trace_for(self, trace: TraceRecord) -> TraceRecord | None:
+        return self._trace_by_name.get(f"phase({trace.name})")
+
+    def _smith_points_for_trace(self, trace: TraceRecord) -> list[tuple[float, float]]:
+        phase = self._phase_trace_for(trace)
+        n = min(len(trace.y_data), len(phase.y_data) if phase else len(trace.y_data))
+        points: list[tuple[float, float]] = []
+        for i in range(n):
+            mag = trace.y_data[i]
+            ph = phase.y_data[i] if phase else 0.0
+            if not all(isinstance(v, (int, float)) and math.isfinite(v) for v in (mag, ph)):
+                continue
+            gamma = self._gamma_from_mag_phase(mag, ph)
+            if abs(gamma) <= 1.5:
+                points.append((gamma.real, gamma.imag))
+        return points
+
+    def _draw_smith_trace(self, painter: QPainter, trace: TraceRecord, plot: QRectF):
+        points = [self._smith_to_screen(re, im, plot) for re, im in self._smith_points_for_trace(trace)]
+        if not points:
+            return
+        pen = QPen(trace.color, 2.8 if trace.name == self.selected_trace_name else 1.9)
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        if len(points) == 1:
+            painter.drawEllipse(points[0], 4.0, 4.0)
+        else:
+            painter.drawPolyline(QPolygonF(points))
+        painter.drawEllipse(points[0], 3.0, 3.0)
+        painter.drawRect(QRectF(points[-1].x() - 3, points[-1].y() - 3, 6, 6))
 
     def _draw_trace(self, painter: QPainter, trace: TraceRecord, rect: QRectF, y_min: float, y_max: float):
         if self.display_mode in {"line", "line_points"}:
@@ -1377,7 +1796,17 @@ class WaveformCanvas(QWidget):
         x, y = self._screen_to_data(sx, sy)
         self._hover_x = x
         self._hover_y = y
-        self.hover_text_changed.emit(f"x={self._format_value(x)} y={self._format_value(y)}")
+        if self.display_mode == "smith":
+            gamma = self._screen_to_smith(sx, sy, self._plot_rect())
+            z = gamma_to_impedance(gamma)
+            admittance = gamma_to_admittance(gamma)
+            vswr = (1.0 + abs(gamma)) / (1.0 - abs(gamma)) if abs(gamma) < 1.0 else math.inf
+            self.hover_text_changed.emit(
+                f"Γ={abs(gamma):.4g} ∠{math.degrees(math.atan2(gamma.imag, gamma.real)):.4g}° "
+                f"Z={z.real:.4g}{z.imag:+.4g}jΩ Y={admittance.real:.4g}{admittance.imag:+.4g}jS VSWR={vswr:.4g}"
+            )
+        else:
+            self.hover_text_changed.emit(f"x={self._format_value(x)} y={self._format_value(y)}")
 
         if event.buttons() & Qt.MouseButton.RightButton and self._right_press_pos is not None:
             self._right_current_pos = event.position()
@@ -1542,6 +1971,20 @@ class WaveformViewerWindow(QMainWindow):
             "V(out)",
             "V(out)-V(in)",
             "db20(V(out)/V(in))",
+            "value_at(db20(V(out)/V(in)), 2.4e9)",
+            "lna_nf_db(V(out), V(in), sig(\"onoise_psd(V^2/Hz)\"))",
+            "value_at(lna_nf_db(V(out), V(in), sig(\"onoise_psd(V^2/Hz)\")), 2.4e9)",
+            "s_db(sig(\"S21\"))",
+            "return_loss_db(sig(\"S11\"))",
+            "vswr(sig(\"S11\"))",
+            "stability_k(sig(\"S11\"), sig(\"S12\"), sig(\"S21\"), sig(\"S22\"))",
+            "mu_factor(sig(\"S11\"), sig(\"S12\"), sig(\"S21\"), sig(\"S22\"))",
+            "real_z(sig(\"S11\"), sig(\"phase(S11)\"), 50)",
+            "imag_z(sig(\"S11\"), sig(\"phase(S11)\"), 50)",
+            "pae_percent(sig(\"Pout(W)\"), sig(\"Pin(W)\"), sig(\"Pdc(W)\"))",
+            "p1db_input_dbm(sig(\"Pin(dBm)\"), sig(\"Pout(dBm)\"))",
+            "oip3_dbm(sig(\"Pfund(dBm)\"), sig(\"Pim3(dBm)\"))",
+            "iip3_dbm(sig(\"Pin(dBm)\"), sig(\"Pfund(dBm)\"), sig(\"Pim3(dBm)\"))",
             "deriv(V(out))",
             "integ(V(out))",
             "rms(V(out))",
@@ -1572,7 +2015,12 @@ class WaveformViewerWindow(QMainWindow):
         calc_send_row.addWidget(self.btn_send_measure)
         expr_layout.addLayout(calc_send_row)
         self.quick_combo = QComboBox()
-        self.quick_combo.addItems(["Scale selected", "Offset selected", "Abs selected", "Derivative selected", "A - B", "A + B", "A / B"])
+        self.quick_combo.addItems([
+            "Scale selected", "Offset selected", "Abs selected", "Derivative selected",
+            "S dB", "Return Loss", "VSWR", "Source Match Mag", "Source Match Phase",
+            "Load Match Mag", "Load Match Phase", "Transducer Gain",
+            "A - B", "A + B", "A / B",
+        ])
         expr_layout.addWidget(self.quick_combo)
         self.expr_button = QPushButton("Create Quick Trace")
         self.expr_button.clicked.connect(self._on_create_expression_trace)
@@ -1616,6 +2064,10 @@ class WaveformViewerWindow(QMainWindow):
         act_export.triggered.connect(self._on_export_visible_csv)
         file_menu.addAction(act_export)
 
+        act_export_touchstone = QAction("Export Touchstone...", self)
+        act_export_touchstone.triggered.connect(self._on_export_touchstone)
+        file_menu.addAction(act_export_touchstone)
+
         act_image = QAction("Save Plot Image...", self)
         act_image.triggered.connect(self._on_save_plot_image)
         file_menu.addAction(act_image)
@@ -1658,10 +2110,12 @@ class WaveformViewerWindow(QMainWindow):
         self.menu_display_line = QAction("Line", self)
         self.menu_display_points = QAction("Points", self)
         self.menu_display_line_points = QAction("Line + Points", self)
+        self.menu_display_smith = QAction("Smith Chart", self)
         for mode, action in (
             ("line", self.menu_display_line),
             ("points", self.menu_display_points),
             ("line_points", self.menu_display_line_points),
+            ("smith", self.menu_display_smith),
         ):
             action.setCheckable(True)
             action.triggered.connect(lambda _checked=False, m=mode: self._on_display_mode_changed(m))
@@ -1758,6 +2212,12 @@ class WaveformViewerWindow(QMainWindow):
         self.act_points.toggled.connect(lambda checked: self._on_display_mode_changed("points" if checked else "line"))
         add_emoji(self.act_points, "·")
 
+        self.act_smith = QAction("Smith Chart", self)
+        self.act_smith.setCheckable(True)
+        self.act_smith.setToolTip("Plot reflection coefficient traces on a Smith chart")
+        self.act_smith.toggled.connect(lambda checked: self._on_display_mode_changed("smith" if checked else "line"))
+        add_emoji(self.act_smith, "S")
+
         tb.addSeparator()
 
         self.act_cursor_a = QAction("Cursor A", self)
@@ -1794,6 +2254,10 @@ class WaveformViewerWindow(QMainWindow):
         act_export = QAction("Export Visible CSV", self)
         act_export.triggered.connect(self._on_export_visible_csv)
         add_emoji(act_export, "💾")
+
+        act_touchstone = QAction("Export Touchstone", self)
+        act_touchstone.triggered.connect(self._on_export_touchstone)
+        add_emoji(act_touchstone, "S2P")
 
         tb.addSeparator()
 
@@ -2029,7 +2493,7 @@ class WaveformViewerWindow(QMainWindow):
             self,
             "Open Waveform",
             str(Path.home()),
-            "Waveforms (*.raw *.json);;Run manifests (*.json);;Raw files (*.raw);;All files (*)",
+            "Waveforms (*.raw *.csv *.json *.s1p *.s2p *.s3p *.s4p);;Touchstone (*.s1p *.s2p *.s3p *.s4p);;Run manifests (*.json);;Raw files (*.raw);;All files (*)",
         )
         if not path:
             return
@@ -2066,6 +2530,10 @@ class WaveformViewerWindow(QMainWindow):
         suffix = p.suffix.lower()
         if suffix == ".json":
             return self._load_waveform_manifest(str(p))
+        if suffix == ".csv":
+            return self._parse_csv_waveform(str(p))
+        if re.match(r"\.s\d+p$", suffix):
+            return parse_touchstone(str(p))
         bridge = SimulatorBridge("GSPICE")
         return bridge._parse_raw(path)
 
@@ -2393,13 +2861,14 @@ class WaveformViewerWindow(QMainWindow):
 
     def _on_display_mode_changed(self, mode: str):
         clean = str(mode or "line").strip().lower()
-        if clean not in {"line", "points", "line_points"}:
+        if clean not in {"line", "points", "line_points", "smith"}:
             clean = "line"
         self.canvas.set_display_mode(clean)
         for action_name, action_mode in (
             ("menu_display_line", "line"),
             ("menu_display_points", "points"),
             ("menu_display_line_points", "line_points"),
+            ("menu_display_smith", "smith"),
         ):
             action = getattr(self, action_name, None)
             if action is not None and action.isChecked() != (clean == action_mode):
@@ -2410,6 +2879,10 @@ class WaveformViewerWindow(QMainWindow):
             self.act_points.blockSignals(True)
             self.act_points.setChecked(clean == "points")
             self.act_points.blockSignals(False)
+        if hasattr(self, "act_smith") and self.act_smith.isChecked() != (clean == "smith"):
+            self.act_smith.blockSignals(True)
+            self.act_smith.setChecked(clean == "smith")
+            self.act_smith.blockSignals(False)
 
     def _on_clear(self):
         self._last_waveforms = {}
@@ -2597,7 +3070,7 @@ class WaveformViewerWindow(QMainWindow):
         name, x_data, y_data = trace
         self.canvas.add_trace(name, x_data, y_data, source="expression")
         self._last_waveforms[name] = list(y_data)
-        expr = self._expression_for_quick_trace(mode, selected, value_text)
+        expr = self._expression_for_quick_trace(mode, selected, new_name_hint)
         if expr:
             self._trace_expression_map[name] = expr
             self._remember_expression(expr, name, visible=True)
@@ -2648,6 +3121,11 @@ class WaveformViewerWindow(QMainWindow):
                 y_out.append(dy / dx if dx else 0.0)
             return unique_name(f"deriv({t0.name})"), list(t0.x_data[:n]), y_out
 
+        if mode in {"S dB", "Return Loss", "VSWR", "Source Match Mag", "Source Match Phase", "Load Match Mag", "Load Match Phase", "Transducer Gain"}:
+            expr = self._expression_for_quick_trace(mode, selected, value_text)
+            name, x_data, y_data = self._calculator_result_to_trace(expr, SigViewCalculatorEngine(self.canvas._trace_by_name).evaluate(expr))
+            return unique_name(value_text or name), x_data, y_data
+
         if len(selected) < 2:
             raise ValueError("Select two traces for binary expressions.")
         t1 = self.canvas._trace_by_name.get(selected[1])
@@ -2680,6 +3158,22 @@ class WaveformViewerWindow(QMainWindow):
             return f"abs({expr_a})"
         if mode == "Derivative selected":
             return f"deriv({expr_a})"
+        if mode == "S dB":
+            return f"s_db({expr_a})"
+        if mode == "Return Loss":
+            return f"return_loss_db({expr_a})"
+        if mode == "VSWR":
+            return f"vswr({expr_a})"
+        if mode == "Source Match Mag":
+            return 'source_match_gamma(sig("S11"), sig("S12"), sig("S21"), sig("S22"), sig("phase(S11)"), sig("phase(S12)"), sig("phase(S21)"), sig("phase(S22)"))'
+        if mode == "Source Match Phase":
+            return 'source_match_phase(sig("S11"), sig("S12"), sig("S21"), sig("S22"), sig("phase(S11)"), sig("phase(S12)"), sig("phase(S21)"), sig("phase(S22)"))'
+        if mode == "Load Match Mag":
+            return 'load_match_gamma(sig("S11"), sig("S12"), sig("S21"), sig("S22"), sig("phase(S11)"), sig("phase(S12)"), sig("phase(S21)"), sig("phase(S22)"))'
+        if mode == "Load Match Phase":
+            return 'load_match_phase(sig("S11"), sig("S12"), sig("S21"), sig("S22"), sig("phase(S11)"), sig("phase(S12)"), sig("phase(S21)"), sig("phase(S22)"))'
+        if mode == "Transducer Gain":
+            return 'transducer_gain_db(sig("S11"), sig("S12"), sig("S21"), sig("S22"), sig("phase(S11)"), sig("phase(S12)"), sig("phase(S21)"), sig("phase(S22)"))'
         if len(selected) < 2:
             return expr_a
         expr_b = self._expression_for_trace(selected[1])
@@ -2874,6 +3368,55 @@ class WaveformViewerWindow(QMainWindow):
             return
 
         QMessageBox.information(self, "Export CSV", f"Exported {len(traces)} trace(s) to:\n{path}")
+
+    def _on_export_touchstone(self):
+        available: dict[tuple[int, int], TraceRecord] = {}
+        for name, trace in self.canvas._trace_by_name.items():
+            match = re.match(r"^S(\d+)(\d+)$", name, re.IGNORECASE)
+            if match:
+                available[(int(match.group(1)), int(match.group(2)))] = trace
+        n_ports = max((max(pair) for pair in available), default=0)
+        if n_ports <= 0:
+            QMessageBox.information(self, "Export Touchstone", "No S-parameter traces were found.")
+            return
+        required = [(row, col) for row in range(1, n_ports + 1) for col in range(1, n_ports + 1)]
+        missing = [f"S{row}{col}" for row, col in required if (row, col) not in available]
+        if missing:
+            QMessageBox.warning(self, "Export Touchstone", "Missing S-parameter traces: " + ", ".join(missing))
+            return
+        default_name = f"lumen_sparameters.s{n_ports}p"
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Touchstone",
+            str(Path.home() / default_name),
+            f"Touchstone (*.{f's{n_ports}p'});;All files (*)",
+        )
+        if not path:
+            return
+        if not re.search(r"\.s\d+p$", path, re.IGNORECASE):
+            path += f".s{n_ports}p"
+
+        order = [(1, 1), (2, 1), (1, 2), (2, 2)] if n_ports == 2 else required
+        traces = [available[pair] for pair in required]
+        n_points = min(len(t.x_data) for t in traces)
+        n_points = min(n_points, *(len(t.y_data) for t in traces))
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("! Lumen SigView export\n")
+                fh.write("# Hz S MA R 50\n")
+                for i in range(n_points):
+                    x_value = available[(1, 1)].x_data[i]
+                    values = [f"{x_value:.12e}"]
+                    for row, col in order:
+                        trace = available[(row, col)]
+                        phase = self.canvas._trace_by_name.get(f"phase(S{row}{col})")
+                        values.append(f"{trace.y_data[i]:.12e}")
+                        values.append(f"{(phase.y_data[i] if phase and i < len(phase.y_data) else 0.0):.12e}")
+                    fh.write(" ".join(values) + "\n")
+        except Exception as exc:
+            QMessageBox.critical(self, "Export Touchstone", f"Failed to export Touchstone:\n{exc}")
+            return
+        QMessageBox.information(self, "Export Touchstone", f"Exported S{n_ports}P to:\n{path}")
 
     def _on_save_plot_image(self):
         path, _ = QFileDialog.getSaveFileName(

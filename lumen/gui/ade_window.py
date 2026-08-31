@@ -43,6 +43,9 @@ from lumen.core.simulation_setup import (
 from lumen.core.simulator import (
     SIMULATOR_INFO,
     SimulatorBridge,
+    get_analysis_status,
+    get_analysis_status_note,
+    get_experimental_analyses,
     get_simulator_label,
     get_supported_analyses,
     normalize_simulator_name,
@@ -933,6 +936,18 @@ class OutputsWidget(QWidget):
     BUILT_IN_EXPRS = [
         "V(node)", "I(source)", "dB20(V(out))", "phase(V(out))",
         "group_delay(V(out))", "V(out)-V(in)", "V(out)/V(in)",
+        "dB20(V(out)/V(in))",
+        "lna_nf_db(V(out), V(in), sig(\"onoise_psd(V^2/Hz)\"))",
+        "s_db(sig(\"S21\"))", "return_loss_db(sig(\"S11\"))",
+        "vswr(sig(\"S11\"))",
+        "stability_k(sig(\"S11\"), sig(\"S12\"), sig(\"S21\"), sig(\"S22\"))",
+        "mu_factor(sig(\"S11\"), sig(\"S12\"), sig(\"S21\"), sig(\"S22\"))",
+        "real_z(sig(\"S11\"), sig(\"phase(S11)\"), 50)",
+        "imag_z(sig(\"S11\"), sig(\"phase(S11)\"), 50)",
+        "pae_percent(sig(\"Pout(W)\"), sig(\"Pin(W)\"), sig(\"Pdc(W)\"))",
+        "p1db_input_dbm(sig(\"Pin(dBm)\"), sig(\"Pout(dBm)\"))",
+        "oip3_dbm(sig(\"Pfund(dBm)\"), sig(\"Pim3(dBm)\"))",
+        "iip3_dbm(sig(\"Pin(dBm)\"), sig(\"Pfund(dBm)\"), sig(\"Pim3(dBm)\"))",
         "abs(V(out))", "real(V(out))", "imag(V(out))",
         "fft(V(out))", "deriv(V(out))", "integ(V(out))",
     ]
@@ -2439,6 +2454,71 @@ class ADEWindow(QMainWindow):
         self._save_simenv_view_silent()
         return row
 
+    def _apply_lna_ac_noise_preset(self):
+        self._add_analysis("AC Small-Signal")
+        ac_widget = self._analysis_tabs.get("AC Small-Signal")
+        if ac_widget:
+            ac_widget.set_values({
+                "BiasOP": True,
+                "Sweep": "DEC",
+                "Points": "100",
+                "Fstart": "100MEG",
+                "Fstop": "10G",
+            })
+
+        self._add_analysis("Noise")
+        noise_widget = self._analysis_tabs.get("Noise")
+        if noise_widget:
+            noise_widget.set_values({
+                "Output": "V(out)",
+                "Source": "V1",
+                "Sweep": "DEC",
+                "Points": "50",
+                "Fstart": "100MEG",
+                "Fstop": "10G",
+            })
+
+        self._add_or_select_output_expression("lna_gain_db", "dB20(V(out)/V(in))", True)
+        self._add_or_select_output_expression(
+            "lna_nf_db_50ohm",
+            "lna_nf_db(V(out), V(in), sig(\"onoise_psd(V^2/Hz)\"))",
+            True,
+        )
+        self._refresh_run_plan()
+        self._refresh_workflow_status()
+        self._save_simenv_view_silent()
+        self._log("Applied LNA AC/noise preset: AC, Noise, gain, and 50 ohm NF expressions.")
+
+    def _apply_two_port_sparam_preset(self):
+        self._add_analysis("S-Parameters")
+        sp_widget = self._analysis_tabs.get("S-Parameters")
+        if sp_widget:
+            sp_widget.set_values({
+                "Sweep": "DEC",
+                "Points": "100",
+                "Fstart": "100MEG",
+                "Fstop": "10G",
+            })
+        self._add_or_select_output_expression("s21_db", "s_db(sig(\"S21\"))", True)
+        self._add_or_select_output_expression("s11_return_loss_db", "return_loss_db(sig(\"S11\"))", True)
+        self._add_or_select_output_expression("s11_vswr", "vswr(sig(\"S11\"))", True)
+        self._add_or_select_output_expression(
+            "rollet_k",
+            "stability_k(sig(\"S11\"), sig(\"S12\"), sig(\"S21\"), sig(\"S22\"))",
+            True,
+        )
+        self._add_or_select_output_expression(
+            "mu_factor",
+            "mu_factor(sig(\"S11\"), sig(\"S12\"), sig(\"S21\"), sig(\"S22\"))",
+            True,
+        )
+        self._add_or_select_output_expression("zin_real", "real_z(sig(\"S11\"), sig(\"phase(S11)\"), 50)", True)
+        self._add_or_select_output_expression("zin_imag", "imag_z(sig(\"S11\"), sig(\"phase(S11)\"), 50)", True)
+        self._refresh_run_plan()
+        self._refresh_workflow_status()
+        self._save_simenv_view_silent()
+        self._log("Applied two-port S-parameter preset: S21, S11 return loss, K, and mu expressions.")
+
     def _current_waveforms_for_sigview(self) -> dict:
         selected = self.results_table.currentRow() if hasattr(self, "results_table") else -1
         if selected in self._result_all_waveforms_by_row:
@@ -3579,14 +3659,17 @@ class ADEWindow(QMainWindow):
             self._on_machine_changed()
 
     def _refresh_analysis_tree(self):
-        """Rebuild the analysis tree showing only supported analyses."""
+        """Rebuild the analysis tree with runnable and prototype analyses."""
         self.analysis_tree.clear()
         supported = get_supported_analyses(self._current_simulator)
+        experimental = get_experimental_analyses(self._current_simulator)
+        visible = supported + [name for name in experimental if name not in supported]
         categories = {}
         for name, info in ANALYSES.items():
-            if name not in supported:
+            if name not in visible:
                 continue
-            cat = info["category"]
+            status = get_analysis_status(self._current_simulator, name)
+            cat = "Prototype / Experimental" if status == "experimental" else info["category"]
             if cat not in categories:
                 cat_item = QTreeWidgetItem([cat])
                 cat_item.setForeground(0, QColor("#6b9ece"))
@@ -3596,8 +3679,14 @@ class ADEWindow(QMainWindow):
                 self.analysis_tree.addTopLevelItem(cat_item)
                 categories[cat] = cat_item
                 cat_item.setExpanded(True)
-            item = QTreeWidgetItem([name])
-            item.setData(0, Qt.ItemDataRole.UserRole, name)
+            label = f"{name} (prototype)" if status == "experimental" else name
+            item = QTreeWidgetItem([label])
+            if status == "supported":
+                item.setData(0, Qt.ItemDataRole.UserRole, name)
+            else:
+                item.setForeground(0, QColor("#808080"))
+                item.setToolTip(0, get_analysis_status_note(self._current_simulator, name))
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
             categories[cat].addChild(item)
 
     def _on_close_analysis_tab(self, index):
@@ -5920,6 +6009,14 @@ class ADEWindow(QMainWindow):
         return errors
 
     def _add_analysis(self, name: str):
+        status = get_analysis_status(self._current_simulator, name)
+        if status in {"unavailable", "unknown"}:
+            note = get_analysis_status_note(self._current_simulator, name)
+            self._log(f"Analysis unavailable for {self._current_simulator}: {name}" + (f" ({note})" if note else ""))
+            return
+        if status == "experimental":
+            note = get_analysis_status_note(self._current_simulator, name)
+            self._log(f"Added experimental analysis: {name}" + (f" ({note})" if note else ""))
         if name in self._analysis_tabs:
             # Focus existing tab
             self._show_analysis_setup(name)
@@ -6020,15 +6117,27 @@ class ADEWindow(QMainWindow):
         act_choose = QAction("Choose...", self)
         act_choose.triggered.connect(lambda: self._show_main_tab("Analyses"))
         analyses_menu.addAction(act_choose)
+        act_lna = QAction("Apply LNA AC/Noise Preset", self)
+        act_lna.triggered.connect(self._apply_lna_ac_noise_preset)
+        analyses_menu.addAction(act_lna)
+        act_sparam = QAction("Apply Two-Port S-Parameter Preset", self)
+        act_sparam.triggered.connect(self._apply_two_port_sparam_preset)
+        analyses_menu.addAction(act_sparam)
         analyses_menu.addSeparator()
         categories: dict[str, QMenu] = {}
         for name, info in ANALYSES.items():
+            status = get_analysis_status(self._current_simulator, name)
+            if status == "unavailable":
+                continue
             category = info["category"]
             menu = categories.get(category)
             if menu is None:
                 menu = analyses_menu.addMenu(category)
                 categories[category] = menu
-            action = QAction(name, self)
+            action = QAction(f"{name} (prototype)" if status == "experimental" else name, self)
+            if status == "experimental":
+                action.setEnabled(False)
+                action.setToolTip(get_analysis_status_note(self._current_simulator, name))
             action.triggered.connect(lambda _checked=False, analysis=name: self._add_analysis(analysis))
             menu.addAction(action)
 

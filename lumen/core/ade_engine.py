@@ -27,6 +27,7 @@ from lumen.core.simulator import SimulatorBridge, SimulationResult
 from lumen.core.simulator_runtime import ACTIVE_SIMULATORS
 from lumen.core.results_store import ResultsStore, RunManifest, hash_text, hash_files
 from lumen.core.pss import build_pss_statement
+from lumen.core.waveform_calculator import WaveformCalculator
 
 
 # ── Analysis Types ─────────────────────────────────────────────
@@ -341,6 +342,10 @@ class ExpressionCalculator:
         # Basic cases
         expr = expression.strip()
 
+        rf_result = self._evaluate_rf_expression(expr, waveforms)
+        if rf_result is not None:
+            return rf_result
+
         # Direct signal reference
         if expr in waveforms:
             x_data = self._find_x_axis(waveforms)
@@ -456,6 +461,63 @@ class ExpressionCalculator:
             pass
 
         return None
+
+    def _evaluate_rf_expression(self, expr: str, waveforms: dict) -> Optional[dict]:
+        funcs = {
+            "s_db": lambda calc, args: calc.sparam_db(args[0]),
+            "return_loss_db": lambda calc, args: calc.return_loss_db(args[0]),
+            "vswr": lambda calc, args: calc.vswr(args[0]),
+            "stability_k": lambda calc, args: calc.stability_k_factor(*args[:4]),
+            "mu_factor": lambda calc, args: calc.mu_factor(*args[:4]),
+            "transducer_gain_db": lambda calc, args: calc.transducer_gain_db(),
+            "source_match_gamma": lambda calc, args: calc.input_match_gamma()[0],
+            "load_match_gamma": lambda calc, args: calc.output_match_gamma()[0],
+            "source_match_phase": lambda calc, args: calc.input_match_gamma()[1],
+            "load_match_phase": lambda calc, args: calc.output_match_gamma()[1],
+            "noise_figure_db": lambda calc, args: calc.noise_figure_from_params_db(*args[:4]),
+            "source_stability_radius": lambda calc, args: calc.stability_circle_radius("source"),
+            "load_stability_radius": lambda calc, args: calc.stability_circle_radius("load"),
+            "source_stability_gamma": lambda calc, args: calc.stability_circle_center("source", "mag"),
+            "source_stability_phase": lambda calc, args: calc.stability_circle_center("source", "phase"),
+            "load_stability_gamma": lambda calc, args: calc.stability_circle_center("load", "mag"),
+            "load_stability_phase": lambda calc, args: calc.stability_circle_center("load", "phase"),
+            "load_pull_gamma": lambda calc, args: calc.optimum_gamma(args[0], "GammaL", "phase(GammaL)")["gamma"],
+            "load_pull_phase": lambda calc, args: calc.optimum_gamma(args[0], "GammaL", "phase(GammaL)")["phase"],
+            "load_pull_metric": lambda calc, args: calc.optimum_gamma(args[0], "GammaL", "phase(GammaL)")["metric"],
+            "source_pull_gamma": lambda calc, args: calc.optimum_gamma(args[0], "GammaS", "phase(GammaS)")["gamma"],
+            "source_pull_phase": lambda calc, args: calc.optimum_gamma(args[0], "GammaS", "phase(GammaS)")["phase"],
+            "source_pull_metric": lambda calc, args: calc.optimum_gamma(args[0], "GammaS", "phase(GammaS)")["metric"],
+            "pae_percent": lambda calc, args: calc.pae_percent(*args[:3]),
+            "p1db_input_dbm": lambda calc, args: calc.p1db_input_dbm(*args[:2]),
+            "oip3_dbm": lambda calc, args: calc.output_ip3_dbm(*args[:2]),
+            "iip3_dbm": lambda calc, args: calc.input_ip3_dbm(*args[:3]),
+            "real_z": lambda calc, args: calc.impedance_from_gamma(args[0])[0],
+            "imag_z": lambda calc, args: calc.impedance_from_gamma(args[0])[1],
+            "real_y": lambda calc, args: calc.admittance_from_gamma(args[0])[0],
+            "imag_y": lambda calc, args: calc.admittance_from_gamma(args[0])[1],
+        }
+        match = re.match(r'^(\w+)\((.*)\)$', expr)
+        if not match:
+            return None
+        name = match.group(1).lower()
+        if name not in funcs:
+            return None
+        args = re.findall(r'sig\(["\']([^"\']+)["\']\)', match.group(2))
+        if not args:
+            return None
+        x_axis = self._find_x_axis(waveforms)
+        mapped = {
+            key: (x_axis[:len(values)], values)
+            for key, values in waveforms.items()
+            if key not in {"time", "frequency", "v-sweep", "sweep", "freq"} and isinstance(values, list)
+        }
+        try:
+            value = funcs[name](WaveformCalculator(mapped), args)
+        except Exception:
+            return None
+        if hasattr(value, "x") and hasattr(value, "y"):
+            return {"x": value.x, "y": value.y, "name": expr}
+        return {"x": [], "y": [float(value)], "name": expr}
 
     def _find_x_axis(self, waveforms: dict) -> list:
         """Find the x-axis data from waveforms."""

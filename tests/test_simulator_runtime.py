@@ -4,7 +4,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from lumen.core.simulator import SimulatorBridge, get_simulator_timeout
+from lumen.core.simulator import (
+    SimulatorBridge,
+    get_analysis_status,
+    get_experimental_analyses,
+    get_supported_analyses,
+    get_simulator_timeout,
+    get_unavailable_analyses,
+)
 from lumen.core.simulator_compare import compare_waveforms, format_reference_report, ReferenceRunComparison
 from lumen.core.simulator_runtime import ACTIVE_SIMULATORS, SimulatorRuntimeManager
 
@@ -52,6 +59,19 @@ class SimulatorRuntimeManagerTest(unittest.TestCase):
 
     def test_gspice_default_timeout_is_bounded_for_production_runs(self):
         self.assertEqual(get_simulator_timeout("GSPICE"), 900)
+
+    def test_gspice_rf_analyses_are_not_all_advertised_as_supported(self):
+        supported = get_supported_analyses("GSPICE")
+        experimental = get_experimental_analyses("GSPICE")
+        unavailable = get_unavailable_analyses("GSPICE")
+
+        self.assertIn("AC Small-Signal", supported)
+        self.assertIn("Noise", supported)
+        self.assertIn("S-Parameters", supported)
+        self.assertIn("PSS (Periodic Steady-State)", experimental)
+        self.assertIn("PNOISE (Periodic Noise)", experimental)
+        self.assertIn("Harmonic Balance", unavailable)
+        self.assertEqual(get_analysis_status("GSPICE", "S-Parameters"), "supported")
 
     def test_disabled_external_simulators_are_not_activated(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -417,6 +437,61 @@ class SimulatorRuntimeManagerTest(unittest.TestCase):
         self.assertEqual(waveforms["V(out)"], [2.0, 0.0])
         self.assertEqual(waveforms["V(in)"], [0.0, 2.0])
 
+    def test_gspice_stdout_frequency_tables_keep_rf_axis_and_noise_names(self):
+        stdout = (
+            "freq | onoise_sqrt(V/rtHz) onoise_psd(V^2/Hz) noise_sources\n"
+            "1.000000000e+09 | 2.0e-9 4.0e-18 3\n"
+            "2.000000000e+09 | 3.0e-9 9.0e-18 3\n"
+        )
+
+        waveforms = SimulatorBridge("GSPICE")._parse_gspice_stdout(stdout)
+
+        self.assertEqual(waveforms["frequency"], [1e9, 2e9])
+        self.assertEqual(waveforms["onoise_psd(V^2/Hz)"], [4.0e-18, 9.0e-18])
+        self.assertNotIn("time", waveforms)
+        self.assertNotIn("V(onoise_psd(V^2/Hz))", waveforms)
+
+    def test_gspice_stdout_parses_current_pss_converged_summary(self):
+        stdout = (
+            "Starting PSS shooting: f0=1.000000000e+03 period=1.000000000e-03 "
+            "samples_per_period=64\n"
+            "PSS Converged: periods=2 residual=3.3e-09\n"
+        )
+
+        waveforms = SimulatorBridge("GSPICE")._parse_gspice_stdout(stdout)
+
+        self.assertEqual(waveforms["sample"], [0.0])
+        self.assertEqual(waveforms["PSS_frequency"], [1e3])
+        self.assertEqual(waveforms["PSS_period"], [1e-3])
+        self.assertEqual(waveforms["PSS_periods"], [2.0])
+        self.assertEqual(waveforms["PSS_residual"], [3.3e-9])
+
+    def test_ascii_raw_parser_accepts_periodic_rf_outputs(self):
+        raw = (
+            "Title: GSPICE RAW output\n"
+            "Plotname: PNOISE Analysis\n"
+            "Flags: real\n"
+            "No. Variables: 4\n"
+            "No. Points: 2\n"
+            "Variables:\n"
+            "0\tfrequency\tfrequency\n"
+            "1\tpnoise_sqrt(V/rtHz)\tvoltage_noise\n"
+            "2\tpnoise_psd(V^2/Hz)\tnoise_psd\n"
+            "3\tnoise_sources\tcount\n"
+            "Values:\n"
+            "1e3 2e-9 4e-18 1\n"
+            "2e3 3e-9 9e-18 1\n"
+        )
+        with tempfile.NamedTemporaryFile("w", suffix=".raw", delete=False) as tmp:
+            tmp.write(raw)
+            tmp_path = tmp.name
+        try:
+            waveforms = SimulatorBridge("GSPICE")._parse_raw(tmp_path)
+        finally:
+            os.remove(tmp_path)
+        self.assertEqual(waveforms["frequency"], [1e3, 2e3])
+        self.assertEqual(waveforms["pnoise_psd(V^2/Hz)"], [4e-18, 9e-18])
+
     def test_gspice_pss_summary_writes_one_point_raw_fallback(self):
         bridge = SimulatorBridge("GSPICE")
         stdout = (
@@ -431,10 +506,10 @@ class SimulatorRuntimeManagerTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             raw_path = Path(tmp) / "pss.raw"
-        self.assertTrue(bridge._write_ascii_raw_fallback(str(raw_path), waveforms))
-        parsed = bridge._parse_raw(str(raw_path))
-        self.assertEqual(parsed["sample"], [0.0])
-        self.assertEqual(parsed["PSS_frequency"], [8.8e7])
+            self.assertTrue(bridge._write_ascii_raw_fallback(str(raw_path), waveforms))
+            parsed = bridge._parse_raw(str(raw_path))
+            self.assertEqual(parsed["sample"], [0.0])
+            self.assertEqual(parsed["PSS_frequency"], [8.8e7])
 
 
 if __name__ == "__main__":

@@ -46,9 +46,14 @@ SIMULATOR_INFO = {
         "label": "GSPICE (Lumen Native)",
         "analyses": [
             "DC Operating Point", "Transient", "AC Small-Signal", "Noise", "DC Sweep",
-            "PSS (Periodic Steady-State)", "Harmonic Balance", "S-Parameters",
-            "PAC (Periodic AC)", "PNOISE (Periodic Noise)", "HBAC", "HBNOISE", "HBSP",
-            "STB (Stability)", "HBSTB", "PSSSTB",
+            "S-Parameters",
+        ],
+        "experimental_analyses": [
+            "PSS (Periodic Steady-State)", "PAC (Periodic AC)", "PNOISE (Periodic Noise)",
+            "STB (Stability)",
+        ],
+        "unavailable_analyses": [
+            "Harmonic Balance", "HBAC", "HBNOISE", "HBSP", "HBSTB", "PSSSTB",
         ],
         "candidates": [
             r"C:\EDA\GSPICE\build-klu\Release\gspice.exe",
@@ -91,6 +96,21 @@ SIMULATOR_INFO = {
     },
 }
 
+ANALYSIS_STATUS_NOTES = {
+    "GSPICE": {
+        "PSS (Periodic Steady-State)": "Prototype only; not validated for RF design signoff.",
+        "PAC (Periodic AC)": "Prototype only; no validated PAC engine yet.",
+        "PNOISE (Periodic Noise)": "Prototype only; PNoise is not validated.",
+        "STB (Stability)": "Prototype only; requires the narrow implemented probe topology.",
+        "Harmonic Balance": "Unavailable for normal runs; HB is wired experimentally but not enabled.",
+        "HBAC": "Unavailable; HB sideband analysis is not implemented as a validated run.",
+        "HBNOISE": "Unavailable; HB noise analysis is not implemented as a validated run.",
+        "HBSP": "Unavailable; HB S-parameter analysis is not implemented as a validated run.",
+        "HBSTB": "Unavailable; HB stability analysis is not implemented as a validated run.",
+        "PSSSTB": "Unavailable; PSS stability analysis is not implemented as a validated run.",
+    }
+}
+
 
 def normalize_simulator_name(simulator: str) -> str:
     """Return Lumen's canonical simulator name for UI, runtime, and bridge code."""
@@ -117,6 +137,36 @@ def get_supported_analyses(simulator: str) -> list[str]:
     simulator = normalize_simulator_name(simulator)
     info = SIMULATOR_INFO.get(simulator, {})
     return info.get("analyses", [])
+
+
+def get_experimental_analyses(simulator: str) -> list[str]:
+    """Return analyses visible as prototype/experimental for the simulator."""
+    simulator = normalize_simulator_name(simulator)
+    info = SIMULATOR_INFO.get(simulator, {})
+    return info.get("experimental_analyses", [])
+
+
+def get_unavailable_analyses(simulator: str) -> list[str]:
+    """Return analyses the simulator should not offer as runnable."""
+    simulator = normalize_simulator_name(simulator)
+    info = SIMULATOR_INFO.get(simulator, {})
+    return info.get("unavailable_analyses", [])
+
+
+def get_analysis_status(simulator: str, analysis: str) -> str:
+    """Return supported, experimental, unavailable, or unknown for an analysis."""
+    if analysis in get_supported_analyses(simulator):
+        return "supported"
+    if analysis in get_experimental_analyses(simulator):
+        return "experimental"
+    if analysis in get_unavailable_analyses(simulator):
+        return "unavailable"
+    return "unknown"
+
+
+def get_analysis_status_note(simulator: str, analysis: str) -> str:
+    simulator = normalize_simulator_name(simulator)
+    return ANALYSIS_STATUS_NOTES.get(simulator, {}).get(analysis, "")
 
 
 def get_simulator_label(simulator: str) -> str:
@@ -1937,17 +1987,41 @@ class SimulatorBridge:
         node_aliases = node_aliases or {}
         waveforms: dict[str, list[float]] = {}
         table_signal_names: list[str] = []
+        table_x_name = "time"
+        pss_values: dict[str, float] = {}
         for line in output.splitlines():
             if line.startswith("PSS summary:"):
                 summary_values = {
                     key.lower(): float(value)
-                    for key, value in re.findall(r"([A-Za-z_]+)=([-+0-9.eE]+)", line)
+                    for key, value in re.findall(r"([A-Za-z_][A-Za-z0-9_]*)=([-+0-9.eE]+)", line)
                 }
                 if summary_values:
                     waveforms.setdefault("sample", []).append(0.0)
                     for key in ("frequency", "period", "residual"):
                         if key in summary_values:
                             waveforms.setdefault(f"PSS_{key}", []).append(summary_values[key])
+                    continue
+            if line.startswith("Starting PSS shooting:"):
+                summary_values = {
+                    key.lower(): float(value)
+                    for key, value in re.findall(r"([A-Za-z_][A-Za-z0-9_]*)=([-+0-9.eE]+)", line)
+                }
+                if "f0" in summary_values:
+                    pss_values["frequency"] = summary_values["f0"]
+                if "period" in summary_values:
+                    pss_values["period"] = summary_values["period"]
+                continue
+            if line.startswith("PSS Converged:"):
+                summary_values = {
+                    key.lower(): float(value)
+                    for key, value in re.findall(r"([A-Za-z_][A-Za-z0-9_]*)=([-+0-9.eE]+)", line)
+                }
+                pss_values.update(summary_values)
+                if pss_values:
+                    waveforms.setdefault("sample", []).append(0.0)
+                    for key in ("frequency", "period", "periods", "residual"):
+                        if key in pss_values:
+                            waveforms.setdefault(f"PSS_{key}", []).append(pss_values[key])
                     continue
             if "Node " in line and "=" in line:
                 for node, value in re.findall(r"Node\s+(\d+)=([-+0-9.eE]+)V", line):
@@ -1957,13 +2031,15 @@ class SimulatorBridge:
             if "|" not in line:
                 continue
             left, right = line.split("|", 1)
-            if left.strip().lower() in {"time", "freq", "frequency"}:
+            left_name = left.strip().lower()
+            if left_name in {"time", "freq", "frequency"}:
+                table_x_name = "frequency" if left_name in {"freq", "frequency"} else "time"
                 table_signal_names = []
                 for token in right.split():
                     name = token.strip()
                     if not name:
                         continue
-                    table_signal_names.append(name if name.upper().startswith("V(") else f"V({name})")
+                    table_signal_names.append(self._gspice_table_signal_name(name))
                 continue
             try:
                 t = float(left.strip())
@@ -1977,7 +2053,7 @@ class SimulatorBridge:
                     pass
             if not values:
                 continue
-            waveforms.setdefault("time", []).append(t)
+            waveforms.setdefault(table_x_name, []).append(t)
             for idx, value in enumerate(values):
                 if idx < len(table_signal_names):
                     signal_name = table_signal_names[idx]
@@ -1985,6 +2061,18 @@ class SimulatorBridge:
                     signal_name = self._waveform_name_for_node(idx, node_aliases)
                 waveforms.setdefault(signal_name, []).append(value)
         return waveforms
+
+    @staticmethod
+    def _gspice_table_signal_name(name: str) -> str:
+        text = str(name or "").strip()
+        if not text:
+            return text
+        upper = text.upper()
+        if upper.startswith(("V(", "I(")) or "(" in text or "/" in text:
+            return text
+        if "noise" in text.lower() or text.lower().endswith("_sources"):
+            return text
+        return f"V({text})"
 
     def _parse_raw(self, filepath: str) -> dict:
         """Parse SPICE raw output file (ASCII or binary)."""
